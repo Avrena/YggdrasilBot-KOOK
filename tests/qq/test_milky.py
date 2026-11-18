@@ -22,7 +22,19 @@ from nonebot.drivers import Request, Response
 
 from yggdrasil.qq import segments as seg
 from yggdrasil.qq.milky import Adapter, MilkyQQ, NoAnswer, incoming_segments
-from yggdrasil.qq.model import Dropped, Node, Observed, QQError, Sender, Sent, Unconfirmed
+from yggdrasil.qq.model import (
+    Announcement,
+    Dropped,
+    GroupFile,
+    GroupFiles,
+    GroupFolder,
+    Node,
+    Observed,
+    QQError,
+    Sender,
+    Sent,
+    Unconfirmed,
+)
 
 SELF, GROUP, OWNER, MEMBER = 10000, 20001, 10001, 10002
 PAYLOADS: dict[str, Any] = json.loads((Path(__file__).parent / "milky_payloads.json").read_text(encoding="utf-8"))
@@ -515,6 +527,7 @@ async def test_messages_reactions_and_recalls_address_the_chat_by_seq() -> None:
 
     quoted = await qq.message(group_id=GROUP, user_id=OWNER, message_id=3415)
     await qq.react(group_id=GROUP, message_id=3415, emoji="76")
+    await qq.react(group_id=GROUP, message_id=3415, emoji="127881")  # 🎉: an emoji, not a QQ face
     await qq.recall(group_id=GROUP, user_id=OWNER, message_id=3415)
     await qq.recall(group_id=None, user_id=OWNER, message_id=12)
 
@@ -524,6 +537,10 @@ async def test_messages_reactions_and_recalls_address_the_chat_by_seq() -> None:
         (
             "send_group_message_reaction",
             {"group_id": GROUP, "message_seq": 3415, "reaction": "76", "reaction_type": "face"},
+        ),
+        (
+            "send_group_message_reaction",
+            {"group_id": GROUP, "message_seq": 3415, "reaction": "127881", "reaction_type": "emoji"},
         ),
         ("recall_group_message", {"group_id": GROUP, "message_seq": 3415}),
         ("recall_private_message", {"user_id": OWNER, "message_seq": 12}),
@@ -557,6 +574,188 @@ async def test_download_links_come_from_the_matching_action() -> None:
         ("get_group_file_download_url", {"group_id": GROUP, "file_id": "/f"}),
         ("get_private_file_download_url", {"user_id": OWNER, "file_id": "/f", "file_hash": "abc"}),
     ]
+
+
+# --- group info and files ----------------------------------------------------------------------------------------
+
+
+def _member(**fields: Any) -> dict[str, Any]:
+    base = {
+        "user_id": MEMBER,
+        "nickname": "ming",
+        "sex": "unknown",
+        "group_id": GROUP,
+        "card": "阿明",
+        "title": "摸鱼王",
+        "level": 42,
+        "role": "admin",
+        "join_time": 1700000000,
+        "last_sent_time": 1760000000,
+    }
+    return {"member": {**base, **fields}}
+
+
+async def test_member_info_carries_title_level_times_and_a_running_mute() -> None:
+    muted, unmuted, expired = _member(shut_up_end_time=4102444800), _member(), _member(shut_up_end_time=1600000000)
+    answers = iter([muted, unmuted, expired, _member(shut_up_end_time=0, join_time=0, last_sent_time=0)])
+    qq, bot = _qq({"get_group_member_info": lambda **_: next(answers)})
+
+    member = await qq.member(GROUP, MEMBER)
+    assert (member.card, member.role, member.title, member.level) == ("阿明", "admin", "摸鱼王", 42)
+    assert (member.joined_at, member.last_spoke_at, member.muted_until) == (1700000000, 1760000000, 4102444800)
+    assert (await qq.member(GROUP, MEMBER)).muted_until is None
+    assert (await qq.member(GROUP, MEMBER)).muted_until is None
+    never = await qq.member(GROUP, MEMBER)
+    assert (never.joined_at, never.last_spoke_at, never.muted_until) == (None, None, None)
+    assert bot.called("get_group_member_info")[0] == {"group_id": GROUP, "user_id": MEMBER, "_timeout": None}
+
+
+async def test_announcements_come_newest_first_with_their_picture() -> None:
+    def notice(announcement_id: str, at: int, content: str, image_url: str | None = None) -> dict[str, Any]:
+        out = {"group_id": GROUP, "announcement_id": announcement_id, "user_id": OWNER, "time": at, "content": content}
+        return out if image_url is None else {**out, "image_url": image_url}
+
+    answer = {
+        "announcements": [
+            notice("a-old", 1750000000, "群规：别刷屏"),
+            notice("a-new", 1760000000, "周五开黑", "https://example.com/notice.jpg"),
+        ]
+    }
+    qq, bot = _qq({"get_group_announcements": answer})
+
+    assert await qq.announcements(GROUP) == [
+        Announcement("a-new", OWNER, 1760000000, "周五开黑", ("https://example.com/notice.jpg",)),
+        Announcement("a-old", OWNER, 1750000000, "群规：别刷屏"),
+    ]
+    assert bot.called("get_group_announcements") == [{"group_id": GROUP, "_timeout": None}]
+
+
+def _essence(seq: int, sent: int, set_at: int, segments: list[Any]) -> dict[str, Any]:
+    return {
+        "group_id": GROUP,
+        "message_seq": seq,
+        "message_time": sent,
+        "sender_id": MEMBER,
+        "sender_name": "阿明",
+        "operator_id": OWNER,
+        "operator_name": "群主",
+        "operation_time": set_at,
+        "segments": segments,
+    }
+
+
+async def test_essence_pages_until_the_limit_and_comes_newest_first_in_the_schema() -> None:
+    picture = {
+        "type": "image",
+        "data": {
+            "resource_id": "EhQ-res",
+            "temp_url": "https://example.com/essence.jpg",
+            "width": 640,
+            "height": 480,
+            "summary": "[图片]",
+            "sub_type": "normal",
+        },
+    }
+    pages = [
+        {"messages": [_essence(301, 1750000000, 1750000100, [seg.text("名言")])], "is_end": False},
+        {"messages": [_essence(305, 1760000000, 1760000100, [picture])], "is_end": False},
+        {"messages": [_essence(299, 1740000000, 1740000100, [])], "is_end": True},
+    ]
+    qq, bot = _qq({"get_group_essence_messages": lambda page_index, **_: pages[page_index]})
+
+    two = await qq.essence(GROUP, limit=2)
+    assert [(e.message_id, e.user_id, e.sender_name, e.time, e.operator_id, e.operator_time) for e in two] == [
+        (305, MEMBER, "阿明", 1760000000, OWNER, 1760000100),
+        (301, MEMBER, "阿明", 1750000000, OWNER, 1750000100),
+    ]
+    assert two[0].segments == incoming_segments([picture])
+    assert two[0].segments[0]["data"]["url"] == "https://example.com/essence.jpg"
+    assert two[1].segments == [seg.text("名言")]
+    assert [(d["page_index"], d["page_size"]) for d in bot.called("get_group_essence_messages")] == [(0, 2), (1, 2)]
+
+    bot.calls.clear()
+    assert [e.message_id for e in await qq.essence(GROUP, limit=10)] == [305, 301, 299]
+    assert [d["page_index"] for d in bot.called("get_group_essence_messages")] == [0, 1, 2]
+
+
+async def test_group_files_list_a_folder_and_uploads_go_inline_as_base64() -> None:
+    listing = {
+        "files": [
+            {
+                "group_id": GROUP,
+                "file_id": "/f-0001",
+                "file_name": "规则.pdf",
+                "parent_folder_id": "/",
+                "file_size": 18432,
+                "uploaded_time": 1750000000,
+                "uploader_id": OWNER,
+                "downloaded_times": 7,
+            },
+            {
+                "group_id": GROUP,
+                "file_id": "/f-0002",
+                "file_name": "temp.zip",
+                "parent_folder_id": "/",
+                "file_size": 1024,
+                "uploaded_time": 1760000000,
+                "expire_time": 1760600000,
+                "uploader_id": MEMBER,
+                "downloaded_times": 0,
+            },
+        ],
+        "folders": [
+            {
+                "group_id": GROUP,
+                "folder_id": "/d-0001",
+                "parent_folder_id": "/",
+                "folder_name": "资料",
+                "created_time": 1700000000,
+                "last_modified_time": 1750000000,
+                "creator_id": OWNER,
+                "file_count": 3,
+            }
+        ],
+    }
+    answers = {
+        "get_group_files": listing,
+        "upload_group_file": {"file_id": "/f-0003"},
+        "send_group_nudge": {},
+    }
+    qq, bot = _qq(answers)
+
+    root = await qq.group_files(GROUP)
+    await qq.group_files(GROUP, folder_id="/d-0001")
+    assert root == GroupFiles(
+        [
+            GroupFile("/f-0001", "规则.pdf", 18432, 1750000000, OWNER, downloads=7),
+            GroupFile("/f-0002", "temp.zip", 1024, 1760000000, MEMBER, downloads=0, expires_at=1760600000),
+        ],
+        [GroupFolder("/d-0001", "资料", 3)],
+    )
+    assert await qq.upload_group_file(GROUP, data=b"hello\x00world", name="a.bin") == "/f-0003"
+    await qq.upload_group_file(GROUP, data=b"x", name="b.txt", folder_id="/d-0001")
+    await qq.nudge(group_id=GROUP, user_id=MEMBER)
+
+    assert [(a, {k: v for k, v in d.items() if k != "_timeout"}) for a, d in bot.calls] == [
+        ("get_group_files", {"group_id": GROUP, "parent_folder_id": "/"}),
+        ("get_group_files", {"group_id": GROUP, "parent_folder_id": "/d-0001"}),
+        (
+            "upload_group_file",
+            {"group_id": GROUP, "parent_folder_id": "/", "file_uri": "base64://aGVsbG8Ad29ybGQ=", "file_name": "a.bin"},
+        ),
+        (
+            "upload_group_file",
+            {"group_id": GROUP, "parent_folder_id": "/d-0001", "file_uri": "base64://eA==", "file_name": "b.txt"},
+        ),
+        ("send_group_nudge", {"group_id": GROUP, "user_id": MEMBER}),
+    ]
+
+
+async def test_a_failed_upload_is_a_plain_error() -> None:
+    qq, _ = _qq({"upload_group_file": _failed(-500, "upload failed: file too large")})
+    with pytest.raises(QQError, match="file too large") as caught:
+        await qq.upload_group_file(GROUP, data=b"x", name="big.bin")
+    assert type(caught.value) is QQError
 
 
 # --- the adapter's raw actions -------------------------------------------------------------------------------------

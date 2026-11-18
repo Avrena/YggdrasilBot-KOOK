@@ -1,6 +1,6 @@
 """The report of a finished background job: a synthetic chat invocation that replies to the requester.
 
-It runs on the chat route with the chat prompt and tools (the sandbox suite, minus the tools that start or
+It runs on the chat route with the chat prompt, tools and skills (the sandbox suite, minus the tools that start or
 cancel jobs), so the model can look into the workspace before answering, and goes through the usual
 moderation, concurrency slots, token budget, delivery and invocation record. The job's images (omp's
 ``show``) are attached up front, after image moderation; its public links and result are in the prompt.
@@ -13,6 +13,7 @@ from pydantic_ai.usage import RunUsage
 
 from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.schema import BotReply
+from yggdrasil.agent.skills import skill_names, skills_for
 from yggdrasil.agent.tools import sandbox as sandbox_tools
 from yggdrasil.agent.tools import suite_enabled, tool_names, tools_for
 from yggdrasil.agent.tools.images import MAX_IMAGES, attach_image
@@ -151,7 +152,7 @@ class ReportInvocator(Invocator):
         agent = self._agent(
             resolved_model,
             tools=tools_for(tool_list) + suite.tools,
-            capabilities=suite.capabilities,
+            capabilities=suite.capabilities + skills_for(skill_names(self.settings, "chat", self.group_id)),
             instructions=instructions(
                 "chat",
                 self.settings,
@@ -203,7 +204,7 @@ class ReportInvocator(Invocator):
         # The relay tokens are billed with the report even when it never reached the model.
         return super()._billable_tokens() + (0 if self._relay_counted else _relay_tokens(self.job))
 
-    async def _status(self, emoji: str) -> bool:
+    async def _react(self, emoji: str) -> bool:
         # The trigger message already carries the original run's reactions; adding them again only looks
         # automated. The report's outcome is in the invocation record.
         return False

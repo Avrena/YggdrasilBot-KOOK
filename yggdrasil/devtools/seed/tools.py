@@ -126,7 +126,8 @@ async def read_url(ctx: RunContext[SeedDeps], url_or_handle: str, page: int = 1)
 
 async def render_markdown(ctx: RunContext[SeedDeps], markdown: str, caption: str = "") -> str:
     ctx.deps.notes.shown(ctx.tool_call_id, [(MEDIA["render"].data, caption)])
-    return "已渲染 1 页，会附在合并转发里。"
+    # expand_forward registered the forward's picture as img#1 before this render in the seeded run.
+    return f"已生成 img#2（{caption or '无标题'}）。要发就在回复某一节的 images 里写 img#2；不引用就不会发。"
 
 
 async def recall_message(ctx: RunContext[SeedDeps]) -> str:

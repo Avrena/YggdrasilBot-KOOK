@@ -19,8 +19,10 @@ from yggdrasil.agent.context import build_context, build_followup_context
 from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
+from yggdrasil.agent.skills import skill_names, skills_for
 from yggdrasil.agent.tools import ALL_TOOLS, action_tools, suite_enabled, tool_names, tools_for
 from yggdrasil.agent.tools import sandbox as sandbox_tools
+from yggdrasil.agent.tools.images import check_reply_images, reply_images
 from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, INVOCATIONS
@@ -148,9 +150,9 @@ class Invocator:
         self.meta = record.Meta()
         self.invocation_id: UUID | None = None
         self.ack_kind: str | None = None
-        self._slow_marked = False
+        self._receipt: asyncio.Task[None] | None = None  # the delayed received_emoji, until the run has an outcome
         self._finished = False
-        self.images: list[tuple[bytes, str]] = []
+        self.deps: Deps | None = None  # the agent run's, once it ran: delivery sends the pictures it holds
         self.sandbox: Session | None = None  # set when this run gets the workspace suite
         # How a chat/tldr run's agent was built and its prompt's block nonce: set, the delivered answer's run is kept
         # for replies to it (``pipeline.session``).
@@ -177,8 +179,7 @@ class Invocator:
             self.meta.trace_id = current_trace_id()
             status, error = "failed", None
             try:
-                if await self._status(self.settings.interaction.received_emoji):
-                    self._mark_ack("react")
+                self._receipt = asyncio.create_task(self._receive_later())
                 status = await self._run()
             except Exception as e:
                 error = f"{type(e).__name__}: {e}"[:1000]
@@ -187,6 +188,7 @@ class Invocator:
                 span.set_status(Status(StatusCode.ERROR, error[:200]))
                 await self._status(self.settings.interaction.failure_emoji)
             finally:
+                self._settle()
                 span.set_attribute("ygg.status", status)
                 self.meta.total_s = self.elapsed()
                 INVOCATIONS.add(1, {"handler": self.record_handler, "outcome": status})
@@ -285,7 +287,7 @@ class Invocator:
             resolved_model = chat_model(route)
         except TaskNotConfigured:
             LOGGER.warning("task {} has no model route; configure it in the dashboard", route)
-            await react(self.qq, self.group_id, self.trigger_message_id, self.settings.interaction.failure_emoji)
+            await self._status(self.settings.interaction.failure_emoji)
             return "failed"
 
         mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
@@ -299,7 +301,6 @@ class Invocator:
             recall_target=recall_target,
             self_id=ident.self_id,
             bot_nickname=ident.nickname,
-            on_slow_tool=self._mark_slow,
             trigger_message_id=self.trigger_message_id,
             invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
             request_text=ctx.request_text or ctx.trigger.text,
@@ -309,6 +310,7 @@ class Invocator:
             self.notes.context = ctx.display
         tools_cfg = self.settings.tools
         tool_list = session.setup.tools if session else tool_names(tools_cfg.enabled, self.handler)
+        skill_list = session.setup.skills if session else skill_names(self.settings, self.handler, self.group_id)
         suite = sandbox_tools.Suite()
         if sandbox_on and self.group_id is not None:
             self.sandbox = deps.sandbox = manager().session(
@@ -330,11 +332,11 @@ class Invocator:
                 nonce=ctx.nonce,
             )
         )
-        self._keep = (sessions.Setup(route, system, tool_list, sandbox_on), ctx.nonce)
+        self._keep = (sessions.Setup(route, system, tool_list, sandbox_on, skill_list), ctx.nonce)
         agent = self._agent(
             resolved_model,
             tools=tools_for(tool_list) + action_tools() + suite.tools,
-            capabilities=suite.capabilities,
+            capabilities=suite.capabilities + skills_for(skill_list),
             instructions=system,
         )
         prompt = await inline_images(
@@ -361,7 +363,7 @@ class Invocator:
         capabilities: list[AbstractCapability[Deps]],
         instructions: str,
     ) -> Agent[Deps, BotReply]:
-        return Agent(
+        agent = Agent(
             resolved_model.model,
             output_type=BotReply,
             deps_type=Deps,
@@ -372,6 +374,8 @@ class Invocator:
             name=self.handler,
             retries=2,
         )
+        agent.output_validator(check_reply_images)
+        return agent
 
     async def _execute(
         self,
@@ -440,7 +444,7 @@ class Invocator:
             return "blocked_input"
 
         reply = result.output
-        self.images = deps.images
+        self.deps = deps
 
         if reply.mode == "done" and deps.actions:
             await self._status(self.settings.interaction.action_emoji)
@@ -461,6 +465,7 @@ class Invocator:
 
         if v_out.action == "pass":
             await self._keep_session(result.all_messages(), deps.handles)
+            self._settle()  # the answer is going out: it says "received" itself
             try:
                 await self.deliver(reply)
             except MessageDropped:
@@ -468,7 +473,6 @@ class Invocator:
                 await self._status(self.settings.interaction.review_emoji)
                 await self._finish("dropped", None, **verdicts)
                 return "dropped"
-            await self._status(self.settings.interaction.done_emoji)
             await self._finish("ok", None, reply_qq_message_id=self.reply_qq_message_id, **verdicts)
             return "ok"
         if v_out.action == "review" and self.group_id is not None:
@@ -519,18 +523,30 @@ class Invocator:
             self.meta.ack_s = self.elapsed()
             INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.record_handler, "kind": kind})
 
-    async def _status(self, emoji: str) -> bool:
-        """Add a status reaction to the trigger message (QQ has none in private chats). Reactions are never
-        removed: frequent add/remove pairs look automated to QQ's risk control."""
+    async def _react(self, emoji: str) -> bool:
+        """Add a reaction to the trigger message (QQ has none in private chats). Reactions are never removed:
+        frequent add/remove pairs look automated to QQ's risk control."""
         if not emoji or self.group_id is None:
             return False
         await react(self.qq, self.group_id, self.trigger_message_id, emoji)
         return True
 
-    async def _mark_slow(self) -> None:
-        if not self._slow_marked:
-            self._slow_marked = True
-            await self._status(self.settings.interaction.slow_tool_emoji)
+    async def _status(self, emoji: str) -> bool:
+        """Mark the run's outcome on the trigger message, instead of a received_emoji not added yet."""
+        self._settle()
+        return await self._react(emoji)
+
+    async def _receive_later(self) -> None:
+        """``received_emoji`` once ``received_delay_s`` passed without an outcome: QQ shows the requester a gray tip
+        for every reaction, so a quick answer comes with none."""
+        await asyncio.sleep(self.settings.interaction.received_delay_s)
+        if await self._react(self.settings.interaction.received_emoji):
+            self._mark_ack("react")
+
+    def _settle(self) -> None:
+        """The run has its outcome (an answer going out, a result reaction, an error): no received_emoji any more."""
+        if self._receipt is not None and not self._receipt.done():
+            self._receipt.cancel()
 
     def _budget(self) -> ToolBudget:
         # Workspace sessions (write, run, read the error, fix) need far more steps than a plain reply.
@@ -599,8 +615,10 @@ class Invocator:
         if found is None:
             return None
         setup = found.setup
-        if any(name not in ALL_TOOLS for name in setup.tools) or (
-            setup.sandbox and not self._suite_enabled(setup.handler)
+        if (
+            any(name not in ALL_TOOLS for name in setup.tools)
+            or (setup.sandbox and not self._suite_enabled(setup.handler))
+            or not set(setup.skills) <= set(skill_names(self.settings, self.handler, self.group_id))
         ):
             LOGGER.info("invocation {} used tools this run can't have; starting over", found.invocation_id)
             return None
@@ -629,6 +647,8 @@ class Invocator:
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction
         ident = await identity(self.qq)
+        deps = self.deps
+        images = await reply_images(deps, reply) if deps is not None else {}
         self.meta.total_s = self.elapsed()
         meta_text = self.meta.render(list(cfg.metadata_fields)) if cfg.metadata_node else None
         self.reply_qq_message_id = await send_forward(
@@ -640,5 +660,6 @@ class Invocator:
             cfg=cfg,
             self_id=ident.self_id,
             nickname=ident.nickname,
-            images=self.images,
+            images=images,
+            attached=deps.images if deps is not None else (),
         )

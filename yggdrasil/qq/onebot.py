@@ -7,8 +7,11 @@ arrive as ``image`` segments with ``emoji_id``/``emoji_package_id``; a logged-ou
 notice.
 """
 
+import base64
+import html
 import json
 import re
+import time
 from typing import Any, Literal, cast
 
 from nonebot.adapters import Event
@@ -30,9 +33,14 @@ from nonebot.adapters.onebot.v11 import Message as V11Message
 
 from yggdrasil.qq.client import QQ
 from yggdrasil.qq.model import (
+    Announcement,
     Dropped,
+    Essence,
     ForwardNode,
     Group,
+    GroupFile,
+    GroupFiles,
+    GroupFolder,
     Incoming,
     Login,
     Member,
@@ -60,6 +68,7 @@ _DROPPED = "no message receipt"
 # one. The adapter's own reply timeout is "maybe sent" too: the message almost always goes out anyway (a drawing that
 # hit the default timeout did).
 _MAYBE_SENT = re.compile(r"message failed: |not confirmed|failed to decode SendMessageResponse")
+UPLOAD_TIMEOUT = 300.0  # seconds an upload_group_file answer may take (the bytes go up to QQ before it answers)
 
 
 # --- segments -----------------------------------------------------------------------------------------------------
@@ -254,6 +263,76 @@ def _message_id(answer: Any) -> int:
     return _int(message_id)
 
 
+def _records(answer: Any) -> list[dict[str, Any]]:
+    """A list answer's objects."""
+    if not isinstance(answer, list):
+        raise QQError(f"unexpected answer: {answer!r:.200}")
+    return [r for r in cast(list[Any], answer) if isinstance(r, dict)]
+
+
+def _level(value: Any) -> int | None:
+    """SnowLuma's group level, a numeric string; None when it isn't one."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _muted_until(value: Any) -> int | None:
+    """A member's mute end (epoch seconds) while it lasts; None when not muted (0 or already over)."""
+    end = _int(value)
+    return end if end > time.time() else None
+
+
+def _announcement(record: dict[str, Any]) -> Announcement:
+    """A ``_get_group_notice`` item. Its text is QQ's web text, HTML entities and all (``&#10;`` for a newline)."""
+    message = _obj(record.get("message") or {})
+    images = _records(message.get("images") or message.get("image") or [])
+    return Announcement(
+        announcement_id=str(record.get("notice_id") or ""),
+        user_id=_int(record.get("sender_id")),
+        time=_int(record.get("publish_time")),
+        text=html.unescape(str(message.get("text") or "")),
+        image_urls=tuple(str(i["url"]) for i in images if i.get("url")),
+    )
+
+
+def _essence(record: dict[str, Any]) -> Essence:
+    """A ``get_essence_msg_list`` item."""
+    return Essence(
+        message_id=_int(record.get("msg_seq")),
+        user_id=_int(record.get("sender_id")),
+        sender_name=str(record.get("sender_nick") or ""),
+        time=_int(record.get("sender_time")),
+        operator_id=_int(record.get("operator_id")),
+        operator_time=_int(record.get("operator_time")),
+        segments=to_schema(_content(record.get("content"))),
+    )
+
+
+def _group_files(answer: Any) -> GroupFiles:
+    """A ``get_group_root_files`` / ``get_group_files_by_folder`` answer; ``dead_time`` 0 is a permanent file."""
+    data = _obj(answer)
+    files = [
+        GroupFile(
+            file_id=str(f.get("file_id") or ""),
+            name=str(f.get("file_name") or ""),
+            size=_int(f.get("file_size")),
+            uploaded_at=_int(f.get("upload_time")),
+            uploader_id=_int(f.get("uploader")),
+            uploader_name=str(f.get("uploader_name") or ""),
+            downloads=None if f.get("download_times") is None else _int(f.get("download_times")),
+            expires_at=_int(f.get("dead_time")) or None,
+        )
+        for f in _records(data.get("files") or [])
+    ]
+    folders = [
+        GroupFolder(str(f.get("folder_id") or ""), str(f.get("folder_name") or ""), _int(f.get("total_file_count")))
+        for f in _records(data.get("folders") or [])
+    ]
+    return GroupFiles(files, folders)
+
+
 def _error(e: Exception, sending: _Sending) -> QQError:
     """The ``qq.model`` error for a failed action; ``sending``: which kind of send it was (None: not a send)."""
     if isinstance(e, ActionFailed):
@@ -389,7 +468,45 @@ class OneBotQQ(QQ):
             card=str(info.get("card") or ""),
             role=_role(info.get("role")),
             is_robot=None if robot is None else bool(robot),
+            title=str(info.get("title") or ""),
+            level=_level(info.get("level")),
+            joined_at=_int(info.get("join_time")) or None,
+            last_spoke_at=_int(info.get("last_sent_time")) or None,
+            muted_until=_muted_until(info.get("shut_up_timestamp")),
         )
+
+    async def announcements(self, group_id: int) -> list[Announcement]:
+        found = [_announcement(r) for r in _records(await self._call("_get_group_notice", group_id=group_id))]
+        return sorted(found, key=lambda a: a.time, reverse=True)
+
+    async def essence(self, group_id: int, *, limit: int = 20) -> list[Essence]:
+        # SnowLuma fetches every page itself; newest first by when they were set as essence.
+        found = [_essence(r) for r in _records(await self._call("get_essence_msg_list", group_id=group_id))]
+        found.sort(key=lambda e: (e.operator_time, e.time), reverse=True)
+        return found[: max(limit, 0)]
+
+    # --- group actions ----------------------------------------------------------------------------------------
+    async def nudge(self, *, group_id: int, user_id: int) -> None:
+        await self._call("group_poke", group_id=group_id, user_id=user_id)
+
+    # --- group files ------------------------------------------------------------------------------------------
+    async def group_files(self, group_id: int, *, folder_id: str | None = None) -> GroupFiles:
+        if folder_id:
+            return _group_files(await self._call("get_group_files_by_folder", group_id=group_id, folder_id=folder_id))
+        return _group_files(await self._call("get_group_root_files", group_id=group_id))
+
+    async def upload_group_file(self, group_id: int, *, data: bytes, name: str, folder_id: str | None = None) -> str:
+        answer = await self._call(
+            "upload_group_file",
+            group_id=group_id,
+            file="base64://" + base64.b64encode(data).decode(),
+            name=name,
+            folder=folder_id or None,  # SnowLuma: the root when left out
+            _timeout=UPLOAD_TIMEOUT,
+        )
+        if not (file_id := str(_obj(answer).get("file_id") or "")):
+            raise QQError("upload_group_file: no file_id in the answer")
+        return file_id
 
     # --- messages ---------------------------------------------------------------------------------------------
     async def send(

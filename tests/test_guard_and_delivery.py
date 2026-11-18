@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
 from yggdrasil.delivery.forward import build_nodes, split_text, strip_markdown
 from yggdrasil.moderation.guard import decide_action, parse_verdict, score_from_logprobs
+from yggdrasil.qq.model import Node
 from yggdrasil.settings import InteractionSettings, ModerationCategoryRule, ModerationSettings
 
 
@@ -75,19 +76,53 @@ def test_split_text_respects_limit_and_keeps_content():
     assert "".join(parts).replace("\n", "") == text.replace("\n", "")
 
 
-def test_forward_nodes_order_sections_images_sources_metadata():
+def _kinds(nodes: list[Node]) -> list[str]:
+    """Each node as its text, "sources", "meta", or "图:<caption>" for a picture."""
+    out = []
+    for n in nodes:
+        first = n.segments[0]["data"].get("text", "")
+        if n.segments[-1]["type"] == "image":
+            out.append(f"图:{first.strip()}")
+        else:
+            out.append("sources" if first.startswith("来源") else "meta" if first == "meta" else first)
+    return out
+
+
+def test_each_sections_pictures_follow_it_then_attached_sources_metadata():
     reply = BotReply(
         mode="forward",
         title="t",
-        sections=[Section(content="一段话")],
+        sections=[Section(content="一", images=["img#3", "img#1"]), Section(content="二", images=["img#9"])],
         sources=[SourceRef(label="src", url="https://e.x")],
     )
-    nodes = build_nodes(reply, "meta", InteractionSettings(), self_id=1, nickname="b", images=[(b"\x89PNG", "图")])
-    kinds = [n.segments[-1]["type"] for n in nodes]
-    assert kinds == ["text", "image", "text", "text"]
-    assert nodes[0].segments[0]["data"]["text"] == "一段话"
-    assert nodes[2].segments[0]["data"]["text"].startswith("来源")
-    assert nodes[-1].segments[0]["data"]["text"] == "meta"
+    images = {"img#1": (b"\x89PNG1", "流程"), "img#3": (b"\x89PNG3", "对比"), "img#9": (b"\x89PNG9", "截图")}
+    nodes = build_nodes(
+        reply, "meta", InteractionSettings(), self_id=1, nickname="b", images=images, attached=[(b"\x89PNG", "任务")]
+    )
+    assert _kinds(nodes) == ["一", "图:对比", "图:流程", "二", "图:截图", "图:任务", "sources", "meta"]
+
+
+def test_pictures_that_failed_to_resolve_are_left_out():
+    reply = BotReply(mode="forward", sections=[Section(content="一", images=["img#1", "img#2"])])
+    nodes = build_nodes(reply, None, InteractionSettings(), self_id=1, nickname="b", images={"img#2": (b"\x89P", "")})
+    assert [n.segments[-1]["type"] for n in nodes] == ["text", "image"]
+
+
+def test_text_over_the_node_cap_merges_and_the_pictures_it_passes_follow():
+    sections = [Section(content=f"s{i}", images=[f"img#{i}"] if i in (1, 3) else []) for i in range(6)]
+    reply = BotReply(mode="forward", sections=sections, sources=[SourceRef(label="src")])
+    cfg = InteractionSettings(forward_max_nodes=7, max_sections=10)
+    images = {"img#1": (b"\x89P", "a"), "img#3": (b"\x89P", "b")}
+    nodes = build_nodes(reply, "meta", cfg, self_id=1, nickname="b", images=images)
+    assert len(nodes) == 7
+    assert _kinds(nodes) == ["s0", "s1", "图:a", "s2\n\ns3\n\ns4\n\ns5", "图:b", "sources", "meta"]
+
+
+def test_pictures_leave_room_for_text():
+    reply = BotReply(mode="forward", sections=[Section(content="一", images=["img#1", "img#2", "img#3"])])
+    images = {k: (b"\x89P", k) for k in ("img#1", "img#2", "img#3")}
+    nodes = build_nodes(reply, "meta", InteractionSettings(forward_max_nodes=3), self_id=1, nickname="b", images=images)
+    assert _kinds(nodes) == ["一", "图:img#1", "meta"]
 
 
 def test_forward_nodes_are_capped_by_merging_the_tail():

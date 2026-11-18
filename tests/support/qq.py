@@ -8,8 +8,11 @@ from nonebot.adapters import Bot, Event
 
 from yggdrasil.qq.client import QQ
 from yggdrasil.qq.model import (
+    Announcement,
+    Essence,
     ForwardNode,
     Group,
+    GroupFiles,
     Incoming,
     Login,
     Member,
@@ -81,6 +84,21 @@ class FakeQQ(QQ):
 
     async def member(self, group_id: int, user_id: int, *, reply_timeout: float | None = None) -> Member:
         return await self._answer("member", group_id=group_id, user_id=user_id, reply_timeout=reply_timeout)
+
+    async def announcements(self, group_id: int) -> list[Announcement]:
+        return await self._answer("announcements", group_id=group_id)
+
+    async def essence(self, group_id: int, *, limit: int = 20) -> list[Essence]:
+        return await self._answer("essence", group_id=group_id, limit=limit)
+
+    async def nudge(self, *, group_id: int, user_id: int) -> None:
+        return await self._answer("nudge", group_id=group_id, user_id=user_id)
+
+    async def group_files(self, group_id: int, *, folder_id: str | None = None) -> GroupFiles:
+        return await self._answer("group_files", group_id=group_id, folder_id=folder_id)
+
+    async def upload_group_file(self, group_id: int, *, data: bytes, name: str, folder_id: str | None = None) -> str:
+        return await self._answer("upload_group_file", group_id=group_id, data=data, name=name, folder_id=folder_id)
 
     async def send(
         self, *, group_id: int | None, user_id: int, segments: list[Segment], reply_timeout: float | None = None

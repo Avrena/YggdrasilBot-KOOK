@@ -108,11 +108,19 @@ RUNS: list[Run] = [
                 think="记录不长，做一张对比表放在回复里更清楚。",
             ),
             Turn(
-                output=bot_reply(
-                    "JIT 讨论小结",
-                    "大家在聊 CPython 的 JIT：3.14 里还是实验性的，要自己加 --enable-experimental-jit 编译，"
-                    "默认构建里没有。它用 copy-and-patch 把字节码模板拼成机器码，目前收益还不大。",
-                    "Neko 贴的是官方的 benchmark，小红转的那段补充了编译方式。要点对比见图。",
+                output=BotReply(
+                    mode="forward",
+                    title="JIT 讨论小结",
+                    sections=[
+                        Section(
+                            content="大家在聊 CPython 的 JIT：3.14 里还是实验性的，要自己加 --enable-experimental-jit "
+                            "编译，默认构建里没有。它用 copy-and-patch 把字节码模板拼成机器码，目前收益还不大。"
+                        ),
+                        Section(
+                            content="Neko 贴的是官方的 benchmark，小红转的那段补充了编译方式。要点对比见图。",
+                            images=["img#2"],
+                        ),
+                    ],
                 )
             ),
         ],

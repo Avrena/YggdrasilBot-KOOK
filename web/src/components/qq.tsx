@@ -642,11 +642,14 @@ export function ReplyView({
       return <Note>{reply.silent_reason ? `不回复：${reply.silent_reason}` : "不回复"}</Note>;
     }
     if (reply.mode === "done") return <Note>已完成操作，没有发消息</Note>;
-    const nodes = (reply.sections ?? []).map((s) => ({
-      userId: botId,
-      name: botName,
-      segments: [{ type: "text", data: { text: s.content } }],
-    }));
+    // The pictures a section embeds follow it as nodes; the reply keeps only their handles, not the images.
+    const nodes = (reply.sections ?? []).flatMap((s) =>
+      [s.content, ...(s.images ?? []).map((key) => `[图片 ${key}]`)].map((text) => ({
+        userId: botId,
+        name: botName,
+        segments: [{ type: "text", data: { text } }],
+      })),
+    );
     return (
       <div className="grid gap-2">
         <ChatRow userId={botId} name={botName} bare>

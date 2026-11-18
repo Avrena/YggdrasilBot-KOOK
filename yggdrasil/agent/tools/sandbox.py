@@ -11,8 +11,8 @@ fails with the group's list. The suite is switched on per group by the pseudo to
 
 ``sh`` / ``py`` write their input into ``/workspace/.ygg/`` over REST and run one ``Execute`` of the helper,
 which prints a single JSON line. ``py`` side effects (``show`` / ``publish`` / ``unpublish`` in the kernel) are
-only requests in the cell's ``effects.jsonl``; the bot carries them out after the cell, with its own image
-moderation and link objects, and appends the outcome to the tool result.
+only requests in the cell's ``effects.jsonl``; the bot carries them out after the cell (a shown picture becomes an
+``img#N`` handle the reply may embed, a link object for a published port) and appends the outcome to the tool result.
 """
 
 import asyncio
@@ -38,7 +38,7 @@ from pydantic_ai_harness import FileSystem
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.media import ModelImage, is_image, media_bytes, media_type, model_image
 from yggdrasil.agent.tools.base import ToolResult, accounting, chat_tool, resolve_ref, vision
-from yggdrasil.agent.tools.images import attach_image
+from yggdrasil.agent.tools.images import show_image
 from yggdrasil.core.log import LOGGER
 from yggdrasil.llm.registry import TaskNotConfigured, sees_images
 from yggdrasil.sandbox import SandboxError, Session
@@ -265,7 +265,7 @@ async def _apply_effects(ctx: RunContext[Deps], session: Session, effects: list[
                 with _sandbox_errors():
                     blob = await session.get_bytes(path, max_bytes=IMAGE_MAX_BYTES)
                 caption = str(effect.get("caption") or "")
-                lines.append(f"show：{await attach_image(ctx.deps, blob, caption, call_id=ctx.tool_call_id)}")
+                lines.append(f"show：{await show_image(ctx.deps, blob, caption, call_id=ctx.tool_call_id)}")
             elif kind == "publish":
                 port = int(effect.get("port") or 0)
                 with _sandbox_errors():
@@ -307,7 +307,8 @@ async def py(
     """在当前工作区的常驻 Python kernel（IPython，工作目录 /workspace）里执行代码；变量、导入、打开的浏览器
     在多次调用之间保留，支持顶层 await。返回输出、最后一个表达式的值和报错 traceback；display() 的图、
     matplotlib 图和 shot() 截图会作为图片直接返回给你看。
-    已预置：show(图/路径, caption) 把图发到群里；publish(port)/unpublish(port) 开关公开链接；
+    已预置：show(图/路径, caption) 把图登记成 img#N 句柄（回复某一节的 images 里写它才会发到群里）；
+    publish(port)/unpublish(port) 开关公开链接；
     start(cmd) 起常驻的后台服务，wait_port(port) 等它监听；page = await browser() 是 Playwright 页面，
     await shot() 截图，await snapshot() 读页面结构。
     restart=True 先重启 kernel（清空变量）。timeout 是秒数，不填用默认值。"""
@@ -341,7 +342,8 @@ async def py(
         return "\n".join(parts)
     if sees_images(ctx.deps.task):
         parts.append(
-            f"[这次运行产生的 {len(images)} 张图附在下一条消息里，直接看图；这些图不会发到群里，要发用 show()]"
+            f"[这次运行产生的 {len(images)} 张图附在下一条消息里，直接看图；这些图不会发到群里，"
+            "要发先用 show() 登记成 img#N 再在回复里引用]"
         )
         content: list[Any] = []
         for i, img in enumerate(images, 1):
@@ -353,7 +355,7 @@ async def py(
         )
         parts.append(
             f"[这次运行产生了 {len(images)} 张图，以下是另一个模型写的描述；"
-            f"这些图不会发到群里，要发用 show()]\n{described}"
+            f"这些图不会发到群里，要发先用 show() 登记成 img#N 再在回复里引用]\n{described}"
         )
     except TaskNotConfigured:
         parts.append(f"[这次运行产生了 {len(images)} 张图，但没有能看图的模型，看不到内容]")
@@ -373,7 +375,8 @@ async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
     h = await resolve_ref(ctx, handle, "file", "image")
     deps = ctx.deps
     cfg = deps.settings.tools
-    blob, name = await media_bytes(deps.qq, deps.group_id, deps.user_id, h, cfg.file_max_mb * 1024 * 1024)
+    limit = cfg.file_max_mb * 1024 * 1024
+    blob, name = await media_bytes(deps.qq, deps.group_id, deps.user_id, h, limit, made=deps.made_images)
     if not h.data.get("file_name") and name == "file":
         name = ""  # media_bytes' placeholder: nothing to go by
     fallback = re.sub(r"\W+", "-", handle).strip("-") or "file"

@@ -14,8 +14,11 @@ from typing import Any
 from nonebot.adapters import Bot, Event
 
 from yggdrasil.qq.model import (
+    Announcement,
+    Essence,
     ForwardNode,
     Group,
+    GroupFiles,
     Incoming,
     Login,
     Member,
@@ -61,6 +64,29 @@ class QQ(ABC):
 
     @abstractmethod
     async def member(self, group_id: int, user_id: int, *, reply_timeout: float | None = None) -> Member: ...
+
+    @abstractmethod
+    async def announcements(self, group_id: int) -> list[Announcement]:
+        """The group's announcements, newest first."""
+
+    @abstractmethod
+    async def essence(self, group_id: int, *, limit: int = 20) -> list[Essence]:
+        """The group's essence messages, newest first, at most ``limit``."""
+
+    # --- group actions ----------------------------------------------------------------------------------------
+    @abstractmethod
+    async def nudge(self, *, group_id: int, user_id: int) -> None:
+        """Poke (戳一戳) a group member."""
+
+    # --- group files ------------------------------------------------------------------------------------------
+    @abstractmethod
+    async def group_files(self, group_id: int, *, folder_id: str | None = None) -> GroupFiles:
+        """One folder of the group's file area: the root when ``folder_id`` is None."""
+
+    @abstractmethod
+    async def upload_group_file(self, group_id: int, *, data: bytes, name: str, folder_id: str | None = None) -> str:
+        """Upload ``data`` as file ``name`` to the group's file area (the root when ``folder_id`` is None); returns
+        the new file's id. The bytes go inline (``base64://``), so the protocol side needs no access to our files."""
 
     # --- messages ---------------------------------------------------------------------------------------------
     @abstractmethod

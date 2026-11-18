@@ -6,6 +6,11 @@ from pydantic import BaseModel, Field
 class Section(BaseModel):
     # No title: the forward card preview shows the first lines of each node, so a heading wastes it.
     content: str = Field(description="正文，纯文本，不要 markdown，不要加小标题；按意思分段，段落之间空一行")
+    images: list[str] = Field(
+        default_factory=list,
+        description="紧跟在这一节正文后面发的图片句柄（img#N），按顺序；render_*、show() 生成的图"
+        "和聊天、网页里的图都行。整条回复最多 4 张；没写进来的图不会发",
+    )
 
 
 class SourceRef(BaseModel):

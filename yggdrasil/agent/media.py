@@ -4,6 +4,7 @@ import asyncio
 import io
 import itertools
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePath
 
@@ -49,10 +50,13 @@ async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
     return b"".join(chunks)
 
 
-async def media_bytes(qq: QQ, group_id: int | None, user_id: int, h: Handle, max_bytes: int) -> tuple[bytes, str]:
-    """Bytes + file name ("file" when there is none) of an image/file handle: a picture the bot sent itself from our
-    blob store, else the segment's ``url``. A QQ attachment without a url (files never carry one), or whose url has
-    expired (QQ signs media links with an rkey that lasts hours), gets a working link from ``QQ.media_url`` once.
+async def media_bytes(
+    qq: QQ, group_id: int | None, user_id: int, h: Handle, max_bytes: int, *, made: Mapping[str, bytes] | None = None
+) -> tuple[bytes, str]:
+    """Bytes + file name ("file" when there is none) of an image/file handle: an image the bot made this run from
+    ``made`` (``Deps.made_images``), a picture it made or sent earlier from our blob store, else the segment's
+    ``url``. A QQ attachment without a url (files never carry one), or whose url has expired (QQ signs media links
+    with an rkey that lasts hours), gets a working link from ``QQ.media_url`` once.
 
     Handles registered by web tools carry a ``source`` (``x``, ...): their URLs come from third-party content and
     are fetched through the SSRF guard, never refreshed. QQ attachment URLs come from the protocol side and are
@@ -60,8 +64,13 @@ async def media_bytes(qq: QQ, group_id: int | None, user_id: int, h: Handle, max
     """
     data = h.data
     name = str(data.get("file_name") or "file")
-    if (sha := data.get("blob")) and (kept := await stored_blob(str(sha))) is not None:
-        return kept.data, name
+    if sha := data.get("blob"):
+        if made and (own := made.get(str(sha))) is not None:
+            return own, name
+        if (kept := await stored_blob(str(sha))) is not None:
+            return kept.data, name
+        if data.get("made"):  # its run's transcript wasn't kept (privacy setting, failed save): nothing else has it
+            raise ToolError(f"{h.key} 是之前生成的图，已经找不到了；需要的话重新生成")
     url = str(data.get("url") or "")
     if data.get("source"):
         return await download(url, max_bytes, guarded=True), name
@@ -272,9 +281,12 @@ def _tile(frames: list[Image.Image], times: tuple[float, ...]) -> bytes:
     return out.getvalue()
 
 
-async def load_image(qq: QQ, group_id: int | None, user_id: int, h: Handle) -> ModelImage:
-    """An image handle, or a file handle whose content is a picture, ready for a vision model."""
-    blob, name = await media_bytes(qq, group_id, user_id, h, IMAGE_MAX_DOWNLOAD)
+async def load_image(
+    qq: QQ, group_id: int | None, user_id: int, h: Handle, *, made: Mapping[str, bytes] | None = None
+) -> ModelImage:
+    """An image handle, or a file handle whose content is a picture, ready for a vision model; ``made`` as for
+    :func:`media_bytes`."""
+    blob, name = await media_bytes(qq, group_id, user_id, h, IMAGE_MAX_DOWNLOAD, made=made)
     if not is_image(blob):
         # Bytes Pillow can't place (SVG, HEIC, a web page) would reach a vision model labelled as JPEG and fail the
         # whole run with a provider 400.

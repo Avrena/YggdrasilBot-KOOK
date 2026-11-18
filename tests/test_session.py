@@ -118,7 +118,7 @@ async def test_only_a_recent_delivered_answer_is_continued() -> None:
     messages = [ModelRequest(parts=[UserPromptPart("问题")]), ModelResponse(parts=[_answer("答案")])]
     handles = Handles()
     handles.add("forward", {"forward_id": "res-1"})
-    setup = sessions.Setup("tldr", "tldr 的规则", ["read_url", "view_image"], sandbox=False)
+    setup = sessions.Setup("chat", "chat 的规则", ["read_url", "view_image"], sandbox=False, skills=["qq"])
 
     def answered(reply_qq_message_id: int, status: str) -> Invocation:
         return Invocation(

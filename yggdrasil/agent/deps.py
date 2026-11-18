@@ -1,5 +1,4 @@
 from collections import Counter, defaultdict
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -83,12 +82,14 @@ class Deps:
     tool_counts: Counter[str] = field(default_factory=Counter)
     tool_seconds: defaultdict[str, float] = field(default_factory=lambda: defaultdict(float))  # wall time per tool
     vision_tokens: list[tuple[str, int, int]] = field(default_factory=list)  # (model, in, out) of sub-calls
-    images: list[tuple[bytes, str]] = field(default_factory=list)  # generated (png, caption), e.g. diagrams
-    images_reserved: int = 0  # slots held by in-flight image tools, so parallel calls can't overfill the reply
-    on_slow_tool: Callable[[], Awaitable[None]] | None = None  # called before each tools.slow_tools call
+    # (image, caption) sent after the reply's sections whatever it references: a finished job's pictures (report run)
+    images: list[tuple[bytes, str]] = field(default_factory=list)
     sandbox: "Session | None" = None  # this run's workspace session (chat with the sandbox suite only)
     # Where this run came from, for background jobs whose report replies to the trigger message later.
     trigger_message_id: int | None = None
     invocation_id: str | None = None
     request_text: str = ""
     notes: TraceNotes = field(default_factory=TraceNotes)  # what tools showed the model, for the transcript
+    # Bytes of the images this run made (render_*, workspace show()) by the sha256 their img#N handle names as
+    # ``blob``; the handle data stays JSON-safe for continuations, which read the bytes back from the blob store.
+    made_images: dict[str, bytes] = field(default_factory=dict)

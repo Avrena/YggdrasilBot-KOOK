@@ -1,11 +1,12 @@
-"""Replies as merged forwards: Markdown stripping and splitting, the nodes (sections, pictures, sources, metadata),
-the send, and recovering a forward QQ didn't confirm from the group's history; when it failed, the answer goes out
-once as plain text."""
+"""Replies as merged forwards: Markdown stripping and splitting, the nodes (sections with the pictures they embed,
+attached pictures, sources, metadata), the send, and recovering a forward QQ didn't confirm from the group's history;
+when it failed, the answer goes out once as plain text."""
 
 import asyncio
 import base64
 import re
 import time
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -74,6 +75,9 @@ def split_text(text: str, limit: int) -> list[str]:
     return [c for c in chunks if c]
 
 
+type Picture = tuple[bytes, str]  # an image to send and its caption ("" for none)
+
+
 def build_nodes(
     reply: BotReply,
     meta_text: str | None,
@@ -81,33 +85,75 @@ def build_nodes(
     *,
     self_id: int,
     nickname: str,
-    images: list[tuple[bytes, str]] | None = None,
+    images: Mapping[str, Picture] | None = None,
+    attached: Sequence[Picture] = (),
 ) -> list[Node]:
-    bodies: list[str] = []
+    """Each section's text, then the pictures its ``Section.images`` name (``images``: what the handles resolved to;
+    one missing there is left out), then the ``attached`` pictures, the sources and the metadata.
+
+    Within ``forward_max_nodes`` the pictures keep room for at least one text node (later ones are left out); text
+    past the rest is merged into one node, and the pictures it passes follow that node.
+    """
+    images = images or {}
     sections = list(reply.sections)
     if len(sections) > cfg.max_sections:
         # Hard cap behind the prompt's "at most two sections": fold the rest into the last kept one.
         keep, extra = sections[: cfg.max_sections - 1], sections[cfg.max_sections - 1 :]
         merged = "\n\n".join(s.content for s in extra)
-        sections = [*keep, extra[0].model_copy(update={"content": merged})]
+        embedded = [k for s in extra for k in s.images]
+        sections = [*keep, extra[0].model_copy(update={"content": merged, "images": embedded})]
+    items: list[str | Picture] = []
     for section in sections:
-        bodies.extend(split_text(strip_markdown(section.content), cfg.node_max_chars))
-    if reply.sources:
-        bodies.append(_sources_text(reply))
-    limit = cfg.forward_max_nodes - (1 if meta_text else 0)
-    if len(bodies) > limit:
-        bodies = [*bodies[: limit - 1], "\n\n".join(bodies[limit - 1 :])]
+        items += split_text(strip_markdown(section.content), cfg.node_max_chars)
+        items += [images[k] for k in section.images if k in images]
+    items += attached
 
-    nodes = [Node(self_id, nickname, [seg.text(b)]) for b in bodies]
-    for png, caption in images or []:
-        segs = [seg.image("base64://" + base64.b64encode(png).decode())]
-        if caption:
-            segs.insert(0, seg.text(caption + "\n"))
-        # Keep sources last among text nodes but before metadata: insert images after the sections.
-        nodes.insert(len(nodes) - (1 if reply.sources else 0), Node(self_id, nickname, segs))
+    limit = max(1, cfg.forward_max_nodes - (1 if meta_text else 0) - (1 if reply.sources else 0))
+    texts = sum(isinstance(i, str) for i in items)
+    room = limit - (1 if texts else 0)
+    kept: list[str | Picture] = []
+    pictures = 0
+    for item in items:
+        if not isinstance(item, str):
+            if pictures == room:
+                continue
+            pictures += 1
+        kept.append(item)
+    if len(kept) < len(items):
+        LOGGER.warning("forward has room for {} pictures; {} left out", room, len(items) - len(kept))
+    text_room = limit - pictures
+
+    nodes: list[Node] = []
+    tail: list[str] = []  # text past text_room, merged into one node
+    after: list[Picture] = []  # the pictures among that text, placed after it
+    seen = 0
+    for item in kept:
+        if isinstance(item, str):
+            seen += 1
+            if texts > text_room and seen >= text_room:
+                tail.append(item)
+            else:
+                nodes.append(Node(self_id, nickname, [seg.text(item)]))
+        elif tail:
+            after.append(item)
+        else:
+            nodes.append(_picture_node(item, self_id, nickname))
+    if tail:
+        nodes.append(Node(self_id, nickname, [seg.text("\n\n".join(tail))]))
+        nodes += [_picture_node(p, self_id, nickname) for p in after]
+    if reply.sources:
+        nodes.append(Node(self_id, nickname, [seg.text(_sources_text(reply))]))
     if meta_text:
         nodes.append(Node(self_id, nickname, [seg.text(meta_text)]))
     return nodes
+
+
+def _picture_node(picture: Picture, self_id: int, nickname: str) -> Node:
+    image, caption = picture
+    segs = [seg.image("base64://" + base64.b64encode(image).decode())]
+    if caption:
+        segs.insert(0, seg.text(caption + "\n"))
+    return Node(self_id, nickname, segs)
 
 
 def _sources_text(reply: BotReply) -> str:
@@ -126,7 +172,7 @@ def reply_text(reply: BotReply, cfg: InteractionSettings) -> str:
     return chunks[0] + _CUT if len(chunks) > 1 else chunks[0]
 
 
-# Forwards carry rendered pictures too (render_markdown, render_mermaid), which QQ uploads before it confirms.
+# Forwards carry pictures too (rendered pages, the reply's embedded images), which QQ uploads before it confirms.
 SEND_FORWARD_TIMEOUT_S = SEND_IMAGE_TIMEOUT_S
 # An unconfirmed forward is looked for in the group's latest history: checks after these pauses (QQ may still be
 # posting it), on a page this long, allowing for this much clock difference between us and QQ.
@@ -234,7 +280,8 @@ async def send_forward(
     cfg: InteractionSettings,
     self_id: int,
     nickname: str,
-    images: list[tuple[bytes, str]] | None = None,
+    images: Mapping[str, Picture] | None = None,
+    attached: Sequence[Picture] = (),
 ) -> int | None:
     """The reply as a merged forward; returns the QQ id of what was sent.
 
@@ -243,8 +290,10 @@ async def send_forward(
     sent. Missing from history that reaches back to the send (and carrying no pictures that may still be uploading),
     or rejected by QQ outright, it failed and the answer goes out once as plain text instead. None: most likely sent
     (an unconfirmed private forward, or history that can't tell), so it must not be sent again; like ``send_image``.
+    ``images`` and ``attached`` are the pictures, placed as :func:`build_nodes` says.
     """
-    nodes = build_nodes(reply, meta_text, cfg, self_id=self_id, nickname=nickname, images=images)
+    nodes = build_nodes(reply, meta_text, cfg, self_id=self_id, nickname=nickname, images=images, attached=attached)
+    pictures = any(s["type"] == "image" for n in nodes for s in n.segments)
     title = (reply.title or "回复")[:30]  # only for our own message record; never sent as a preview
     target = group_id or user_id
     started = time.time()
@@ -278,7 +327,7 @@ async def send_forward(
                         e,
                     )
                     return None
-                case "absent" if images:
+                case "absent" if pictures:
                     # Its pictures may still be uploading (QQ has no overall limit on that): a text copy now could be
                     # followed by the forward.
                     LOGGER.warning(

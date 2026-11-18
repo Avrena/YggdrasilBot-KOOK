@@ -77,6 +77,10 @@ gVisor pod, claimed from a warm pool.
 (GitHub-style Markdown with Shiki and KaTeX, every Mermaid diagram type, sanitized inline HTML) via a warm
 Chromium page pool, typically in well under a second.
 
+Images go into a reply by reference: a render, a workspace `show()`, a chat or web picture is an `img#N` handle,
+and each section of the reply lists the handles to place right after it (at most 4 per reply). Unreferenced
+images are never sent, and every embedded picture except rendered pages passes the group's output image moderation.
+
 ### Safety and operations
 
 - **Moderation**: an optional Qwen3Guard classifier checks requests and replies. Suspicious replies are held for a superuser's review instead of being sent.
@@ -163,6 +167,7 @@ sequenceDiagram
 | Workspaces | `open_workspace`, `sh`, `py`, `sandbox_put`, `reset_workspace` |
 | Background jobs | `background`, `delegate`, `jobs`, `cancel_job` |
 | Actions (granted per run) | `recall_message`, ... |
+| QQ group (skill `qq`, loaded on demand where `tools.skills` has it) | `member_info`, `group_info` (name, size, announcements, essence messages), `get_avatar`, `group_files`, `upload_file` (workspace file to the group files), `nudge` (pokes the requester) |
 
 </details>
 
@@ -300,7 +305,7 @@ yggdrasil/
   bot/          NoneBot plugin: events, command routing
   qq/           QQ protocol layer: Milky and OneBot v11 backends, message segments
   pipeline/     one triggered run: moderation, agent, delivery, bookkeeping
-  agent/        chat / tldr agents, context building, tools
+  agent/        chat / tldr agents, context building, tools, on-demand skills
   memory/       topics, glossary, profiles, digests, hybrid search
   ingest/       message normalization and storage
   stickers/     sticker collection and vision tagging

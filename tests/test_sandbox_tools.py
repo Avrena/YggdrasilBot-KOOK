@@ -9,24 +9,20 @@ from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from tests.support.agent import run_ctx
 from tests.support.files import png
 from yggdrasil.agent.deps import Deps
+from yggdrasil.agent.schema import BotReply, Section
 from yggdrasil.agent.tools import sandbox as sandbox_tools
 from yggdrasil.agent.tools import suite_enabled, tool_names
-from yggdrasil.agent.tools.images import MAX_IMAGES, attach_image
+from yggdrasil.agent.tools.images import reply_images
 from yggdrasil.agent.tools.sandbox import format_py, format_sh, py, safe_name, sandbox_put, sh
-from yggdrasil.moderation.image import ImageVerdict, parse_answer
+from yggdrasil.moderation.image import parse_answer
 from yggdrasil.sandbox import SandboxError
 from yggdrasil.sandbox.backend import ExecResult
 from yggdrasil.sandbox.state import Link
 from yggdrasil.settings import Settings, ToolSettings
-from yggdrasil.tools.errors import ToolError
 
 
 def _settings(**moderation: Any) -> Settings:
     return Settings.model_validate({"moderation": moderation})
-
-
-def _deps(settings: Settings) -> Deps:
-    return run_ctx(settings=settings).deps
 
 
 def test_idle_must_outlast_invocation_budget():
@@ -67,40 +63,6 @@ def test_image_moderation_answer_fails_closed():
     assert parse_answer("UNSAFE: gore") == (False, "gore")
     assert parse_answer("unsafe") == (False, "unspecified")
     assert parse_answer("这张图没问题") == (False, "error")
-
-
-async def test_shown_images_share_the_cap_with_render_tools():
-    deps = _deps(_settings(enabled=False))
-    deps.images = [(b"x", "")] * (MAX_IMAGES - 1)
-    result = await attach_image(deps, png(), "图")
-    assert "还能再发 0 张" in result
-    with pytest.raises(ToolError, match="已经有"):
-        await attach_image(deps, png(), "图")
-
-
-async def test_shown_image_moderation_follows_group_output_switch():
-    calls: list[bytes] = []
-
-    async def unsafe(blob: bytes) -> ImageVerdict:
-        calls.append(blob)
-        return ImageVerdict(False, "gore", "vision-model", 10, 2)
-
-    unmoderated = _deps(_settings(enabled=True, check_output=False))
-    await attach_image(unmoderated, png(), "", check=unsafe)
-    assert not calls
-    assert len(unmoderated.images) == 1
-
-    moderated = _deps(_settings(enabled=True, check_output=True))
-    with pytest.raises(ToolError, match="gore"):
-        await attach_image(moderated, png(), "", check=unsafe)
-    assert len(calls) == 1
-    assert not moderated.images
-    assert moderated.vision_tokens == [("vision-model", 10, 2)]
-
-
-async def test_shown_non_images_are_refused():
-    with pytest.raises(ToolError, match="不是能发的图片"):
-        await attach_image(_deps(_settings(enabled=False)), b"not an image", "")
 
 
 # --- result formatting ------------------------------------------------------------
@@ -284,7 +246,7 @@ async def test_sh_writes_the_script_and_runs_the_helper():
 
 
 async def test_sandbox_put_keeps_names_and_never_overwrites(monkeypatch: pytest.MonkeyPatch):
-    async def fake_media(_qq: Any, _gid: Any, _uid: int, h: Any, _max: int) -> tuple[bytes, str]:
+    async def fake_media(_qq: Any, _gid: Any, _uid: int, h: Any, _max: int, **_: Any) -> tuple[bytes, str]:
         return h.data["blob"], str(h.data.get("file_name") or "file")
 
     monkeypatch.setattr(sandbox_tools, "media_bytes", fake_media)
@@ -325,18 +287,20 @@ async def _broken(argv: list[str], **_: Any) -> ExecResult:
 async def test_py_applies_effects_keeps_the_kernel_and_returns_images(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sandbox_tools, "sees_images", lambda _task: True)
     cell_images = [f"/workspace/.ygg/cells/c/out-{i}.png" for i in range(5)]
-    files = {p: png() for p in cell_images} | {"/workspace/.ygg/cells/c/show-0.png": png("blue")}
+    show = "/workspace/.ygg/cells/c/show-0.png"
+    files = {p: png() for p in cell_images} | {show: png("blue"), "/workspace/notes.txt": b"not an image"}
     session = FakeSession(
         _py_result(
             output="started\n",
             images=cell_images,
             images_dropped=1,
             effects=[
-                {"type": "show", "path": "/workspace/.ygg/cells/c/show-0.png", "caption": "蓝图"},
+                {"type": "show", "path": show, "caption": "蓝图"},
                 {"type": "publish", "port": 8000},
                 {"type": "publish", "port": 9999},
                 {"type": "unpublish", "port": 8001},
                 {"type": "show", "path": "/workspace/missing.png", "caption": ""},
+                {"type": "show", "path": "/workspace/notes.txt", "caption": ""},
             ],
         ),
         files,
@@ -350,13 +314,16 @@ async def test_py_applies_effects_keeps_the_kernel_and_returns_images(monkeypatc
     assert "--max-images" in session.backend.calls[1]
     assert session.kernel == [77]
     assert "已按要求重启 kernel" in text
-    assert "show：已附上图 1（蓝图）" in text
+    assert "show：已生成 img#1（蓝图）。要发就在回复某一节的 images 里写 img#1；不引用就不会发。" in text
     assert "https://sbx-abc.example.com" in text
     assert "publish 失败：端口 9999 上没有程序在监听。" in text
     assert "unpublish：端口 8001 没有公开的链接" in text
     assert "show 失败：读取失败" in text
+    assert "show 失败：这个文件不是能发的图片" in text
     assert "另有 2 张图没有返回" in text
-    assert len(ctx.deps.images) == 1
+    assert ctx.deps.images == []  # shown, not attached: the reply sends it only by naming img#1
+    reply = BotReply(mode="forward", sections=[Section(content="效果如图", images=["img#1"])])
+    assert await reply_images(ctx.deps, reply) == {"img#1": (png("blue"), "蓝图")}
     content = list(cast(Any, result.content))
     assert sum(isinstance(c, BinaryContent) for c in content) == sandbox_tools.PY_MAX_IMAGES
     assert session.published == [8000]

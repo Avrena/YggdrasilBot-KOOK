@@ -214,12 +214,12 @@ async def test_forward_with_pictures_missing_from_history_is_not_sent_as_text(re
         qq,
         group_id=GROUP,
         user_id=20001,
-        reply=REPLY,
+        reply=REPLY.model_copy(update={"sections": [Section(content="第一段", images=["img#1"])]}),
         meta_text=None,
         cfg=InteractionSettings(),
         self_id=SELF,
         nickname="Yggdrasil",
-        images=[(b"\x89PNG", "图")],
+        images={"img#1": (b"\x89PNG", "图")},
     )
     assert result is None
     assert len(_forwards(qq)) == 1

@@ -25,7 +25,19 @@ from nonebot.adapters.onebot.v11 import (
 
 from tests.support.onebot import ScriptedBot, group_message
 from yggdrasil.qq import segments as seg
-from yggdrasil.qq.model import Dropped, Node, Observed, QQError, Sender, Sent, Unconfirmed
+from yggdrasil.qq.model import (
+    Announcement,
+    Dropped,
+    GroupFile,
+    GroupFiles,
+    GroupFolder,
+    Node,
+    Observed,
+    QQError,
+    Sender,
+    Sent,
+    Unconfirmed,
+)
 from yggdrasil.qq.model import Message as QQMessage
 from yggdrasil.qq.onebot import OneBotQQ, to_schema
 
@@ -437,3 +449,181 @@ async def test_download_links_come_from_the_matching_action() -> None:
         ("get_group_file_url", {"group_id": GROUP, "file_id": "/f0e1"}),
         ("get_file", {"file_id": "/f0e1"}),
     ]
+
+
+# --- group info and files ----------------------------------------------------------------------------------------
+
+
+def _member(**fields: Any) -> dict[str, Any]:
+    return {
+        "group_id": GROUP,
+        "user_id": BOB,
+        "nickname": "bob",
+        "card": "小波",
+        "is_robot": False,
+        "sex": "unknown",
+        "age": 0,
+        "join_time": 1700000000,
+        "last_sent_time": 1760000000,
+        "shut_up_timestamp": 0,
+        "level": "37",
+        "role": "member",
+        "title": "潜水员",
+        "area": "",
+        "unfriendly": False,
+        "title_expire_time": 0,
+        "card_changeable": True,
+        **fields,
+    }
+
+
+async def test_member_info_carries_title_level_times_and_a_running_mute() -> None:
+    muted, unmuted, expired = _member(shut_up_timestamp=4102444800), _member(), _member(shut_up_timestamp=1600000000)
+    answers = iter([muted, unmuted, expired, _member(level="", join_time=0, last_sent_time=0)])
+    qq, bot = _qq({"get_group_member_info": lambda **_: next(answers)})
+
+    member = await qq.member(GROUP, BOB)
+    assert (member.card, member.role, member.title, member.level) == ("小波", "member", "潜水员", 37)
+    assert (member.joined_at, member.last_spoke_at, member.muted_until) == (1700000000, 1760000000, 4102444800)
+    assert (await qq.member(GROUP, BOB)).muted_until is None
+    assert (await qq.member(GROUP, BOB)).muted_until is None
+    blank = await qq.member(GROUP, BOB)
+    assert (blank.level, blank.joined_at, blank.last_spoke_at, blank.muted_until) == (None, None, None, None)
+    assert bot.called("get_group_member_info")[0] == {"group_id": GROUP, "user_id": BOB}
+
+
+async def test_announcements_come_newest_first_with_their_pictures_and_plain_text() -> None:
+    def notice(notice_id: str, at: int, text: str, images: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "notice_id": notice_id,
+            "sender_id": ALICE,
+            "publish_time": at,
+            "message": {"text": text, "image": images, "images": images},
+            "settings": None,
+            "read_num": 3,
+            "type": 6,
+            "pinned": 0,
+            "send_to_new_members": False,
+        }
+
+    picture = {"id": "pic-0001", "url": "https://example.com/notice.jpg", "height": 480, "width": 640}
+    answer = [
+        notice("n-old", 1750000000, "群规&#10;别刷屏 &amp; 别吵架", []),
+        notice("n-new", 1760000000, "周五开黑", [picture]),
+    ]
+    qq, bot = _qq({"_get_group_notice": answer})
+
+    assert await qq.announcements(GROUP) == [
+        Announcement("n-new", ALICE, 1760000000, "周五开黑", ("https://example.com/notice.jpg",)),
+        Announcement("n-old", ALICE, 1750000000, "群规\n别刷屏 & 别吵架"),
+    ]
+    assert bot.called("_get_group_notice") == [{"group_id": GROUP}]
+
+
+async def test_essence_comes_newest_first_in_the_schema_up_to_the_limit() -> None:
+    def essence(seq: int, sent: int, set_at: int, content: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "msg_seq": seq,
+            "msg_random": 12345,
+            "sender_id": BOB,
+            "sender_nick": "小波",
+            "sender_time": sent,
+            "operator_id": ALICE,
+            "operator_nick": "阿明",
+            "operator_time": set_at,
+            "message_id": -seq,
+            "content": content,
+        }
+
+    picture = {"type": "image", "data": {"file": "", "url": "https://example.com/essence.jpg"}}
+    answer = [
+        essence(301, 1750000000, 1750000100, [_text("名言")]),
+        essence(299, 1740000000, 1740000100, []),
+        essence(305, 1760000000, 1760000100, [picture, {"type": "face", "data": {"id": "14"}}]),
+    ]
+    qq, bot = _qq({"get_essence_msg_list": answer})
+
+    two = await qq.essence(GROUP, limit=2)
+    assert [(e.message_id, e.user_id, e.sender_name, e.time, e.operator_id, e.operator_time) for e in two] == [
+        (305, BOB, "小波", 1760000000, ALICE, 1760000100),
+        (301, BOB, "小波", 1750000000, ALICE, 1750000100),
+    ]
+    assert two[0].segments == to_schema(answer[2]["content"])
+    assert two[0].segments[0]["data"]["url"] == "https://example.com/essence.jpg"
+    assert two[1].segments == [seg.text("名言")]
+    assert [e.message_id for e in await qq.essence(GROUP)] == [305, 301, 299]
+    assert bot.called("get_essence_msg_list") == [{"group_id": GROUP}, {"group_id": GROUP}]
+
+
+async def test_group_files_route_by_folder_and_uploads_go_inline_as_base64() -> None:
+    def listing(file_id: str, dead_time: int) -> dict[str, Any]:
+        return {
+            "files": [
+                {
+                    "group_id": GROUP,
+                    "file_id": file_id,
+                    "file_name": "规则.pdf",
+                    "busid": 102,
+                    "file_size": 18432,
+                    "upload_time": 1750000000,
+                    "dead_time": dead_time,
+                    "modify_time": 1750000000,
+                    "download_times": 7,
+                    "uploader": ALICE,
+                    "uploader_name": "阿明",
+                }
+            ],
+            "folders": [
+                {
+                    "group_id": GROUP,
+                    "folder_id": "/d-0001",
+                    "folder_name": "资料",
+                    "create_time": 1700000000,
+                    "creator": ALICE,
+                    "create_name": "阿明",
+                    "total_file_count": 3,
+                    "last_upload_time": 1750000000,
+                    "last_uploader": ALICE,
+                    "last_uploader_name": "阿明",
+                }
+            ],
+        }
+
+    answers = {
+        "get_group_root_files": listing("/f-0001", 0),
+        "get_group_files_by_folder": {"files": [listing("/f-0002", 1760600000)["files"][0]], "folders": []},
+        "upload_group_file": {"file_id": "/f-0003"},
+        "group_poke": None,
+    }
+    qq, bot = _qq(answers)
+
+    root = await qq.group_files(GROUP)
+    inner = await qq.group_files(GROUP, folder_id="/d-0001")
+    assert root == GroupFiles(
+        [GroupFile("/f-0001", "规则.pdf", 18432, 1750000000, ALICE, "阿明", downloads=7)],
+        [GroupFolder("/d-0001", "资料", 3)],
+    )
+    assert inner == GroupFiles(
+        [GroupFile("/f-0002", "规则.pdf", 18432, 1750000000, ALICE, "阿明", downloads=7, expires_at=1760600000)], []
+    )
+    assert await qq.upload_group_file(GROUP, data=b"hello\x00world", name="a.bin") == "/f-0003"
+    await qq.upload_group_file(GROUP, data=b"x", name="b.txt", folder_id="/d-0001")
+    await qq.nudge(group_id=GROUP, user_id=BOB)
+
+    assert [(a, {k: v for k, v in d.items() if k != "_timeout"}) for a, d in bot.calls] == [
+        ("get_group_root_files", {"group_id": GROUP}),
+        ("get_group_files_by_folder", {"group_id": GROUP, "folder_id": "/d-0001"}),
+        ("upload_group_file", {"group_id": GROUP, "file": "base64://aGVsbG8Ad29ybGQ=", "name": "a.bin"}),
+        ("upload_group_file", {"group_id": GROUP, "file": "base64://eA==", "name": "b.txt", "folder": "/d-0001"}),
+        ("group_poke", {"group_id": GROUP, "user_id": BOB}),
+    ]
+
+
+async def test_group_file_failures_are_plain_errors() -> None:
+    qq, _ = _qq({"upload_group_file": _failed("upload failed")})
+    with pytest.raises(QQError) as caught:
+        await qq.upload_group_file(GROUP, data=b"x", name="big.bin")
+    assert type(caught.value) is QQError
+    qq, _ = _qq({"upload_group_file": {"file_id": ""}})
+    with pytest.raises(QQError):
+        await qq.upload_group_file(GROUP, data=b"x", name="big.bin")

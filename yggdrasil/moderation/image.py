@@ -1,4 +1,6 @@
-"""Image moderation for pictures the bot sends from its sandbox workspace (``show()`` in the ``py`` kernel).
+"""Image moderation for pictures the bot sends: the images a reply embeds (workspace ``show()``, chat and web
+pictures; rendered pages are not checked), a finished job's pictures and generated images
+(``agent.tools.images.screen_image``).
 
 There is no dedicated image guard model: the ``vision`` route classifies the image with a strict prompt.
 Fails closed: any error or unparsable answer counts as unsafe.

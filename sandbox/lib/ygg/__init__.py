@@ -1,7 +1,7 @@
 """Workspace helpers preloaded into the group's Python kernel (the `py` tool).
 
-- `show(obj, caption="")`: send a picture (file path, matplotlib figure, PIL image or PNG/JPEG bytes) to the
-  group after this cell.
+- `show(obj, caption="")`: hand a picture (file path, matplotlib figure, PIL image or PNG/JPEG bytes) to the bot
+  after this cell; it becomes an img#N handle the reply may embed.
 - `publish(port)` / `unpublish(port)`: open / close the public link of a port after this cell.
 - `start(cmd, cwd=..., name=None) -> Proc`: a background process kept with the kernel; log in
   /workspace/.ygg/procs/<name>.log.
@@ -133,7 +133,8 @@ def _image_bytes(obj: Any) -> tuple[bytes, str]:
 
 
 def show(obj: Any, caption: str = "") -> None:
-    """Send a picture to the group after this cell: a file path, matplotlib Figure, PIL Image or image bytes."""
+    """Hand a picture to the bot after this cell (it becomes an img#N handle the reply may embed): a file path,
+    matplotlib Figure, PIL Image or image bytes."""
     cell = _cell_dir("show")
     data, ext = _image_bytes(obj)
     k = 1 + sum(1 for name in os.listdir(cell) if name.startswith("show-"))

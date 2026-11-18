@@ -6,8 +6,10 @@ so segments stay dicts and ``qq.hooks`` sees each action under its Milky name. E
 (``event.reply``) and a leading or trailing @bot stripped from ``event.message``.
 """
 
+import base64
 import json
 import re
+import time
 from typing import Any, override
 
 import httpx
@@ -35,9 +37,14 @@ from nonebot.drivers import Request
 
 from yggdrasil.qq.client import QQ
 from yggdrasil.qq.model import (
+    Announcement,
     Dropped,
+    Essence,
     ForwardNode,
     Group,
+    GroupFile,
+    GroupFiles,
+    GroupFolder,
     Incoming,
     Login,
     Member,
@@ -54,6 +61,8 @@ from yggdrasil.qq.ntfile import file_id_of, sha1_of
 from yggdrasil.qq.segments import Segment
 
 HISTORY_PAGE = 30  # get_history_messages answers at most 30 messages
+ESSENCE_PAGE = 50  # essence messages asked for per get_group_essence_messages page
+UPLOAD_TIMEOUT = 300.0  # seconds an upload_group_file answer may take (the bytes go up to QQ before it answers)
 _ROLES: tuple[Role, ...] = ("owner", "admin", "member")
 # Yogurt answers an action whose QQ packet got no reply in time (10 s) with retcode -500 "Internal error: Timed out
 # waiting for 10000 ms": for a send, QQ may have posted the message anyway.
@@ -228,6 +237,39 @@ def message_of(raw: dict[str, Any]) -> Message:
     )
 
 
+def _muted_until(value: Any) -> int | None:
+    """A member's mute end (epoch seconds) while it lasts; None when not muted (missing, 0 or already over)."""
+    end = int(value or 0)
+    return end if end > time.time() else None
+
+
+def _essence(raw: dict[str, Any]) -> Essence:
+    """A Milky ``GroupEssenceMessage`` as ``Essence``."""
+    return Essence(
+        message_id=int(raw.get("message_seq") or 0),
+        user_id=int(raw.get("sender_id") or 0),
+        sender_name=str(raw.get("sender_name") or ""),
+        time=int(raw.get("message_time") or 0),
+        operator_id=int(raw.get("operator_id") or 0),
+        operator_time=int(raw.get("operation_time") or 0),
+        segments=incoming_segments(raw.get("segments") or []),
+    )
+
+
+def _group_file(raw: dict[str, Any]) -> GroupFile:
+    """A Milky ``GroupFileEntity`` as ``GroupFile`` (Milky gives no uploader name)."""
+    downloads = raw.get("downloaded_times")
+    return GroupFile(
+        file_id=str(raw.get("file_id") or ""),
+        name=str(raw.get("file_name") or ""),
+        size=int(raw.get("file_size") or 0),
+        uploaded_at=int(raw.get("uploaded_time") or 0),
+        uploader_id=int(raw.get("uploader_id") or 0),
+        downloads=None if downloads is None else int(downloads),
+        expires_at=int(raw.get("expire_time") or 0) or None,
+    )
+
+
 def _mentions(segments: list[Segment], user_id: int) -> bool:
     return any(s["type"] == "mention" and s["data"]["user_id"] == user_id for s in segments)
 
@@ -356,13 +398,76 @@ class MilkyQQ(QQ):
         params = {"group_id": group_id, "user_id": user_id}
         m = await self._data("get_group_member_info", params, "member", reply_timeout=reply_timeout)
         role = m.get("role")
+        level = m.get("level")
         return Member(
             group_id=group_id,
             user_id=user_id,
             nickname=str(m.get("nickname") or ""),
             card=str(m.get("card") or ""),
             role=role if role in _ROLES else "member",
+            title=str(m.get("title") or ""),
+            level=None if level is None else int(level),
+            joined_at=int(m.get("join_time") or 0) or None,
+            last_spoke_at=int(m.get("last_sent_time") or 0) or None,
+            muted_until=_muted_until(m.get("shut_up_end_time")),
         )
+
+    @override
+    async def announcements(self, group_id: int) -> list[Announcement]:
+        items = await self._data("get_group_announcements", {"group_id": group_id}, "announcements")
+        found = [
+            Announcement(
+                announcement_id=str(a.get("announcement_id") or ""),
+                user_id=int(a.get("user_id") or 0),
+                time=int(a.get("time") or 0),
+                text=str(a.get("content") or ""),
+                image_urls=(str(a["image_url"]),) if a.get("image_url") else (),
+            )
+            for a in items
+        ]
+        return sorted(found, key=lambda a: a.time, reverse=True)
+
+    @override
+    async def essence(self, group_id: int, *, limit: int = 20) -> list[Essence]:
+        found: list[Essence] = []
+        page_size = max(1, min(limit, ESSENCE_PAGE))
+        page = 0
+        while len(found) < limit:
+            params = {"group_id": group_id, "page_index": page, "page_size": page_size}
+            data = await self._dict("get_group_essence_messages", params)
+            messages = data.get("messages") or []
+            found += [_essence(m) for m in messages]
+            if data.get("is_end", True) or not messages:
+                break
+            page += 1
+        # Newest first by when they were set as essence; the page order is the protocol's.
+        found.sort(key=lambda e: (e.operator_time, e.time), reverse=True)
+        return found[: max(limit, 0)]
+
+    # --- group actions --------------------------------------------------------------------------------------------
+    @override
+    async def nudge(self, *, group_id: int, user_id: int) -> None:
+        await self._call("send_group_nudge", {"group_id": group_id, "user_id": user_id})
+
+    # --- group files ----------------------------------------------------------------------------------------------
+    @override
+    async def group_files(self, group_id: int, *, folder_id: str | None = None) -> GroupFiles:
+        data = await self._dict("get_group_files", {"group_id": group_id, "parent_folder_id": folder_id or "/"})
+        folders = [
+            GroupFolder(str(f.get("folder_id") or ""), str(f.get("folder_name") or ""), int(f.get("file_count") or 0))
+            for f in data.get("folders") or []
+        ]
+        return GroupFiles([_group_file(f) for f in data.get("files") or []], folders)
+
+    @override
+    async def upload_group_file(self, group_id: int, *, data: bytes, name: str, folder_id: str | None = None) -> str:
+        params = {
+            "group_id": group_id,
+            "parent_folder_id": folder_id or "/",
+            "file_uri": "base64://" + base64.b64encode(data).decode(),
+            "file_name": name,
+        }
+        return str(await self._data("upload_group_file", params, "file_id", reply_timeout=UPLOAD_TIMEOUT))
 
     # --- messages -------------------------------------------------------------------------------------------------
     async def _send(
@@ -426,7 +531,9 @@ class MilkyQQ(QQ):
 
     @override
     async def react(self, *, group_id: int, message_id: int, emoji: str) -> None:
-        params = {"group_id": group_id, "message_seq": message_id, "reaction": emoji, "reaction_type": "face"}
+        # QQ face ids are short; a longer id is a Unicode emoji's code point (127881 = 🎉), its own reaction type.
+        kind = "emoji" if len(emoji) > 3 else "face"
+        params = {"group_id": group_id, "message_seq": message_id, "reaction": emoji, "reaction_type": kind}
         await self._call("send_group_message_reaction", params)
 
     @override

@@ -57,7 +57,8 @@ async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> 
     否则返回文字描述和转写。"""
     h = await resolve_ref(ctx, handle, "image", "file")
     deps = ctx.deps
-    return await _show_image(ctx, handle, h, await load_image(deps.qq, deps.group_id, deps.user_id, h), question)
+    img = await load_image(deps.qq, deps.group_id, deps.user_id, h, made=deps.made_images)
+    return await _show_image(ctx, handle, h, img, question)
 
 
 async def _show_image(ctx: RunContext[Deps], ref: str, h: Handle, img: ModelImage, question: str) -> ToolResult:

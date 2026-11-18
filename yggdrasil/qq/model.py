@@ -91,6 +91,62 @@ class Member:
     card: str = ""
     role: Role = "member"
     is_robot: bool | None = None  # an official QQ bot account; None when the protocol can't tell
+    title: str = ""  # special title (专属头衔)
+    level: int | None = None  # group level
+    joined_at: int | None = None  # epoch seconds
+    last_spoke_at: int | None = None  # epoch seconds
+    muted_until: int | None = None  # epoch seconds while muted, else None
+
+
+@dataclass(frozen=True, slots=True)
+class Announcement:
+    """A group announcement (群公告)."""
+
+    announcement_id: str
+    user_id: int  # who published it
+    time: int  # epoch seconds
+    text: str
+    image_urls: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Essence:
+    """A group essence message (精华消息)."""
+
+    message_id: int  # the protocol's message id for it (Milky seq, OneBot msg_seq)
+    user_id: int
+    sender_name: str
+    time: int  # when it was sent, epoch seconds
+    operator_id: int  # who set it as essence
+    operator_time: int
+    segments: list[Segment]  # ``qq.segments`` schema
+
+
+@dataclass(frozen=True, slots=True)
+class GroupFile:
+    file_id: str
+    name: str
+    size: int  # bytes
+    uploaded_at: int  # epoch seconds
+    uploader_id: int
+    uploader_name: str = ""
+    downloads: int | None = None
+    expires_at: int | None = None  # epoch seconds for a temporary file, None when permanent
+
+
+@dataclass(frozen=True, slots=True)
+class GroupFolder:
+    folder_id: str
+    name: str
+    file_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class GroupFiles:
+    """One folder of a group's file area (the root when listed without a folder)."""
+
+    files: list[GroupFile]
+    folders: list[GroupFolder]
 
 
 @dataclass(slots=True)

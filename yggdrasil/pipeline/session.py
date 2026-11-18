@@ -1,18 +1,19 @@
 """Continuing an answer's conversation when a group member replies to it.
 
 Each delivered chat or tldr answer keeps its agent run (``InvocationSession``) for a while: the messages exactly as
-they went to the model, the instructions, the route and the tool names. A chat request that replies to such an
-answer runs again on that route with those instructions and tools and the messages as history, then adds only a user
-turn with what changed: the time, what the group said since, and the request
-(``agent.context.build_followup_context``). Everything before that new turn is byte for byte what the provider saw
-last time, so its prompt cache hits; this is why instructions never depend on the request. The run's handles and
-block nonce carry over, so ``fwd#1`` or ``<请求-ab12cd>`` in the old messages still mean what they meant.
+they went to the model, the instructions, the route, the tool names and the skills it could load. A chat request that
+replies to such an answer runs again on that route with those instructions, tools and skills and the messages as
+history (a skill the answer loaded stays loaded), then adds only a user turn with what changed: the time, what the
+group said since, and the request (``agent.context.build_followup_context``). Everything before that new turn is
+byte for byte what the provider saw last time, so its prompt cache hits; this is why instructions never depend on
+the request. The run's handles and block nonce carry over, so ``fwd#1`` or ``<请求-ab12cd>`` in the old messages
+still mean what they meant.
 """
 
 import json
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -39,6 +40,7 @@ class Setup:
     instructions: str
     tools: list[str]  # ALL_TOOLS names, in order
     sandbox: bool  # had the workspace suite
+    skills: list[str] = field(default_factory=list)  # agent.skills names, in order
 
 
 @dataclass(slots=True)
@@ -89,6 +91,7 @@ async def save(
                     instructions=setup.instructions,
                     tools=setup.tools,
                     sandbox=setup.sandbox,
+                    skills=setup.skills,
                     messages=payload,
                     handles=dump_handles(handles),
                     nonce=nonce,
@@ -123,7 +126,7 @@ async def load(group_id: int, answer_qq_id: int, max_age: timedelta) -> Session 
         return None
     return Session(
         row.invocation_id,
-        Setup(row.handler, row.instructions, list(row.tools), row.sandbox),
+        Setup(row.handler, row.instructions, list(row.tools), row.sandbox, list(row.skills)),
         messages,
         load_handles(row.handles),
         row.nonce,

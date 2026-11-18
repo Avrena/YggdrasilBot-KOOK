@@ -47,7 +47,7 @@ class Invocation(Base):
 
 class InvocationSession(Base):
     """The agent run of a delivered answer, kept a short while so a reply to that answer continues it
-    (``pipeline.session``): how the agent was built (route, instructions, tool names, workspace suite), the
+    (``pipeline.session``): how the agent was built (route, instructions, tool names, workspace suite, skills), the
     pydantic-ai messages exactly as sent, the run's handles, its block nonce and the newest chat message it had seen."""
 
     __tablename__ = "invocation_sessions"
@@ -58,6 +58,7 @@ class InvocationSession(Base):
     instructions: Mapped[str] = mapped_column(Text)
     tools: Mapped[list[Any]]
     sandbox: Mapped[bool]
+    skills: Mapped[list[Any]] = mapped_column(default=list, server_default="[]")  # agent.skills names
     messages: Mapped[list[Any]]
     handles: Mapped[dict[str, Any]]
     nonce: Mapped[str] = mapped_column(Text)

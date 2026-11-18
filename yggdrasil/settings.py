@@ -23,10 +23,14 @@ class PersonaSettings(BaseModel):
 
 class InteractionSettings(BaseModel):
     # Status reactions on the trigger message; added only, never removed (frequent removals look like
-    # automation to QQ's risk control). Empty disables one.
-    received_emoji: str = Field(default="424", description="收到请求后立刻贴的表情")
-    slow_tool_emoji: str = Field(default="314", description="第一次调用耗时工具（见 tools.slow_tools）时贴的表情")
-    done_emoji: str = Field(default="127881", description="回复完成时贴的表情（🎉）")
+    # automation to QQ's risk control). QQ shows the requester a gray tip for each one, so a request that gets
+    # its answer quickly gets none, and a sent answer is its own "done". Empty disables one.
+    received_emoji: str = Field(
+        default="424", description="请求进来 received_delay_s 秒后回答还没发出时贴的表情（告诉群友在处理了）"
+    )
+    received_delay_s: float = Field(
+        default=4, ge=0, le=60, description="这么多秒内回答已经发出（或已经有结果表情）就不贴 received_emoji"
+    )
     silent_emoji: str = Field(default="479", description="bot 决定不回复时贴的表情")
     review_emoji: str = Field(default="10068", description="输入被拦截、输出进入审核或被拦截时贴的表情（❔）")
     action_emoji: str = Field(default="478", description="按指令完成了操作（撤回、改配置等）且不需要回复时贴的表情")
@@ -152,6 +156,12 @@ class ToolSettings(BaseModel):
         "search_x 搜 X 上的动态（优先用搜索源里的 Grok，没有或失败时用 X API，都按条计费）；"
         "generate_image 画图（需要配置 image 路由，按张计费，默认不开）",
     )
+    skills: list[str] = Field(
+        default_factory=list,
+        description="按需加载的技能（只在群聊 chat 生效）：平时只在提示词里占一行目录，模型需要时才加载它的工具和说明。"
+        "qq 是 QQ 群的信息和操作：成员资料、群和成员头像、群公告和精华消息、群文件（列出、读取、把工作区里的文件上传到"
+        "群文件）、戳一戳请求者",
+    )
     slow_tools: list[str] = Field(
         default_factory=lambda: [
             "read_url",
@@ -169,8 +179,9 @@ class ToolSettings(BaseModel):
             "py",
             "sandbox_put",
             "reset_workspace",
+            "upload_file",
         ],
-        description="耗时工具：第一次调用时贴 interaction.slow_tool_emoji",
+        description="耗时工具：回复末尾的元数据里显示它们的累计耗时",
     )
     read_url_max_chars: int = 16000
     browser_fallback: bool = True

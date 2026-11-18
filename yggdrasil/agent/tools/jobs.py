@@ -60,8 +60,6 @@ async def background(ctx: RunContext[Deps], script: str, title: str) -> ToolResu
         )
     except SandboxError as e:
         raise ToolError(str(e)) from e
-    if ctx.deps.on_slow_tool is not None:
-        await ctx.deps.on_slow_tool()
     return _started(job)
 
 
@@ -93,8 +91,6 @@ async def delegate(
         job = await runner().start_agent(_requester(ctx.deps), session.backend, workspace=name, task=task, title=title)
     except SandboxError as e:
         raise ToolError("\n".join([*notes, str(e)])) from e
-    if ctx.deps.on_slow_tool is not None:
-        await ctx.deps.on_slow_tool()
     return "\n".join([*notes, _started(job)])
 
 

@@ -26,11 +26,9 @@ type ToolResult = str | ToolReturn
 
 @asynccontextmanager
 async def accounting(deps: Deps, name: str) -> AsyncIterator[None]:
-    """One call of tool ``name``: its count, the run's slow-tool reaction, its wall time and the tool metrics. The
-    call failed when the body raises; the exception goes on, for the caller to turn into text or not."""
+    """One call of tool ``name``: its count, its wall time and the tool metrics. The call failed when the body
+    raises; the exception goes on, for the caller to turn into text or not."""
     deps.tool_counts[name] += 1
-    if deps.on_slow_tool is not None and name in deps.settings.tools.slow_tools:
-        await deps.on_slow_tool()
     started = time.perf_counter()
     outcome = "ok"
     try:
