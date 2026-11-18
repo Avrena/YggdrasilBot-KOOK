@@ -1043,6 +1043,109 @@
         }
       }
     },
+    "/qq/milky": {
+      "get": {
+        "tags": [
+          "qq"
+        ],
+        "summary": "Get Qq Milky",
+        "operationId": "get_qq_milky",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilkyOut"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "qq"
+        ],
+        "summary": "Put Qq Milky",
+        "description": "Set the URL and, when given, the token; the bot reconnects.",
+        "operationId": "put_qq_milky",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MilkyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilkyOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "qq"
+        ],
+        "summary": "Delete Qq Milky",
+        "description": "Forget URL and token; the bot disconnects.",
+        "operationId": "delete_qq_milky",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilkyOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/qq/milky/token": {
+      "delete": {
+        "tags": [
+          "qq"
+        ],
+        "summary": "Delete Qq Milky Token",
+        "description": "Forget the token; the bot reconnects without one.",
+        "operationId": "delete_qq_milky_token",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilkyOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/groups": {
       "get": {
         "tags": [
@@ -6150,6 +6253,127 @@
         ],
         "title": "Me"
       },
+      "MilkyIn": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Url"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "MilkyIn"
+      },
+      "MilkyLinkOut": {
+        "properties": {
+          "managed": {
+            "type": "boolean",
+            "title": "Managed"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "self_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Self Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "type": "object",
+        "required": [
+          "managed",
+          "url",
+          "connected",
+          "self_id",
+          "error",
+          "since"
+        ],
+        "title": "MilkyLinkOut"
+      },
+      "MilkyOut": {
+        "properties": {
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "token_set": {
+            "type": "boolean",
+            "title": "Token Set"
+          },
+          "link": {
+            "$ref": "#/components/schemas/MilkyLinkOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "token_set",
+          "link"
+        ],
+        "title": "MilkyOut"
+      },
       "ModelCaps": {
         "properties": {
           "catalog_id": {
@@ -6284,11 +6508,10 @@
             "type": "string",
             "enum": [
               "done",
-              "reply",
-              "handoff"
+              "reply"
             ],
             "title": "Mode",
-            "description": "done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）；handoff：不是管理操作，交给普通答疑（只在群聊里用）"
+            "description": "done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）"
           },
           "text": {
             "anyOf": [
@@ -7319,7 +7542,7 @@
           "user_id"
         ],
         "title": "QQMessage",
-        "description": "A QQ message as it was when the run used it. ``segments`` are raw OneBot segments; the API adds ``src`` to\nimage segment data when it can serve the picture."
+        "description": "A QQ message as it was when the run used it. ``segments`` are ``qq.segments`` segments; the API adds ``src``\nto image and market face data when it can serve the picture, and ``name`` to faces."
       },
       "QQMessagesDisplay": {
         "properties": {

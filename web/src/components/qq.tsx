@@ -23,22 +23,23 @@ import { cn } from "@/lib/utils";
 
 /** QQ number -> group card. */
 export type Names = Record<string, string>;
-/** A raw OneBot segment. */
+/** A stored QQ segment in the bot's own schema (`yggdrasil/qq/segments.py`, Milky-named). */
 export type Segment = { type: string; data: Record<string, unknown> };
 
 type Lookup = (qqMessageId: number) => QqMessage | undefined;
 type ForwardNode = { userId: number; name: string; sentAt?: string | null; segments: Segment[] };
 
-const RPS: Record<string, string> = { "1": "石头", "2": "剪刀", "3": "布" };
 /** A message alone in its row without a bubble, like QQ shows cards, pictures and stickers. */
-const BARE: Record<string, true> = { forward: true, json: true, mface: true, image: true };
+const BARE: Record<string, true> = { forward: true, light_app: true, market_face: true, image: true };
+/** QQ's generic forward titles: the card shows them, but they say nothing. */
+const GENERIC_FORWARD_TITLES: Record<string, true> = { 群聊的聊天记录: true, 聊天记录: true };
 const DIVIDER_GAP_MS = 5 * 60_000;
 
 function str(v: unknown): string {
   return v == null ? "" : String(v);
 }
 
-/** Raw segments (or a CQ string) as well-formed segments; malformed entries are dropped. */
+/** Segments (or a plain string) as well-formed segments; malformed entries are dropped. */
 function toSegments(raw: unknown): Segment[] {
   if (typeof raw === "string") return raw ? [{ type: "text", data: { text: raw } }] : [];
   if (!Array.isArray(raw)) return [];
@@ -55,16 +56,13 @@ function stripBrackets(v: unknown): string {
   return str(v).replace(/^\[|\]$/g, "");
 }
 
-function atName(data: Record<string, unknown>, names: Names): string {
-  const qq = str(data.qq);
-  if (qq === "all") return "全体成员";
-  return names[qq] || str(data.name).replace(/^@/, "") || qq;
+function mentionName(data: Record<string, unknown>, names: Names): string {
+  const uid = str(data.user_id);
+  return names[uid] || str(data.name).replace(/^@/, "") || uid;
 }
 
-/** Custom stickers arrive as image segments with `sub_type` 1 or a summary such as `[动画表情]`. */
-function isSticker(data: Record<string, unknown>): boolean {
-  const summary = stripBrackets(data.summary);
-  return str(data.sub_type) === "1" || (summary !== "" && summary !== "图片");
+function faceText(data: Record<string, unknown>): string {
+  return `[${str(data.name) || `表情${str(data.face_id)}`}]`;
 }
 
 function clock(at: string | null | undefined): string | null {
@@ -94,19 +92,25 @@ function humanSize(v: unknown): string {
   return `${i === 0 ? n : +n.toFixed(1)} ${units[i]}`;
 }
 
-/** NapCat / OneBot time: unix seconds (or ms), or an ISO string. */
+function duration(v: unknown): string {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return n < 60 ? `${n}″` : `${Math.floor(n / 60)}′${n % 60}″`;
+}
+
+/** Forward node time: unix seconds. */
 function nodeTime(v: unknown): string | null {
-  const n = typeof v === "number" ? v : /^\d+$/.test(str(v)) ? Number(v) : Number.NaN;
-  if (Number.isNaN(n)) return typeof v === "string" && v ? v : null;
-  const d = new Date(n < 1e12 ? n * 1000 : n);
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const d = new Date(n * 1000);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-type Card = { title: string; desc: string; url: string | null; preview: string | null; tag: string; forward: boolean };
+type Card = { title: string; desc: string; url: string | null; preview: string | null; tag: string };
 
-/** A json card: title from `meta.*.title|desc` or `prompt`, link from `meta.*.qqdocurl|jumpUrl|url`. */
+/** A light app card: title from `meta.*.title|desc` or `prompt`, link from `meta.*.qqdocurl|jumpUrl|url`. */
 function parseCard(raw: unknown): Card {
-  const card: Card = { title: "", desc: "", url: null, preview: null, tag: "", forward: false };
+  const card: Card = { title: "", desc: "", url: null, preview: null, tag: "" };
   let doc: unknown = null;
   try {
     doc = JSON.parse(str(raw));
@@ -114,8 +118,6 @@ function parseCard(raw: unknown): Card {
     doc = null;
   }
   if (isPlainObject(doc)) {
-    // Merged forwards the bot itself sent come back as a multimsg card without their content.
-    card.forward = doc.app === "com.tencent.multimsg";
     card.title = str(doc.prompt);
     for (const item of isPlainObject(doc.meta) ? Object.values(doc.meta) : []) {
       if (!isPlainObject(item)) continue;
@@ -131,20 +133,23 @@ function parseCard(raw: unknown): Card {
   return card;
 }
 
-/** Forward content in NapCat (`{sender, time, message}`) or OneBot node (`{type: "node", data}`) form. */
-function forwardNodes(content: unknown): ForwardNode[] | null {
-  if (!Array.isArray(content)) return null;
-  return content.filter(isPlainObject).map((node) => {
-    const d = node.type === "node" && isPlainObject(node.data) ? node.data : node;
-    const sender = isPlainObject(d.sender) ? d.sender : d;
-    const userId = Number(sender.user_id) || 0;
+/** The nodes the bot's own forwards keep with their record (`forward.nodes`); null for other forwards. */
+function forwardNodes(nodes: unknown): ForwardNode[] | null {
+  if (!Array.isArray(nodes)) return null;
+  return nodes.filter(isPlainObject).map((node) => {
+    const userId = Number(node.user_id) || 0;
     return {
       userId,
-      name: str(sender.card) || str(sender.nickname) || String(userId),
-      sentAt: nodeTime(d.time),
-      segments: toSegments(d.message ?? d.content),
+      name: str(node.name) || String(userId),
+      sentAt: nodeTime(node.time),
+      segments: toSegments(node.segments),
     };
   });
+}
+
+function forwardTitle(data: Record<string, unknown>): string | undefined {
+  const title = str(data.title).trim();
+  return title && GENERIC_FORWARD_TITLES[title] !== true ? title : undefined;
 }
 
 /** One-line text of a segment, QQ-preview style (forward previews, reply quotes, chip labels). */
@@ -152,38 +157,30 @@ function segmentText({ type, data }: Segment, names: Names): string {
   switch (type) {
     case "text":
       return str(data.text);
-    case "at":
-      return `@${atName(data, names)} `;
+    case "mention":
+      return `@${mentionName(data, names)} `;
+    case "mention_all":
+      return "@全体成员 ";
     case "reply":
       return "";
-    case "face": {
-      const text = isPlainObject(data.raw) ? str(data.raw.faceText).replace(/^\//, "") : "";
-      return `[${text || `表情${str(data.id)}`}]`;
-    }
-    case "mface":
+    case "face":
+      return faceText(data);
+    case "market_face":
       return `[${stripBrackets(data.summary) || "表情包"}]`;
     case "image":
-      return isSticker(data) ? `[${stripBrackets(data.summary) || "动画表情"}]` : "[图片]";
+      return data.sticker === true ? `[${stripBrackets(data.summary) || "动画表情"}]` : "[图片]";
     case "record":
       return "[语音]";
     case "video":
       return "[视频]";
     case "file":
-      return `[文件] ${str(data.file) || str(data.name)}`;
+      return `[文件] ${str(data.file_name)}`;
     case "forward":
       return "[聊天记录]";
-    case "json": {
-      const card = parseCard(data.data);
-      return card.forward ? "[聊天记录]" : `[卡片] ${card.title}`;
-    }
+    case "light_app":
+      return `[卡片] ${parseCard(data.json_payload).title}`;
     case "xml":
       return "[卡片]";
-    case "poke":
-      return "[戳一戳]";
-    case "dice":
-      return `🎲 ${str(data.result)}`;
-    case "rps":
-      return `[猜拳] ${RPS[str(data.result)] ?? str(data.result)}`;
     case "markdown":
       return str(data.content);
     default:
@@ -291,7 +288,6 @@ function ImageSegment({ data, sticker, alt }: { data: Record<string, unknown>; s
 
 function CardSegment({ raw }: { raw: unknown }) {
   const card = parseCard(raw);
-  if (card.forward) return <Chip icon={MessagesSquareIcon}>[合并转发]</Chip>;
   let host = "";
   try {
     host = card.url ? new URL(card.url).hostname : "";
@@ -330,50 +326,70 @@ function CardSegment({ raw }: { raw: unknown }) {
   );
 }
 
+/** A forward we only know QQ's description of (title, preview lines, summary): a card that doesn't open. */
+function ForwardSummary({ data }: { data: Record<string, unknown> }) {
+  const preview = Array.isArray(data.preview) ? data.preview.map(str).filter(Boolean).slice(0, 4) : [];
+  return (
+    <span className="my-1 block w-72 max-w-full rounded-lg border bg-card p-3 text-left text-sm text-card-foreground">
+      <span className="block truncate font-medium">{str(data.title).trim() || "群聊的聊天记录"}</span>
+      {preview.length > 0 && (
+        <span className="mt-1.5 grid gap-0.5 text-xs text-muted-foreground">
+          {preview.map((line, i) => (
+            <span key={i} className="truncate">
+              {line}
+            </span>
+          ))}
+        </span>
+      )}
+      <span className="mt-2 flex items-center gap-1 border-t pt-2 text-xs text-muted-foreground">
+        <MessagesSquareIcon className="size-3.5" aria-hidden />
+        {str(data.summary) || "聊天记录"}
+      </span>
+    </span>
+  );
+}
+
 function SegmentView({ segment, names, lookup }: { segment: Segment; names: Names; lookup?: Lookup }) {
   const { type, data } = segment;
   switch (type) {
     case "text":
       return <span className="whitespace-pre-wrap">{str(data.text)}</span>;
-    case "at":
+    case "mention":
       return (
-        <Hint content={str(data.qq) === "all" ? null : str(data.qq)}>
-          <span className="mr-0.5 font-medium text-primary">@{atName(data, names)}</span>
+        <Hint content={str(data.user_id) || null}>
+          <span className="mr-0.5 font-medium text-primary">@{mentionName(data, names)}</span>
         </Hint>
       );
+    case "mention_all":
+      return <span className="mr-0.5 font-medium text-primary">@全体成员</span>;
     case "reply":
-      return <ReplyQuote id={data.id} names={names} lookup={lookup} />;
+      return <ReplyQuote id={data.message_id} names={names} lookup={lookup} />;
     case "image":
-    case "mface":
+    case "market_face":
       return (
         <ImageSegment
           data={data}
-          sticker={type === "mface" || isSticker(data)}
+          sticker={type === "market_face" || data.sticker === true}
           alt={segmentText(segment, names)}
         />
       );
     case "record":
-      return <MediaChip icon={MicIcon} parts={["语音", humanSize(data.file_size)]} />;
+      return <MediaChip icon={MicIcon} parts={["语音", duration(data.duration)]} />;
     case "video":
-      return <MediaChip icon={FilmIcon} parts={["视频", str(data.file), humanSize(data.file_size)]} />;
+      return <MediaChip icon={FilmIcon} parts={["视频", duration(data.duration)]} />;
     case "file":
-      return (
-        <MediaChip
-          icon={FileIcon}
-          parts={[str(data.file) || str(data.name) || "未命名文件", humanSize(data.file_size)]}
-        />
-      );
+      return <MediaChip icon={FileIcon} parts={[str(data.file_name) || "未命名文件", humanSize(data.file_size)]} />;
     case "forward": {
-      const nodes = forwardNodes(data.content);
-      if (!nodes) return <Chip icon={MessagesSquareIcon}>[合并转发]</Chip>;
+      const nodes = forwardNodes(data.nodes);
+      if (!nodes) return <ForwardSummary data={data} />;
       return (
         <span className="my-1 block">
-          <QQForwardCard nodes={nodes} names={names} title={str(data.title) || undefined} />
+          <QQForwardCard nodes={nodes} names={names} title={forwardTitle(data)} />
         </span>
       );
     }
-    case "json":
-      return <CardSegment raw={data.data} />;
+    case "light_app":
+      return <CardSegment raw={data.json_payload} />;
     case "markdown":
       return <pre className="my-1 font-mono text-xs whitespace-pre-wrap">{str(data.content)}</pre>;
     default:
@@ -647,5 +663,6 @@ export function ReplyView({
       </ChatRow>
     );
   }
-  return <Note>{reply.mode === "handoff" ? "不是管理操作，交给普通答疑" : "已完成操作"}</Note>;
+  // Ops runs recorded before ops became an explicit command could hand a message back ("handoff").
+  return <Note>{(reply.mode as string) === "handoff" ? "不是管理操作，交给普通答疑" : "已完成操作"}</Note>;
 }

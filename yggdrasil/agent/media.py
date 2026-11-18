@@ -1,7 +1,6 @@
 """Downloading and preparing message attachments (images, files) for the model."""
 
 import asyncio
-import base64
 import io
 import itertools
 import math
@@ -14,7 +13,8 @@ from pydantic_ai import BinaryContent
 
 from yggdrasil.agent.deps import Handle
 from yggdrasil.core.log import LOGGER
-from yggdrasil.napcat.api import NapCatAPI
+from yggdrasil.qq.client import QQ
+from yggdrasil.qq.model import QQError
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.ssrf import guarded_client
 from yggdrasil.transcript.store import blob as stored_blob
@@ -49,44 +49,36 @@ async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
     return b"".join(chunks)
 
 
-async def media_bytes(api: NapCatAPI, group_id: int | None, h: Handle, max_bytes: int) -> tuple[bytes, str]:
-    """Bytes + filename of an image/file handle: a picture the bot sent itself from our blob store, else via the URL
-    in the segment or NapCat's get_file.
+async def media_bytes(qq: QQ, group_id: int | None, user_id: int, h: Handle, max_bytes: int) -> tuple[bytes, str]:
+    """Bytes + file name ("file" when there is none) of an image/file handle: a picture the bot sent itself from our
+    blob store, else the segment's ``url``. A QQ attachment without a url (files never carry one), or whose url has
+    expired (QQ signs media links with an rkey that lasts hours), gets a working link from ``QQ.media_url`` once.
 
     Handles registered by web tools carry a ``source`` (``x``, ...): their URLs come from third-party content and
-    are fetched through the SSRF guard. QQ attachment URLs come from the protocol side and are fetched directly.
+    are fetched through the SSRF guard, never refreshed. QQ attachment URLs come from the protocol side and are
+    fetched directly.
     """
     data = h.data
-    name = str(data.get("file") or data.get("name") or "file")
+    name = str(data.get("file_name") or "file")
     if (sha := data.get("blob")) and (kept := await stored_blob(str(sha))) is not None:
         return kept.data, name
-    url = data.get("url")
-    if h.kind == "file" and group_id and data.get("file_id"):
+    url = str(data.get("url") or "")
+    if data.get("source"):
+        return await download(url, max_bytes, guarded=True), name
+    if url:
         try:
-            got = await api.get_group_file_url(group_id=group_id, file_id=str(data["file_id"]), busid=data.get("busid"))
-            url = got.url
-        except Exception:
-            url = None
-    if not url and data.get("file_id"):
-        info = await api.get_file(file_id=str(data["file_id"]))
-        if info.base64:
-            return base64.b64decode(info.base64), info.file_name or name
-        url = info.url
-        name = info.file_name or name
-    if not url:
-        raise ToolError("拿不到文件下载地址")
+            return await download(url, max_bytes), name
+        except httpx.HTTPStatusError as e:
+            if not 400 <= e.response.status_code < 500:
+                raise
+    what = "图片" if h.kind == "image" else "文件"
+    gone = f"{what}链接已过期，也没能重新获取（可能太久了）" if url else f"拿不到{what}的下载地址"
     try:
-        return await download(url, max_bytes, guarded=bool(data.get("source"))), name
-    except httpx.HTTPStatusError as e:
-        # QQ image URLs carry an rkey that expires within hours; the protocol side re-signs it by file name.
-        if h.kind != "image" or not data.get("file") or not 400 <= e.response.status_code < 500:
-            raise
-    try:
-        fresh = (await api.get_image(file=str(data["file"]))).url
-    except Exception as e:
-        raise ToolError("图片链接已过期，也没能重新获取（可能太久了）") from e
+        fresh = await qq.media_url({"type": h.kind, "data": data}, group_id=group_id, user_id=user_id)
+    except QQError as e:
+        raise ToolError(gone) from e
     if not fresh or fresh == url:
-        raise ToolError("图片链接已过期，也没能重新获取（可能太久了）")
+        raise ToolError(gone)
     return await download(fresh, max_bytes), name
 
 
@@ -105,7 +97,7 @@ def looks_like_image(h: Handle) -> bool:
     """An image segment, or a file named like a picture (photos are often sent as group files to keep quality)."""
     if h.kind == "image":
         return True
-    name = str(h.data.get("name") or h.data.get("file") or "")
+    name = str(h.data.get("file_name") or "")
     return h.kind == "file" and PurePath(name).suffix.lower() in _IMAGE_SUFFIXES
 
 
@@ -142,7 +134,7 @@ _SEND_MAX_BYTES = 600 * 1024
 
 def compact_image(blob: bytes) -> bytes:
     """A large opaque picture as JPEG before it is sent: QQ recompresses it anyway, and a 1 MB PNG uploads slowly
-    enough to time out the OneBot call. Transparent and animated images stay as they are."""
+    enough to time out the send. Transparent and animated images stay as they are."""
     if len(blob) <= _SEND_MAX_BYTES:
         return blob
     try:
@@ -280,19 +272,21 @@ def _tile(frames: list[Image.Image], times: tuple[float, ...]) -> bytes:
     return out.getvalue()
 
 
-async def load_image(api: NapCatAPI, group_id: int | None, h: Handle) -> ModelImage:
+async def load_image(qq: QQ, group_id: int | None, user_id: int, h: Handle) -> ModelImage:
     """An image handle, or a file handle whose content is a picture, ready for a vision model."""
-    blob, name = await media_bytes(api, group_id, h, IMAGE_MAX_DOWNLOAD)
+    blob, name = await media_bytes(qq, group_id, user_id, h, IMAGE_MAX_DOWNLOAD)
     if not is_image(blob):
         # Bytes Pillow can't place (SVG, HEIC, a web page) would reach a vision model labelled as JPEG and fail the
         # whole run with a provider 400.
-        raise ToolError(f"{name} 不是图片，用 read_file 读" if h.kind == "file" else f"{name} 不是能识别的图片格式")
+        raise ToolError(f"{name} 不是图片，用 read_file 读" if h.kind == "file" else f"{h.key} 不是能识别的图片格式")
     return await asyncio.to_thread(model_image, blob)
 
 
-async def load_images(api: NapCatAPI, group_id: int | None, handles: list[Handle]) -> list[tuple[str, ModelImage]]:
+async def load_images(
+    qq: QQ, group_id: int | None, user_id: int, handles: list[Handle]
+) -> list[tuple[str, ModelImage]]:
     """(handle key, model-ready image) for each image that downloads; failures are left to view_image."""
-    results = await asyncio.gather(*(load_image(api, group_id, h) for h in handles), return_exceptions=True)
+    results = await asyncio.gather(*(load_image(qq, group_id, user_id, h) for h in handles), return_exceptions=True)
     loaded = []
     for h, result in zip(handles, results, strict=True):
         if isinstance(result, BaseException):

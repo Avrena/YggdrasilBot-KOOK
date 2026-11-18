@@ -1,4 +1,4 @@
-"""Assemble the user prompt for chat / tldr runs from the event and memory."""
+"""Assemble the user prompt for chat / tldr runs from the incoming message and memory."""
 
 import secrets
 import time
@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import ahocorasick
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent
 from sqlalchemy import select
 
 from yggdrasil.agent.deps import Handles
@@ -18,6 +17,7 @@ from yggdrasil.ingest.normalize import URL_RE, normalize
 from yggdrasil.ingest.writer import WRITER
 from yggdrasil.people import People, resolve
 from yggdrasil.prompts import render
+from yggdrasil.qq.model import Incoming
 from yggdrasil.settings import Settings
 from yggdrasil.transcript.schema import QQContextDisplay, QQMessage
 from yggdrasil.triggers.index import Resolved
@@ -82,27 +82,19 @@ class _Blocks:
         self.parts.append(text)
 
 
-def _segments(message: Any) -> list[dict[str, Any]]:
-    return [{"type": seg.type, "data": dict(seg.data)} for seg in message]
-
-
-def _sender_name(sender: Any) -> str:
-    return (getattr(sender, "card", None) or getattr(sender, "nickname", None) or "").strip()
-
-
 def _ts(dt: datetime | None) -> str:
     return dt.astimezone().strftime("%m-%d %H:%M") if dt else ""
 
 
-def trigger_message(event: MessageEvent, self_id: int) -> TargetMessage:
+def trigger_message(incoming: Incoming, self_id: int) -> TargetMessage:
     return TargetMessage(
-        qq_message_id=event.message_id,
-        user_id=event.user_id,
-        sender_name=_sender_name(event.sender),
-        text=normalize(_segments(event.original_message)).text,
-        segments=_segments(event.original_message),
-        is_self=event.user_id == self_id,
-        sent_at=datetime.fromtimestamp(event.time).astimezone(),
+        qq_message_id=incoming.message_id,
+        user_id=incoming.user_id,
+        sender_name=incoming.sender.name.strip(),
+        text=normalize(incoming.segments).text,
+        segments=incoming.segments,
+        is_self=incoming.user_id == self_id,
+        sent_at=datetime.fromtimestamp(incoming.time).astimezone(),
     )
 
 
@@ -122,24 +114,24 @@ async def _own_segments(group_id: int, qq_message_id: int) -> list[dict[str, Any
         )
 
 
-async def target_message(event: MessageEvent, resolved: Resolved, self_id: int) -> TargetMessage:
-    if resolved.target in ("quoted_or_self", "quoted") and event.reply is not None:
-        r = event.reply
-        segs = _segments(r.message)
+async def target_message(incoming: Incoming, resolved: Resolved, self_id: int) -> TargetMessage:
+    if resolved.target in ("quoted_or_self", "quoted") and incoming.reply is not None:
+        r = incoming.reply
+        segs = r.segments
         is_self = r.sender.user_id == self_id
-        if is_self and isinstance(event, GroupMessageEvent):
+        if is_self and incoming.group_id is not None:
             await WRITER.flush()
-            segs = await _own_segments(event.group_id, r.message_id) or segs
+            segs = await _own_segments(incoming.group_id, r.message_id) or segs
         return TargetMessage(
             qq_message_id=r.message_id,
-            user_id=r.sender.user_id or 0,
-            sender_name=_sender_name(r.sender),
+            user_id=r.sender.user_id,
+            sender_name=r.sender.name.strip(),
             text=normalize(segs).text,
             segments=segs,
             is_self=is_self,
             sent_at=datetime.fromtimestamp(r.time).astimezone(),
         )
-    return trigger_message(event, self_id)
+    return trigger_message(incoming, self_id)
 
 
 # --- glossary matching -------------------------------------------------------
@@ -255,7 +247,7 @@ async def _reply_chain(group_id: int, reply_to: int | None) -> list["MessageView
 
 
 async def build_context(
-    event: MessageEvent,
+    incoming: Incoming,
     resolved: Resolved,
     settings: Settings,
     *,
@@ -270,9 +262,9 @@ async def build_context(
     from yggdrasil.memory import search
 
     handles = Handles()
-    trigger = trigger_message(event, self_id)
-    target = await target_message(event, resolved, self_id)
-    group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
+    trigger = trigger_message(incoming, self_id)
+    target = await target_message(incoming, resolved, self_id)
+    group_id = incoming.group_id
     cfg = settings.context
     blocks = _Blocks()
     # tldr summarizes the target itself: no group chat, profiles or topics up front (they slant it toward
@@ -458,7 +450,7 @@ async def _add_workspace_listing(blocks: _Blocks, group_id: int) -> None:
 
 
 async def build_followup_context(
-    event: GroupMessageEvent,
+    incoming: Incoming,
     settings: Settings,
     *,
     self_id: int,
@@ -476,14 +468,17 @@ async def build_followup_context(
     """The prompt of a reply that continues the conversation of the bot answer it replies to (``pipeline.session``):
     what changed since that run (the time ``now``, what the group said after it), then the request. ``handles`` and
     ``nonce`` are that run's, so the handles and block tags in its messages keep working; the chat is what came after
-    ``#seen_message_id`` (sent since ``since``). ``recall``: whether the speaker may have the answer recalled.
+    ``#seen_message_id`` (sent since ``since``). ``recall``: whether the speaker may have the answer recalled. Group
+    messages only.
     """
     from yggdrasil.memory import search
 
-    group_id = event.group_id
+    group_id = incoming.group_id
+    if group_id is None:
+        raise ValueError("a follow-up continues an answer in a group")
     cfg = settings.context
     blocks = _Blocks(nonce)
-    trigger = trigger_message(event, self_id)
+    trigger = trigger_message(incoming, self_id)
     await WRITER.flush()
     try:
         newer = await search.messages_after(group_id, seen_message_id, since)

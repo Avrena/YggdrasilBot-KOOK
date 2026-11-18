@@ -1,6 +1,6 @@
-"""Work started for incoming OneBot events (invocations, ops runs, event handling).
+"""Work started for incoming QQ events (invocations, ops runs, event handling).
 
-A rolling update waits for it (``drain``) before the old pod drops the OneBot connection, so replies
+A rolling update waits for it (``drain``) before the old pod drops the QQ connection, so replies
 in progress still go out over that connection.
 """
 

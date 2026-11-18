@@ -1,25 +1,25 @@
-"""Who may make the bot act: decided in code from the event, never by the model."""
+"""Who may make the bot act: decided in code from the message, never by the model."""
 
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent
 from sqlalchemy import select
 
 from yggdrasil.db.models import Invocation
 from yggdrasil.db.session import get_session
+from yggdrasil.qq.model import Incoming
 
 Role = Literal["member", "admin", "owner", "superuser"]
-# QQ message ids are 32-bit hashes that repeat; only trust recent matches.
+# OneBot message ids are 32-bit hashes that repeat; only trust recent matches.
 _RECENT = timedelta(days=7)
 
 
-def speaker_role(event: MessageEvent, superusers: Collection[int]) -> Role:
-    if event.user_id in superusers:
+def speaker_role(incoming: Incoming, superusers: Collection[int]) -> Role:
+    if incoming.user_id in superusers:
         return "superuser"
-    if isinstance(event, GroupMessageEvent) and event.sender.role in ("owner", "admin"):
-        return event.sender.role
+    if incoming.group_id is not None and incoming.sender.role in ("owner", "admin"):
+        return incoming.sender.role
     return "member"
 
 

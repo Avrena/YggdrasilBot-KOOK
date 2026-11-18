@@ -81,7 +81,7 @@ async def reset() -> None:
         await s.execute(delete(Topic).where(Topic.group_id.in_(groups)))  # topic_messages cascade
         for model in (DailyDigest, GlossaryTerm, GlossaryCandidate, UserProfile, UserProfileFact):
             await s.execute(delete(model).where(model.group_id.in_(groups)))
-        refs = [m.md5 for m in MEDIA.values()] + [broken_ref(), f"230001:{mface_segment()['data']['emoji_id']}"]
+        refs = [m.sha1 for m in MEDIA.values()] + [broken_ref(), f"230001:{mface_segment()['data']['emoji_id']}"]
         await s.execute(delete(Sticker).where(Sticker.ref.in_(refs)))  # blobs and usage cascade
         await s.execute(delete(StickerUsage).where(StickerUsage.group_id.in_(groups)))
         shas = [blob_id(m.data) for m in MEDIA.values()]

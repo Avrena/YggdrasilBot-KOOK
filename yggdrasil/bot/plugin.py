@@ -1,27 +1,17 @@
 """NoneBot plugin: ingest every whitelisted group message, route triggers, run handlers.
 
-Routing happens once per event in an ``event_preprocessor`` against the DB-driven
-trigger index; the resolved command is rewritten into an internal ``ygg:<handler>``
-header so Alconna only parses arguments (see ``TriggerExt``).
+Every QQ event goes through ``route`` (an ``event_preprocessor``) once: the protocol's client (``qq.client``) turns
+it into a recall, a request/notice to record (``events``) or an ``Incoming`` message. Messages are routed against the
+DB-driven trigger index; the resolved command is rewritten into an internal ``ygg:<handler>`` header so Alconna only
+parses arguments (see ``TriggerExt``), and the handlers take the ``Incoming`` from the state.
 """
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any
 
 from arclet.alconna import AllParam
-from nonebot import get_driver, on_notice, on_request, on_type
-from nonebot.adapters import Event
-from nonebot.adapters.onebot.v11 import (
-    Bot,
-    GroupMessageEvent,
-    GroupRecallNoticeEvent,
-    HeartbeatMetaEvent,
-    MessageEvent,
-    NoticeEvent,
-    PrivateMessageEvent,
-    RequestEvent,
-)
+from nonebot import get_driver
+from nonebot.adapters import Bot, Event
 from nonebot.message import event_preprocessor
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule
@@ -36,6 +26,8 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TRIGGERS_MATCHED
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
 from yggdrasil.pipeline import ratelimit, recalls
+from yggdrasil.qq.client import QQ, client
+from yggdrasil.qq.model import Incoming
 from yggdrasil.runtime import snapshot
 from yggdrasil.triggers.bots import sent_by_bot
 from yggdrasil.triggers.index import MatchInput, Resolved, current
@@ -45,20 +37,26 @@ __plugin_meta__ = PluginMetadata(
     description="Group-chat TL;DR, replies and background memory",
     usage="see dashboard",
     type="application",
-    supported_adapters={"~onebot.v11"},
+    supported_adapters={"~milky", "~onebot.v11"},
 )
 
 STATE_KEY = "ygg.cmd"
+INCOMING_KEY = "ygg.incoming"
 
 
-def _segments(message: Any) -> list[dict[str, Any]]:
-    return [{"type": seg.type, "data": dict(seg.data)} for seg in message]
+def _qq(bot: Bot) -> QQ | None:
+    try:
+        return client(bot)
+    except TypeError:
+        return None
 
 
-def _at_me(event: MessageEvent, self_id: str) -> bool:
-    """@bot anywhere in the message. The adapter only sets ``to_me`` for an @ at the start or end
-    (and strips it); one in the middle stays an ``at`` segment."""
-    return event.to_me or any(seg.type == "at" and str(seg.data.get("qq")) == self_id for seg in event.message)
+def _mentions_me(incoming: Incoming) -> bool:
+    """@bot anywhere in the message: ``to_me`` covers an @ at the start or end, one in the middle stays a
+    ``mention`` segment."""
+    return incoming.to_me or any(
+        seg["type"] == "mention" and seg["data"].get("user_id") == incoming.self_id for seg in incoming.segments
+    )
 
 
 # --- routing -----------------------------------------------------------------
@@ -66,63 +64,81 @@ def _at_me(event: MessageEvent, self_id: str) -> bool:
 
 @event_preprocessor
 async def route(bot: Bot, event: Event, state: T_State) -> None:
-    if isinstance(event, HeartbeatMetaEvent):
+    qq = _qq(bot)
+    if qq is None:
+        return
+    # Milky has no heartbeat events: a live connection that delivers events is alive.
+    if qq.protocol == "milky" or event.get_event_name() == "meta_event.heartbeat":
         bot_state.heartbeat(bot.self_id)
+    if (recalled := qq.recalled(event)) is not None:
+        _recall(*recalled)
         return
-    if not isinstance(event, MessageEvent):
+    if (observed := qq.observe(event)) is not None:
+        from yggdrasil import events
+
+        # Requests and notices: recorded in bot_events, policy in yggdrasil.events (never posts to groups).
+        _spawn(events.handle(qq, observed))
         return
+    incoming = await qq.incoming(event)
+    if incoming is not None:
+        await dispatch(qq, incoming, state)
+
+
+async def dispatch(qq: QQ, incoming: Incoming, state: T_State) -> None:
+    """Store a group message, and route it (or a private message) to the trigger it starts, if any."""
     snap = snapshot()
-    if isinstance(event, GroupMessageEvent):
-        if not snap.group_enabled(event.group_id):
+    group_id = incoming.group_id
+    if incoming.user_id == incoming.self_id:
+        # The bot records what it sends itself (``delivery.send.record_self``, with the forward's nodes and the
+        # pictures' blobs); Yogurt also reports those messages back (``reportSelfMessage``), which stored them twice.
+        return
+    if group_id is not None:
+        if not snap.group_enabled(group_id):
             return
-        sender = event.sender
         WRITER.submit(
             IncomingMessage(
-                group_id=event.group_id,
-                user_id=event.user_id,
-                qq_message_id=event.message_id,
-                message_seq=getattr(event, "message_seq", None) or getattr(event, "real_seq", None),
-                sent_at=datetime.fromtimestamp(event.time, UTC),
-                sender_name=(sender.card or sender.nickname or "").strip(),
-                segments=_segments(event.original_message),
-                is_self=str(event.user_id) == bot.self_id,
+                group_id=group_id,
+                user_id=incoming.user_id,
+                qq_message_id=incoming.message_id,
+                message_seq=incoming.seq,
+                sent_at=datetime.fromtimestamp(incoming.time, UTC),
+                sender_name=incoming.sender.name.strip(),
+                segments=incoming.segments,
             )
         )
-        if str(event.user_id) == bot.self_id:
-            return
-        bot_state.last_group_message[event.group_id] = event.message_id
-        scope, group_id = "group", event.group_id
-        role = event.sender.role or "member"
-    elif isinstance(event, PrivateMessageEvent):
-        scope, group_id, role = "private", None, "member"
+        bot_state.last_group_message[group_id] = incoming.message_id
+        scope, role = "group", incoming.sender.role
     else:
-        return
-    if event.user_id in snap.superusers:
+        scope, role = "private", "member"
+    if incoming.user_id in snap.superusers:
         role = "superuser"
-    replied_to_bot = event.reply is not None and str(event.reply.sender.user_id) == bot.self_id
+    reply = incoming.reply
     resolved = current().match(
         MatchInput(
             scope=scope,
             group_id=group_id,
-            text=event.get_plaintext(),
-            to_me=_at_me(event, bot.self_id),
-            replied_to_bot=replied_to_bot,
+            text=incoming.text,
+            to_me=_mentions_me(incoming),
+            replied_to_bot=reply is not None and reply.sender.user_id == incoming.self_id,
             role=role,
         )
     )
     if resolved is None:
         return
-    if (
-        isinstance(event, GroupMessageEvent)
-        and role != "superuser"
-        and await sent_by_bot(bot, event, snap.settings(event.group_id))
-    ):
-        LOGGER.info("ignored {} trigger from bot {} in group {}", resolved.handler, event.user_id, event.group_id)
+    if group_id is not None and role != "superuser" and await sent_by_bot(qq, incoming, snap.settings(group_id)):
+        LOGGER.info("ignored {} trigger from bot {} in group {}", resolved.handler, incoming.user_id, group_id)
         return
-    if not await ratelimit.cooldown(resolved.rule_id, event.user_id, resolved.cooldown_s):
+    if not await ratelimit.cooldown(resolved.rule_id, incoming.user_id, resolved.cooldown_s):
         return
     TRIGGERS_MATCHED.add(1, {"handler": resolved.handler, "scope": scope})
     state[STATE_KEY] = resolved
+    state[INCOMING_KEY] = incoming
+
+
+def _recall(group_id: int, message_id: int) -> None:
+    recalls.recall(group_id, message_id)  # a run it triggered stops before answering
+    if snapshot().group_enabled(group_id):
+        _spawn(WRITER.mark_recalled(group_id, message_id))
 
 
 class TriggerExt(Extension):
@@ -173,6 +189,14 @@ def _rest(result: Arparma) -> str:
     return str(rest)
 
 
+def _routed_message(bot: Bot, state: T_State) -> tuple[QQ, Incoming] | None:
+    """The client and message ``route`` resolved the command for."""
+    qq, incoming = _qq(bot), state.get(INCOMING_KEY)
+    if qq is None or not isinstance(incoming, Incoming):
+        return None
+    return qq, incoming
+
+
 # --- handlers ----------------------------------------------------------------
 
 tldr_cmd = _matcher(Alconna("ygg:tldr", Args["rest?", AllParam]), "tldr")
@@ -195,32 +219,39 @@ ops_cmd = _matcher(Alconna("ygg:admin.ops", Args["rest?", AllParam]), "admin.ops
 
 
 @tldr_cmd.handle()
-async def _tldr(bot: Bot, event: MessageEvent, state: T_State, result: Arparma) -> None:
+async def _tldr(bot: Bot, state: T_State, result: Arparma) -> None:
     from yggdrasil.pipeline.invoke import run
 
-    _spawn(run(bot, event, state[STATE_KEY], "tldr", _rest(result)))
+    if routed := _routed_message(bot, state):
+        _spawn(run(*routed, state[STATE_KEY], "tldr", _rest(result)))
 
 
 @chat_cmd.handle()
-async def _chat(bot: Bot, event: MessageEvent, state: T_State, result: Arparma) -> None:
+async def _chat(bot: Bot, state: T_State, result: Arparma) -> None:
     from yggdrasil.pipeline.invoke import run
 
-    _spawn(run(bot, event, state[STATE_KEY], "chat", _rest(result)))
+    if routed := _routed_message(bot, state):
+        _spawn(run(*routed, state[STATE_KEY], "chat", _rest(result)))
 
 
-async def _privacy_reply(bot: Bot, event: GroupMessageEvent, text: str) -> None:
+def _group_message(bot: Bot, state: T_State) -> tuple[QQ, Incoming, int] | None:
+    """``_routed_message`` with its group, for group-only commands."""
+    routed = _routed_message(bot, state)
+    if routed is None or (group_id := routed[1].group_id) is None:
+        return None
+    return routed[0], routed[1], group_id
+
+
+async def _privacy_reply(qq: QQ, incoming: Incoming, group_id: int, text: str) -> None:
     from yggdrasil.delivery.send import send_text
-    from yggdrasil.napcat.api import NapCatAPI
 
-    ident = await bot_state.identity(bot)
+    ident = await bot_state.identity(qq)
     await send_text(
-        NapCatAPI(bot),
-        group_id=event.group_id,
-        user_id=event.user_id,
-        reply_to=event.message_id
-        if bot_state.should_quote(
-            event.group_id, event.message_id, snapshot().settings(event.group_id).interaction.quote_reply
-        )
+        qq,
+        group_id=group_id,
+        user_id=incoming.user_id,
+        reply_to=incoming.message_id
+        if bot_state.should_quote(group_id, incoming.message_id, snapshot().settings(group_id).interaction.quote_reply)
         else None,
         text=text,
         self_id=ident.self_id,
@@ -229,34 +260,49 @@ async def _privacy_reply(bot: Bot, event: GroupMessageEvent, text: str) -> None:
 
 
 @optout_cmd.handle()
-async def _optout(bot: Bot, event: GroupMessageEvent) -> None:
+async def _optout(bot: Bot, state: T_State) -> None:
     from yggdrasil.memory.privacy import set_opt_out
 
-    await set_opt_out(event.group_id, event.user_id, True)
-    await _privacy_reply(bot, event, "好，之后不再整理你的画像（聊天记录仍按群规则保存）。想恢复就说「记得我」。")
+    if (routed := _group_message(bot, state)) is None:
+        return
+    qq, incoming, group_id = routed
+    await set_opt_out(group_id, incoming.user_id, True)
+    await _privacy_reply(
+        qq, incoming, group_id, "好，之后不再整理你的画像（聊天记录仍按群规则保存）。想恢复就说「记得我」。"
+    )
 
 
 @optin_cmd.handle()
-async def _optin(bot: Bot, event: GroupMessageEvent) -> None:
+async def _optin(bot: Bot, state: T_State) -> None:
     from yggdrasil.memory.privacy import set_opt_out
 
-    await set_opt_out(event.group_id, event.user_id, False)
-    await _privacy_reply(bot, event, "好，重新开始记住你。")
+    if (routed := _group_message(bot, state)) is None:
+        return
+    qq, incoming, group_id = routed
+    await set_opt_out(group_id, incoming.user_id, False)
+    await _privacy_reply(qq, incoming, group_id, "好，重新开始记住你。")
 
 
 @forget_cmd.handle()
-async def _forget(bot: Bot, event: GroupMessageEvent) -> None:
+async def _forget(bot: Bot, state: T_State) -> None:
     from yggdrasil.memory.privacy import forget_user, set_opt_out
 
-    await forget_user(event.group_id, event.user_id)
-    await set_opt_out(event.group_id, event.user_id, True)
-    await _privacy_reply(bot, event, "已删除你的画像，并且之后不再整理。")
+    if (routed := _group_message(bot, state)) is None:
+        return
+    qq, incoming, group_id = routed
+    await forget_user(group_id, incoming.user_id)
+    await set_opt_out(group_id, incoming.user_id, True)
+    await _privacy_reply(qq, incoming, group_id, "已删除你的画像，并且之后不再整理。")
 
 
 @review_cmd.handle()
-async def _review(bot: Bot, event: PrivateMessageEvent, result: Arparma) -> None:
+async def _review(bot: Bot, state: T_State, result: Arparma) -> None:
     from yggdrasil.moderation.review import ReviewError, decide, parse_review_id
 
+    routed = _routed_message(bot, state)
+    if routed is None or routed[1].group_id is not None:
+        return
+    qq, incoming = routed
     action = next((s for s in ("approve", "reject", "edit") if result.find(s)), None)
     raw_id = result.query[str](f"{action}.id") or "" if action else ""
     try:
@@ -267,20 +313,20 @@ async def _review(bot: Bot, event: PrivateMessageEvent, result: Arparma) -> None
         # No R<id>: not a plain review command (e.g. 「同意」/「拒绝」 to a request note); let ops read it.
         from yggdrasil.ops.agent import run_ops
 
-        _spawn(run_ops(bot, event))
+        _spawn(run_ops(qq, incoming, incoming.text))
         return
     text = result.query[list](f"{action}.text")
     if isinstance(text, list | tuple):
         text = " ".join(str(x) for x in text)
     try:
-        item = await decide(review_id, action, f"qq:{event.user_id}", str(text) if text else None)
+        item = await decide(review_id, action, f"qq:{incoming.user_id}", str(text) if text else None)
     except ReviewError as e:
         await review_cmd.finish(str(e))
     await review_cmd.finish(f"R{item.id} → {item.status}")
 
 
 @status_cmd.handle()
-async def _status(bot: Bot) -> None:
+async def _status() -> None:
     from yggdrasil.moderation.review import pending_count
 
     snap = snapshot()
@@ -292,53 +338,33 @@ async def _status(bot: Bot) -> None:
 
 
 @ops_cmd.handle()
-async def _ops(bot: Bot, event: MessageEvent) -> None:
+async def _ops(bot: Bot, state: T_State, result: Arparma) -> None:
     from yggdrasil.ops.agent import run_ops
 
-    if event.user_id in snapshot().superusers:  # the trigger's allowed_roles is editable; this is not
-        _spawn(run_ops(bot, event))
+    routed = _routed_message(bot, state)
+    # The trigger's allowed_roles is editable; this is not.
+    if routed is not None and routed[1].user_id in snapshot().superusers:
+        _spawn(run_ops(*routed, _rest(result)))
 
 
-# --- notices & lifecycle -----------------------------------------------------
-
-recall = on_notice(priority=1, block=False)
-
-
-@recall.handle()
-async def _recall(event: GroupRecallNoticeEvent) -> None:
-    recalls.recall(event.group_id, event.message_id)  # a run it triggered stops before answering
-    if snapshot().group_enabled(event.group_id):
-        _spawn(WRITER.mark_recalled(event.group_id, event.message_id))
-
-
-events = on_notice(priority=1, block=False)
-requests = on_request(priority=1, block=False)
-
-
-@events.handle()
-@requests.handle()
-async def _bot_event(bot: Bot, event: NoticeEvent | RequestEvent) -> None:
-    """Requests and notices: recorded in bot_events, policy in yggdrasil.events (never posts to groups)."""
-    from yggdrasil.events import handle
-
-    _spawn(handle(bot, event))
-
-
-heartbeat = on_type(HeartbeatMetaEvent, priority=1, block=False)
+# --- lifecycle ---------------------------------------------------------------
 
 driver = get_driver()
 
 
 @driver.on_bot_connect
 async def _connected(bot: Bot) -> None:
-    bot_state.mark_connected(bot)
-    ident = await bot_state.identity(bot)
-    LOGGER.info("bot connected: {} ({})", ident.nickname, ident.self_id)
+    qq = _qq(bot)
+    if qq is None:
+        return
+    bot_state.mark_connected(bot.self_id)
+    ident = await bot_state.identity(qq)
+    LOGGER.info("bot connected via {}: {} ({})", qq.protocol, ident.nickname, ident.self_id)
     _spawn(_catch_up(datetime.now(UTC)))
 
 
 async def _catch_up(connected_at: datetime) -> None:
-    """Store what was said while no pod held the connection (rolling update, NapCat restart).
+    """Store what was said while no pod held the connection (rolling update, protocol restart).
 
     Triggers sent in that gap are not answered; only the history is filled in.
     """
@@ -350,5 +376,7 @@ async def _catch_up(connected_at: datetime) -> None:
 
 @driver.on_bot_disconnect
 async def _disconnected(bot: Bot) -> None:
-    bot_state.mark_disconnected(bot)
+    if _qq(bot) is None:
+        return
+    bot_state.mark_disconnected(bot.self_id)
     LOGGER.warning("bot disconnected: {}", bot.self_id)

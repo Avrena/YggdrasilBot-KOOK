@@ -1,17 +1,18 @@
 """Sticker collection in the bot process: record each sticker sighting and save the image while its link is fresh.
 
-QQ image links carry an rkey that rotates roughly hourly, and every link signed with the old rkey stops working at
-once, so a custom sticker's image is downloaded right after the message is stored; if the link already fails, the
-protocol side re-signs it by file name (``get_image``). A later sighting retries stickers whose download failed
-(except oversized ones).
+A custom sticker (an ``image`` segment with ``sticker`` set) is identified by its content sha1 (``image.sha1``, the
+same under every protocol); one without a sha1 has no stable identity and is skipped. A market face is identified by
+``"<emoji_package_id>:<emoji_id>"`` and sent by id, so it needs no image.
+
+QQ image links expire (the rkey rotates roughly hourly), so a custom sticker's image is downloaded right after the
+message is stored; if the link already fails, the protocol refreshes it from the segment's ``ref``
+(``QQ.media_url``). A later sighting retries stickers whose download failed (except oversized ones).
 """
 
 import asyncio
 import io
-import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 from PIL import Image
@@ -23,12 +24,12 @@ from yggdrasil.agent.media import download
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Sticker, StickerBlob, StickerUsage
 from yggdrasil.db.session import get_session
-from yggdrasil.ingest.normalize import is_sticker_image
+from yggdrasil.qq import client
+from yggdrasil.qq.segments import Segment
 from yggdrasil.tools.errors import ToolError
 
 MAX_BYTES = 5 * 1024 * 1024
 TOO_LARGE = "too_large"
-_MD5_FILE = re.compile(r"^([0-9A-Fa-f]{32})(?:\.\w+)?$")
 _CONCURRENCY = 4
 
 type UsageKey = tuple[str, str, int]
@@ -43,7 +44,7 @@ class Sighting:
     ref: str
     summary: str
     url: str = ""  # image: the download link from the newest sighting
-    file: str = ""  # image: QQ file name, for re-signing the link
+    media_ref: str = ""  # image: the segment's ``ref``, to refresh the link
     emoji_id: str | None = None
     package_id: str | None = None
     key: str = ""
@@ -53,25 +54,21 @@ class Sighting:
 class PendingFetch:
     sticker_id: int
     url: str
-    file: str
+    media_ref: str
 
 
-def sighting(segment: dict[str, Any]) -> Sighting | None:
-    """The sticker in a raw OneBot segment, or ``None`` if it is not one."""
+def sighting(segment: Segment) -> Sighting | None:
+    """The sticker in a segment, or ``None`` if it is not one."""
     data = segment.get("data") or {}
     summary = str(data.get("summary") or "").strip("[]")
-    if segment.get("type") == "mface" and data.get("emoji_id") and data.get("emoji_package_id"):
-        package, emoji = str(data["emoji_package_id"]), str(data["emoji_id"])
-        return Sighting(
-            "mface", f"{package}:{emoji}", summary, emoji_id=emoji, package_id=package, key=str(data.get("key", ""))
-        )
-    if segment.get("type") == "image" and is_sticker_image(data):
-        match = _MD5_FILE.match(str(data.get("file") or ""))
-        if match is None:
-            return None  # no stable identity to deduplicate on
-        return Sighting(
-            "image", match.group(1).upper(), summary, url=str(data.get("url") or ""), file=str(data["file"])
-        )
+    match segment.get("type"):
+        case "market_face" if data.get("emoji_id") and data.get("emoji_package_id"):
+            package, emoji = str(data["emoji_package_id"]), str(data["emoji_id"])
+            key = str(data.get("key") or "")
+            return Sighting("mface", f"{package}:{emoji}", summary, emoji_id=emoji, package_id=package, key=key)
+        case "image" if data.get("sticker") and data.get("sha1"):
+            ref = str(data["sha1"]).lower()
+            return Sighting("image", ref, summary, url=str(data.get("url") or ""), media_ref=str(data.get("ref") or ""))
     return None
 
 
@@ -128,7 +125,7 @@ async def record(
     blob_ids = select(StickerBlob.sticker_id).where(StickerBlob.sticker_id.in_([sid for sid, _, _ in unfetched]))
     have_blob = set((await session.scalars(blob_ids)).all())
     return [
-        PendingFetch(sid, seen[kind, ref].url, seen[kind, ref].file)
+        PendingFetch(sid, seen[kind, ref].url, seen[kind, ref].media_ref)
         for sid, kind, ref in unfetched
         if sid not in have_blob
     ]
@@ -190,22 +187,22 @@ def _unfetched(sticker_id: int) -> Update:
 
 
 async def fetch_image(item: PendingFetch) -> bytes:
-    """The sticker image; re-signs the link through the protocol side when it no longer works."""
+    """The sticker image; asks the protocol for a fresh link when the stored one no longer works."""
     if item.url:
         try:
             return await download(item.url, MAX_BYTES)
         except httpx.HTTPStatusError as exc:
             if not 400 <= exc.response.status_code < 500:
                 raise
-    from yggdrasil.bot.state import any_bot
-    from yggdrasil.napcat.api import NapCatAPI
-
-    bot = any_bot()
-    if bot is None:
-        raise RuntimeError("link expired and no bot connection to re-sign it")
-    fresh = (await NapCatAPI(bot).get_image(file=item.file)).url
+    if not item.media_ref:
+        raise RuntimeError("link expired and the sticker has no ref to refresh it")
+    qq = client.connected()
+    if qq is None:
+        raise RuntimeError("link expired and no QQ connection to refresh it")
+    segment = {"type": "image", "data": {"ref": item.media_ref, "url": item.url}}
+    fresh = await qq.media_url(segment, group_id=None, user_id=0)
     if not fresh or fresh == item.url:
-        raise RuntimeError("link expired and could not be re-signed")
+        raise RuntimeError("link expired and could not be refreshed")
     return await download(fresh, MAX_BYTES)
 
 

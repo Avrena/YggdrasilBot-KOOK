@@ -62,8 +62,8 @@ class Usage(BaseModel):
 
 
 class QQMessage(BaseModel):
-    """A QQ message as it was when the run used it. ``segments`` are raw OneBot segments; the API adds ``src`` to
-    image segment data when it can serve the picture."""
+    """A QQ message as it was when the run used it. ``segments`` are ``qq.segments`` segments; the API adds ``src``
+    to image and market face data when it can serve the picture, and ``name`` to faces."""
 
     id: int | None = None  # messages.id; None for forward nodes and messages that were never stored
     qq_message_id: int | None = None

@@ -5,26 +5,16 @@ Never posts to groups. Policy (settings ``events``, global document):
   are also whitelisted and backfilled); others wait in the table and superusers get a private note;
 - join requests for groups the bot administers are only recorded (left to the human admins);
 - the bot being kicked disables the group; kicks and mutes of the bot are reported privately;
-- NapCat's ``bot_offline`` marks the account logged out (``ygg.onebot.logged_in`` → alert).
+- ``notice.bot_offline`` marks the account logged out (``ygg.qq.logged_in`` → alert).
 Member changes are recorded only for enabled groups.
+
+A row's ``data`` is the protocol's raw event plus ``protocol`` (rows without it came through OneBot): only the backend
+that recorded a request can answer it.
 """
 
 import asyncio
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
-from nonebot.adapters.onebot.v11 import (
-    Bot,
-    Event,
-    FriendRequestEvent,
-    GroupAdminNoticeEvent,
-    GroupBanNoticeEvent,
-    GroupDecreaseNoticeEvent,
-    GroupIncreaseNoticeEvent,
-    GroupRequestEvent,
-    NoticeEvent,
-)
 from sqlalchemy import delete, update
 
 from yggdrasil.bot import state as bot_state
@@ -33,6 +23,9 @@ from yggdrasil.core.metrics import BOT_EVENTS
 from yggdrasil.db.models import BotEvent
 from yggdrasil.db.session import get_session
 from yggdrasil.people import member_label
+from yggdrasil.qq import client as qq_client
+from yggdrasil.qq.client import QQ
+from yggdrasil.qq.model import Observed, Protocol, QQError
 from yggdrasil.runtime import snapshot
 
 AUTO = "auto"
@@ -42,65 +35,17 @@ class EventError(Exception):
     """User-facing reason a request can't be decided."""
 
 
-@dataclass(slots=True)
-class Observed:
-    kind: str
-    group_id: int | None = None
-    user_id: int | None = None
-    operator_id: int | None = None
-    data: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def is_request(self) -> bool:
-        return self.kind.startswith("request.")
+def kept(o: Observed, self_id: int) -> bool:
+    """Whether ``o`` is recorded: requests and what happens to the bot itself always, member changes only in
+    enabled groups."""
+    about_bot = o.user_id == self_id or o.kind == "notice.group_decrease.kick_me"
+    return o.is_request or o.group_id is None or about_bot or snapshot().group_enabled(o.group_id)
 
 
-def observe(event: Event, self_id: int) -> Observed | None:
-    """What to record for ``event``; None for events we don't keep."""
-    enabled = snapshot().group_enabled
-    raw = event.model_dump(mode="json", exclude={"original_message", "message"})
-    if isinstance(event, GroupRequestEvent):
-        return Observed(f"request.group.{event.sub_type}", event.group_id, event.user_id, None, raw)
-    if isinstance(event, FriendRequestEvent):
-        return Observed("request.friend", None, event.user_id, None, raw)
-    if isinstance(event, GroupDecreaseNoticeEvent):
-        if event.sub_type == "kick_me" or event.user_id == self_id:
-            return Observed("notice.group_decrease.kick_me", event.group_id, self_id, event.operator_id, raw)
-        if enabled(event.group_id):
-            return Observed(
-                f"notice.group_decrease.{event.sub_type}", event.group_id, event.user_id, event.operator_id, raw
-            )
-        return None
-    if isinstance(event, GroupIncreaseNoticeEvent):
-        if event.user_id == self_id:
-            return Observed("notice.group_increase.self", event.group_id, self_id, event.operator_id, raw)
-        if enabled(event.group_id):
-            return Observed(
-                f"notice.group_increase.{event.sub_type}", event.group_id, event.user_id, event.operator_id, raw
-            )
-        return None
-    if isinstance(event, GroupBanNoticeEvent):
-        who = "self" if event.user_id == self_id else "all" if event.user_id == 0 else "member"
-        if who == "self" or enabled(event.group_id):
-            return Observed(
-                f"notice.group_ban.{who}.{event.sub_type}", event.group_id, event.user_id, event.operator_id, raw
-            )
-        return None
-    if isinstance(event, GroupAdminNoticeEvent):
-        who = "self" if event.user_id == self_id else "member"
-        if who == "self" or enabled(event.group_id):
-            return Observed(f"notice.group_admin.{who}.{event.sub_type}", event.group_id, event.user_id, None, raw)
-        return None
-    if isinstance(event, NoticeEvent) and event.notice_type == "bot_offline":
-        return Observed("notice.bot_offline", None, self_id, None, raw)
-    return None
-
-
-async def handle(bot: Bot, event: Event) -> None:
-    """Record ``event`` (if kept) and apply the policy. Errors are logged, never raised."""
+async def handle(qq: QQ, o: Observed) -> None:
+    """Record ``o`` (if kept) and apply the policy. Errors are logged, never raised."""
     try:
-        o = observe(event, int(bot.self_id))
-        if o is None:
+        if not kept(o, qq.self_id):
             return
         async with get_session() as s:
             row = BotEvent(
@@ -108,7 +53,7 @@ async def handle(bot: Bot, event: Event) -> None:
                 group_id=o.group_id,
                 user_id=o.user_id,
                 operator_id=o.operator_id,
-                data=o.data,
+                data={**o.data, "protocol": o.protocol},
                 status="pending" if o.is_request else None,
             )
             s.add(row)
@@ -116,12 +61,12 @@ async def handle(bot: Bot, event: Event) -> None:
             event_id = row.id
         BOT_EVENTS.add(1, {"kind": o.kind})
         LOGGER.info("bot event E{}: {} group={} user={}", event_id, o.kind, o.group_id, o.user_id)
-        await _apply_policy(bot, event_id, o)
+        await _apply_policy(qq, event_id, o)
     except Exception:
         LOGGER.exception("handling bot event failed")
 
 
-async def _apply_policy(bot: Bot, event_id: int, o: Observed) -> None:
+async def _apply_policy(qq: QQ, event_id: int, o: Observed) -> None:
     from yggdrasil.moderation.review import notify_admins
 
     snap = snapshot()
@@ -131,52 +76,51 @@ async def _apply_policy(bot: Bot, event_id: int, o: Observed) -> None:
         if from_superuser and cfg.auto_accept_superuser_invites:
             await decide_request(event_id, True, AUTO)
             if cfg.auto_enable_invited_groups and o.group_id is not None:
-                await _enable_group(bot, o.group_id)
+                await _enable_group(qq, o.group_id)
         elif cfg.notify_invites:
             await notify_admins(
-                bot,
+                qq,
                 f"E{event_id} 收到加群邀请：{o.user_id} 邀请 bot 加入群 {o.group_id}。回复这条消息「同意」或「拒绝」。",
             )
     elif o.kind == "request.friend":
         if from_superuser and cfg.auto_accept_superuser_friends:
             await decide_request(event_id, True, AUTO)
         elif cfg.notify_friend_requests:
-            note = o.data.get("comment") or "无"
+            note = o.comment or "无"
             await notify_admins(
-                bot, f"E{event_id} 收到好友申请：{o.user_id}（验证信息：{note}）。回复这条消息「同意」或「拒绝」。"
+                qq, f"E{event_id} 收到好友申请：{o.user_id}（验证信息：{note}）。回复这条消息「同意」或「拒绝」。"
             )
     elif o.kind == "request.group.add":
         if cfg.notify_join_requests:
             await notify_admins(
-                bot, f"E{event_id} {o.user_id} 申请加入群 {o.group_id}（bot 是管理员）。这里只记录，不代为处理。"
+                qq, f"E{event_id} {o.user_id} 申请加入群 {o.group_id}（bot 是管理员）。这里只记录，不代为处理。"
             )
     elif o.kind == "notice.group_decrease.kick_me":
         if cfg.disable_group_when_kicked and o.group_id is not None and snap.group_enabled(o.group_id):
             await _disable_group(o.group_id)
         if cfg.notify_kicked:
             await notify_admins(
-                bot,
+                qq,
                 f"E{event_id} bot 被 {await member_label(o.group_id, o.operator_id)} 踢出了群 {o.group_id}"
                 + ("，已停用该群。" if cfg.disable_group_when_kicked else "。"),
             )
     elif o.kind == "notice.group_ban.self.ban":
         if cfg.notify_banned:
-            minutes = int(o.data.get("duration") or 0) // 60
+            minutes = (o.duration or 0) // 60
             who = await member_label(o.group_id, o.operator_id)
-            await notify_admins(bot, f"E{event_id} bot 在群 {o.group_id} 被 {who} 禁言 {minutes} 分钟。")
+            await notify_admins(qq, f"E{event_id} bot 在群 {o.group_id} 被 {who} 禁言 {minutes} 分钟。")
     elif o.kind == "notice.bot_offline":
-        bot_state.offline.add(bot.self_id)
+        bot_state.offline.add(str(qq.self_id))
 
 
-async def _enable_group(bot: Bot, group_id: int) -> None:
+async def _enable_group(qq: QQ, group_id: int) -> None:
     from yggdrasil.admin import groups as groups_api
 
     name = ""
     await asyncio.sleep(3)  # the join takes a moment before group info is available
     try:
-        info = await bot.call_api("get_group_info", group_id=group_id, no_cache=True)
-        name = str(info.get("group_name") or "")
-    except Exception:
+        name = (await qq.group(group_id)).name
+    except QQError:
         LOGGER.warning("group info for invited group {} unavailable", group_id)
     await groups_api.upsert_group(group_id, groups_api.GroupIn(name=name, enabled=True, settings=None), AUTO)
     try:
@@ -193,28 +137,40 @@ async def _disable_group(group_id: int) -> None:
     await groups_api.upsert_group(group_id, body, AUTO)
 
 
+_PROTOCOL_NAMES: dict[Protocol, str] = {"milky": "Milky", "onebot": "OneBot"}
+
+
 async def decide_request(event_id: int, approve: bool, actor: str, reason: str | None = None) -> BotEvent:
-    """Answer a pending request through NapCat. Raises EventError with a user-facing message."""
+    """Answer a pending request through the protocol that recorded it. Raises EventError with a user-facing
+    message."""
     async with get_session() as s:
         row = await s.get(BotEvent, event_id, with_for_update=True)
         if row is None or not row.kind.startswith("request."):
             raise EventError(f"E{event_id} 不是申请")
         if row.status != "pending":
             raise EventError(f"E{event_id} 已经是 {row.status}")
-        bot = bot_state.any_bot()
-        if bot is None:
+        qq = qq_client.connected()
+        if qq is None:
             raise EventError("bot 未连接，无法处理")
-        flag = str(row.data.get("flag") or "")
+        data = dict(row.data)
+        protocol: Protocol = "milky" if data.pop("protocol", "onebot") == "milky" else "onebot"
+        if protocol != qq.protocol:
+            raise EventError(
+                f"E{event_id} 是通过 {_PROTOCOL_NAMES[protocol]} 收到的，现在连接的是 {_PROTOCOL_NAMES[qq.protocol]}，"
+                "处理不了；请在 QQ 里直接处理"
+            )
+        observed = Observed(
+            kind=row.kind,
+            protocol=protocol,
+            group_id=row.group_id,
+            user_id=row.user_id,
+            operator_id=row.operator_id,
+            comment=str(data.get("comment") or ""),
+            data=data,
+        )
         try:
-            if row.kind == "request.friend":
-                await bot.call_api("set_friend_add_request", flag=flag, approve=approve, remark="")
-            else:
-                sub_type = row.kind.rsplit(".", 1)[1]
-                params: dict[str, Any] = {"flag": flag, "sub_type": sub_type, "approve": approve}
-                if not approve and reason:
-                    params["reason"] = reason
-                await bot.call_api("set_group_add_request", **params)
-        except Exception as e:
+            await qq.decide_request(observed, approve=approve, reason=reason)
+        except QQError as e:
             row.status, row.handled_by, row.handled_at = "failed", actor, datetime.now(UTC)
             await s.commit()
             raise EventError(f"QQ 拒绝了这次处理（申请可能已失效）：{e}") from e

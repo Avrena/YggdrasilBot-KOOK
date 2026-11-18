@@ -101,7 +101,7 @@ class ReviewItem(Base):
 
 
 class BotEvent(Base):
-    """A non-message OneBot event worth keeping: requests (with their decision) and notices about
+    """A non-message QQ event worth keeping: requests (with their decision) and notices about
     the bot itself or members of enabled groups. Shown as E<id>."""
 
     __tablename__ = "bot_events"

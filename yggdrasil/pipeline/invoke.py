@@ -7,7 +7,6 @@ from datetime import timedelta
 from typing import Literal
 from uuid import UUID
 
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic_ai import Agent, Tool
@@ -31,11 +30,12 @@ from yggdrasil.delivery.send import MessageDropped, react, send_text
 from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
-from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.pipeline import ack as ack_mod
 from yggdrasil.pipeline import ratelimit, recalls, record, repeats
 from yggdrasil.pipeline import session as sessions
 from yggdrasil.pipeline.prompt import inline_images, instructions, now_text
+from yggdrasil.qq.client import QQ
+from yggdrasil.qq.model import Incoming
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import Session, manager
 from yggdrasil.settings import Settings
@@ -49,48 +49,38 @@ Handler = Literal["chat", "tldr"]
 _SEEN_SLACK = timedelta(hours=1)
 
 
-async def run(bot: Bot, event: MessageEvent, resolved: Resolved, handler: Handler, request_text: str) -> None:
+async def run(qq: QQ, incoming: Incoming, resolved: Resolved, handler: Handler, request_text: str) -> None:
     snap = snapshot()
-    group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
+    group_id = incoming.group_id
     settings = snap.settings(group_id)
-    role = speaker_role(event, snap.superusers)
+    role = speaker_role(incoming, snap.superusers)
     superuser = role == "superuser"
-    api = NapCatAPI(bot)
-    repeat = None if superuser else repeats.key(event, resolved, handler, request_text)
+    user_id, message_id = incoming.user_id, incoming.message_id
+    repeat = None if superuser else repeats.key(incoming, resolved, handler, request_text)
     if repeat is not None and not await repeats.first(repeat, settings.ratelimit.repeat_window_s):
-        LOGGER.info("repeated {} request ignored user={} group={}", handler, event.user_id, group_id)
+        LOGGER.info("repeated {} request ignored user={} group={}", handler, user_id, group_id)
         INVOCATIONS.add(1, {"handler": handler, "outcome": "repeat"})
-        if settings.interaction.silent_emoji:
-            await react(api, event.message_id, settings.interaction.silent_emoji)
+        await react(qq, group_id, message_id, settings.interaction.silent_emoji)
         return
     answered = False
     try:
-        if reason := await ratelimit.check(group_id, event.user_id, settings.ratelimit, superuser=superuser):
-            LOGGER.info("rate limited ({}) user={} group={}", reason, event.user_id, group_id)
+        if reason := await ratelimit.check(group_id, user_id, settings.ratelimit, superuser=superuser):
+            LOGGER.info("rate limited ({}) user={} group={}", reason, user_id, group_id)
             INVOCATIONS.add(1, {"handler": handler, "outcome": "ratelimited"})
-            if settings.interaction.ratelimited_emoji:
-                await react(api, event.message_id, settings.interaction.ratelimited_emoji)
+            await react(qq, group_id, message_id, settings.interaction.ratelimited_emoji)
             return
-        with recalls.watch(group_id, event.message_id) as watch:
-            async with ratelimit.slot(group_id, event.user_id, settings.ratelimit) as granted:
+        with recalls.watch(group_id, message_id) as watch:
+            async with ratelimit.slot(group_id, user_id, settings.ratelimit) as granted:
                 if not granted:
-                    LOGGER.info("request dropped: queue full or timed out user={} group={}", event.user_id, group_id)
+                    LOGGER.info("request dropped: queue full or timed out user={} group={}", user_id, group_id)
                     INVOCATIONS.add(1, {"handler": handler, "outcome": "busy"})
-                    if settings.interaction.ratelimited_emoji:
-                        await react(api, event.message_id, settings.interaction.ratelimited_emoji)
+                    await react(qq, group_id, message_id, settings.interaction.ratelimited_emoji)
                     return
                 if watch.recalled:
-                    LOGGER.info("{} request recalled while queued user={} group={}", handler, event.user_id, group_id)
+                    LOGGER.info("{} request recalled while queued user={} group={}", handler, user_id, group_id)
                     INVOCATIONS.add(1, {"handler": handler, "outcome": "cancelled"})
                     return
-                if handler == "chat" and superuser and group_id is not None:
-                    # A superuser talking to the bot may be giving an admin instruction: the ops agent
-                    # (fast model) acts on it, or hands it back here when it's an ordinary question.
-                    from yggdrasil.ops.agent import run_ops
-
-                    if await run_ops(bot, event) != "handoff":
-                        return
-                inv = Invocator(bot, api, event, resolved, handler, request_text, settings, group_id, role, watch=watch)
+                inv = Invocator(qq, incoming, resolved, handler, request_text, settings, group_id, role, watch=watch)
                 status = await inv.run()
                 answered = status not in ("failed", "cancelled")
     finally:
@@ -109,9 +99,8 @@ def _cancelling() -> bool:
 class Invocator:
     def __init__(
         self,
-        bot: Bot,
-        api: NapCatAPI,
-        event: MessageEvent,
+        qq: QQ,
+        incoming: Incoming,
         resolved: Resolved,
         handler: Handler,
         request_text: str,
@@ -122,17 +111,22 @@ class Invocator:
         watch: recalls.Watch | None = None,
     ) -> None:
         self._setup(
-            bot, api, handler, settings, group_id, user_id=event.user_id, trigger_message_id=event.message_id, role=role
+            qq,
+            handler,
+            settings,
+            group_id,
+            user_id=incoming.user_id,
+            trigger_message_id=incoming.message_id,
+            role=role,
         )
-        self.event, self.resolved, self.request_text = event, resolved, request_text
+        self.incoming, self.resolved, self.request_text = incoming, resolved, request_text
         self.rule_id = resolved.rule_id
         if watch is not None:
             self.watch = watch
 
     def _setup(
         self,
-        bot: Bot,
-        api: NapCatAPI,
+        qq: QQ,
         handler: Handler,
         settings: Settings,
         group_id: int | None,
@@ -144,7 +138,7 @@ class Invocator:
     ) -> None:
         """State shared by every kind of run; ``record_handler`` names it in records and metrics when it differs
         from the route ``handler`` (a job report runs on the chat route)."""
-        self.bot, self.api, self.handler, self.settings, self.group_id = bot, api, handler, settings, group_id
+        self.qq, self.handler, self.settings, self.group_id = qq, handler, settings, group_id
         self.user_id, self.trigger_message_id = user_id, trigger_message_id
         self.record_handler: str = record_handler or handler
         self.rule_id: int | None = None
@@ -237,7 +231,7 @@ class Invocator:
 
     # --- main flow ---------------------------------------------------------
     async def _run(self) -> str:
-        ident = await identity(self.bot)
+        ident = await identity(self.qq)
         persona = self.settings.persona.name
         self.notes.bot = (ident.self_id, persona)
         replied_bot_msg = self._replied_bot_message(ident.self_id)
@@ -251,12 +245,12 @@ class Invocator:
         # Replying to one of the bot's messages: the speaker may or may not have it recalled.
         recall = None if replied_bot_msg is None else recall_target is not None
         session = await self._session(replied_bot_msg)
-        if session is not None and replied_bot_msg is not None and isinstance(self.event, GroupMessageEvent):
+        if session is not None and replied_bot_msg is not None and self.group_id is not None:
             # The answer's agent again (route, instructions, tools), so everything before the new turn is what the
             # provider already has cached.
             route, sandbox_on = session.setup.handler, session.setup.sandbox
             ctx = await build_followup_context(
-                self.event,
+                self.incoming,
                 self.settings,
                 self_id=ident.self_id,
                 bot_name=persona,
@@ -277,7 +271,7 @@ class Invocator:
             session = None
             route, sandbox_on = self.handler, self._suite_enabled(self.handler)
             ctx = await build_context(
-                self.event,
+                self.incoming,
                 self.resolved,
                 self.settings,
                 self_id=ident.self_id,
@@ -291,12 +285,12 @@ class Invocator:
             resolved_model = chat_model(route)
         except TaskNotConfigured:
             LOGGER.warning("task {} has no model route; configure it in the dashboard", route)
-            await react(self.api, self.trigger_message_id, self.settings.interaction.failure_emoji)
+            await react(self.qq, self.group_id, self.trigger_message_id, self.settings.interaction.failure_emoji)
             return "failed"
 
         mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
         deps = Deps(
-            self.api,
+            self.qq,
             self.group_id,
             self.user_id,
             self.settings,
@@ -344,7 +338,7 @@ class Invocator:
             instructions=system,
         )
         prompt = await inline_images(
-            ctx, self.api, self.group_id, route, self.settings.context.inline_images, self.notes
+            ctx, self.qq, self.group_id, self.user_id, route, self.settings.context.inline_images, self.notes
         )
         return await self._execute(
             agent, prompt, deps, resolved_model, mod_text, history=session.messages if session else None
@@ -440,7 +434,7 @@ class Invocator:
 
                 cats = ",".join(blocked.categories)
                 await notify_admins(
-                    self.bot, f"输入被拦截（{blocked.verdict} {blocked.score:.2f} {cats}）\n{mod_text[:500]}"
+                    self.qq, f"输入被拦截（{blocked.verdict} {blocked.score:.2f} {cats}）\n{mod_text[:500]}"
                 )
             await self._finish("blocked_input", None, input_verdict=blocked.as_dict())
             return "blocked_input"
@@ -481,7 +475,7 @@ class Invocator:
             from yggdrasil.moderation.review import create_review
 
             await create_review(
-                self.bot,
+                self.qq,
                 invocation_id=self.invocation_id,
                 group_id=self.group_id,
                 user_id=self.user_id,
@@ -504,12 +498,12 @@ class Invocator:
         return "rejected"
 
     async def _send_text(self, text: str, *, allow_quote: bool = True) -> None:
-        ident = await identity(self.bot)
+        ident = await identity(self.qq)
         quote = allow_quote and should_quote(
             self.group_id, self.trigger_message_id, self.settings.interaction.quote_reply
         )
         await send_text(
-            self.api,
+            self.qq,
             group_id=self.group_id,
             user_id=self.user_id,
             reply_to=self.trigger_message_id if quote else None,
@@ -526,11 +520,11 @@ class Invocator:
             INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.record_handler, "kind": kind})
 
     async def _status(self, emoji: str) -> bool:
-        """Add a status reaction to the trigger message. Reactions are never removed: frequent
-        add/remove pairs look automated to QQ's risk control."""
-        if not emoji:
+        """Add a status reaction to the trigger message (QQ has none in private chats). Reactions are never
+        removed: frequent add/remove pairs look automated to QQ's risk control."""
+        if not emoji or self.group_id is None:
             return False
-        await react(self.api, self.trigger_message_id, emoji)
+        await react(self.qq, self.group_id, self.trigger_message_id, emoji)
         return True
 
     async def _mark_slow(self) -> None:
@@ -586,7 +580,7 @@ class Invocator:
 
     def _replied_bot_message(self, self_id: int) -> int | None:
         """QQ id of the bot's own group message this chat request replies to (recall candidate)."""
-        r = self.event.reply
+        r = self.incoming.reply
         if self.handler != "chat" or self.group_id is None or r is None or r.sender.user_id != self_id:
             return None
         return r.message_id
@@ -634,11 +628,11 @@ class Invocator:
 
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction
-        ident = await identity(self.bot)
+        ident = await identity(self.qq)
         self.meta.total_s = self.elapsed()
         meta_text = self.meta.render(list(cfg.metadata_fields)) if cfg.metadata_node else None
         self.reply_qq_message_id = await send_forward(
-            self.api,
+            self.qq,
             group_id=self.group_id,
             user_id=self.user_id,
             reply=reply,

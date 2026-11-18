@@ -41,9 +41,6 @@ class InteractionSettings(BaseModel):
     tldr_focus_max_chars: int = Field(
         default=150, ge=50, le=2000, description="tldr 后面带了关注点时，正文的目标字数（只回答关注点）"
     )
-    forward_render: Literal["plain", "nested_markdown"] = Field(
-        default="plain", description="plain：去掉 markdown 语法；nested_markdown：双层合并转发里发 markdown 段"
-    )
     failure_emoji: str = Field(default="5", description="出错时贴的表情")
     ratelimited_emoji: str = Field(default="38", description="被限流或排队超时时贴的表情")
     quote_reply: Literal["always", "when_busy", "never"] = Field(
@@ -254,8 +251,9 @@ class ToolSettings(BaseModel):
 
 
 class OpsSettings(BaseModel):
-    napcat_write_actions: list[str] = Field(
+    qq_write_actions: list[str] = Field(
         default_factory=lambda: [
+            # OneBot 11
             "delete_msg",
             "set_group_ban",
             "set_group_whole_ban",
@@ -266,9 +264,19 @@ class OpsSettings(BaseModel):
             "_send_group_notice",
             "send_group_msg",
             "send_private_msg",
+            # Milky
+            "recall_group_message",
+            "set_group_member_mute",
+            "set_group_whole_mute",
+            "kick_group_member",
+            "set_group_member_card",
+            "set_group_essence_message",
+            "send_group_announcement",
+            "send_group_message",
+            "send_private_message",
         ],
-        description="管理助手（超级管理员）可以调用的会改东西的 NapCat 接口；get_ 开头的只读接口不用列。"
-        "退群、删好友、改账号资料、处理加群加好友申请、重启这类接口始终禁止",
+        description="管理助手（超级管理员）通过 qq_api 可以调用的会改东西的 QQ 接口（OneBot 11 或 Milky 的接口名）；"
+        "get_ 开头的只读接口不用列。退群、删好友、改账号资料、处理加群加好友申请、重启这类接口始终禁止",
     )
 
 

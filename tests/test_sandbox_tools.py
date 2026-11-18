@@ -284,8 +284,8 @@ async def test_sh_writes_the_script_and_runs_the_helper():
 
 
 async def test_sandbox_put_keeps_names_and_never_overwrites(monkeypatch: pytest.MonkeyPatch):
-    async def fake_media(_api: Any, _gid: Any, h: Any, _max: int) -> tuple[bytes, str]:
-        return h.data["blob"], str(h.data.get("name") or "file")
+    async def fake_media(_qq: Any, _gid: Any, _uid: int, h: Any, _max: int) -> tuple[bytes, str]:
+        return h.data["blob"], str(h.data.get("file_name") or "file")
 
     monkeypatch.setattr(sandbox_tools, "media_bytes", fake_media)
     session = FakeSession({})
@@ -293,8 +293,8 @@ async def test_sandbox_put_keeps_names_and_never_overwrites(monkeypatch: pytest.
     ctx = _ctx(session)
     img1 = ctx.deps.handles.add("image", {"blob": png("red")})
     img2 = ctx.deps.handles.add("image", {"blob": png("blue")})
-    doc = ctx.deps.handles.add("file", {"blob": b"a,b\n", "name": "report.csv"})
-    named = ctx.deps.handles.add("file", {"blob": b"x", "name": "notes.txt"})
+    doc = ctx.deps.handles.add("file", {"blob": b"a,b\n", "file_name": "report.csv"})
+    named = ctx.deps.handles.add("file", {"blob": b"x", "file_name": "notes.txt"})
     keys = [k for k in (img1, img2, doc, named) if k]
     assert len(keys) == 4
     parallel = await asyncio.gather(sandbox_put(ctx, keys[0]), sandbox_put(ctx, keys[1]))

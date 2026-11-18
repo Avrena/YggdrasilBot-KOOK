@@ -3,15 +3,17 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 
-from tests.support.onebot import group_message
+from tests.support.qq import incoming
 from yggdrasil.agent import context
 from yggdrasil.agent.deps import Handles
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.memory import search
 from yggdrasil.memory.search import MessageView
 from yggdrasil.people import People, label, mentioned_ids, self_label
+from yggdrasil.qq import segments as seg
+from yggdrasil.qq.model import Incoming, Message, Sender
+from yggdrasil.qq.segments import Segment
 from yggdrasil.settings import ContextSettings, Settings
 from yggdrasil.triggers.index import Resolved
 
@@ -48,10 +50,10 @@ def test_mention_rewrite() -> None:
 
 def test_normalize_mentions() -> None:
     segs: list[dict[str, Any]] = [
-        {"type": "at", "data": {"qq": str(SELF)}},
-        {"type": "text", "data": {"text": " 看看"}},
-        {"type": "at", "data": {"qq": str(FRIEND)}},
-        {"type": "at", "data": {"qq": "all"}},
+        seg.mention(SELF),
+        seg.text(" 看看"),
+        seg.mention(FRIEND),
+        {"type": "mention_all", "data": {}},
     ]
     assert normalize(segs).text == f"@{SELF}  看看@{FRIEND} @全体成员"  # stored form is unchanged
     assert normalize(segs, PEOPLE.mention).text == "@耶梦加得(你) 看看@阿明(1000000002) @全体成员"
@@ -87,12 +89,18 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(search, "open_topics", nothing)
 
 
-def _event(segs: Message, reply: dict[str, Any] | None = None) -> GroupMessageEvent:
-    return group_message(segs, group_id=100, user_id=FRIEND, self_id=SELF, card="阿明", to_me=True, reply=reply)
+def _event(segs: list[Segment] | str, reply: Message | None = None, *, message_id: int = 1) -> Incoming:
+    return incoming(
+        segs, group_id=100, user_id=FRIEND, self_id=SELF, message_id=message_id, name="阿明", to_me=True, reply=reply
+    )
+
+
+def _forward(forward_id: str, title: str = "") -> dict[str, Any]:
+    return {"type": "forward", "data": {"forward_id": forward_id, "title": title, "preview": [], "summary": ""}}
 
 
 async def test_trigger_renders_self_mention(offline: None) -> None:
-    event = _event(Message([MessageSegment.at(SELF), MessageSegment.text(" 总结一下")]))
+    event = _event([seg.mention(SELF), seg.text(" 总结一下")])
     resolved = Resolved("tldr", 1, "", (), "self", 0, False)
     ctx = await context.build_context(event, resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text="")
     assert "@耶梦加得(你) 总结一下" in ctx.prompt
@@ -118,7 +126,7 @@ async def test_context_display_lists_only_the_recent_messages_the_prompt_kept(
     monkeypatch.setattr(search, "recent_messages", recent_messages)
     settings = Settings(context=ContextSettings(max_context_chars=1000))
     resolved = Resolved("chat", 1, "", (), "self", 0, False)
-    event = _event(Message("问个问题"))
+    event = _event("问个问题")
     ctx = await context.build_context(event, resolved, settings, self_id=SELF, bot_name="耶梦加得", request_text="")
     shown = [m.id for m in recent if f"] #{m.id} " in ctx.prompt]
     assert 1 not in shown
@@ -131,9 +139,7 @@ async def test_a_bare_tldr_gets_the_recent_chat_as_its_target(offline: None, mon
     # The prod failure: a plain "tldr" right after someone posted a forward got no chat at all, so the model saw
     # nothing to summarize and stayed silent.
     t0 = datetime(2026, 10, 28, 16, 55, tzinfo=UTC)
-    forward = MessageView(
-        68950, 9, t0, 10001, "小红", "[合并转发]", None, False, [{"type": "forward", "data": {"id": "r"}}]
-    )
+    forward = MessageView(68950, 9, t0, 10001, "小红", "[合并转发]", None, False, [_forward("r")])
 
     async def recent_messages(*_: Any, **__: Any) -> list[MessageView]:
         return [forward]
@@ -141,14 +147,14 @@ async def test_a_bare_tldr_gets_the_recent_chat_as_its_target(offline: None, mon
     monkeypatch.setattr(search, "recent_messages", recent_messages)
     resolved = Resolved("tldr", 1, "", (), "self", 0, False)
     bare = await context.build_context(
-        _event(Message("tldr")), resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text=""
+        _event("tldr"), resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text=""
     )
     assert "#68950 小红(10001): [合并转发] (fwd#1)" in bare.prompt
     assert "目标是「最近群聊」里请求之前的内容" in bare.prompt
 
     # "tldr <topic>" names its own target: no chat up front (it would slant the summary).
     worded = await context.build_context(
-        _event(Message("tldr qemu microvm")),
+        _event("tldr qemu microvm"),
         resolved,
         Settings(),
         self_id=SELF,
@@ -176,7 +182,7 @@ async def test_words_after_a_link_in_a_tldr_are_its_focus(
 ) -> None:
     resolved = Resolved("tldr", 1, "", (), "self", 0, False)
     ctx = await context.build_context(
-        _event(Message(f"tldr {text}")), resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text=text
+        _event(f"tldr {text}"), resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text=text
     )
 
     def block(tag: str) -> str | None:
@@ -192,9 +198,9 @@ async def test_a_quoted_reply_brings_the_message_it_replies_to(offline: None, mo
     # The prod failure: "tldr" on a one-line remark that replies to a forward. Only the remark reached the prompt,
     # so the forward had no handle and the model could not open it.
     t0 = datetime(2026, 10, 30, 4, 0, tzinfo=UTC)
-    remark_segs = [{"type": "reply", "data": {"id": "777"}}, {"type": "text", "data": {"text": "否定与自我否定"}}]
+    remark_segs = [seg.reply(777), seg.text("否定与自我否定")]
     remark = MessageView(73120, 2, t0, FRIEND, "阿明", "否定与自我否定", 777, False, remark_segs)
-    forward_segs = [{"type": "forward", "data": {"id": "res-1"}}]
+    forward_segs = [_forward("res-1")]
     forward = MessageView(73117, 777, t0 - timedelta(minutes=6), 10001, "老王", "[合并转发]", None, False, forward_segs)
     rows = {2: remark, 777: forward}
 
@@ -202,15 +208,8 @@ async def test_a_quoted_reply_brings_the_message_it_replies_to(offline: None, mo
         return rows.get(qq_message_id)
 
     monkeypatch.setattr(search, "find_by_qq_id", find_by_qq_id)
-    reply = {
-        "time": int(t0.timestamp()),
-        "message_type": "group",
-        "message_id": 2,
-        "real_id": 2,
-        "sender": {"user_id": FRIEND, "card": "阿明"},
-        "message": remark_segs,
-    }
-    event = _event(Message([MessageSegment.reply(2), MessageSegment.at(SELF), MessageSegment.text(" tldr")]), reply)
+    reply = Message(2, 100, Sender(FRIEND, "阿明"), int(t0.timestamp()), remark_segs)
+    event = _event([seg.reply(2), seg.mention(SELF), seg.text(" tldr")], reply)
     resolved = Resolved("tldr", 1, "", (), "quoted", 0, False)
     ctx = await context.build_context(event, resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text="")
 
@@ -228,7 +227,7 @@ async def test_recent_chat_shows_who_replies_to_what(offline: None, monkeypatch:
     # The prod failure: "呃呃" replied to the bot's forward, but the chat lines dropped the reply, so later the
     # model guessed from timing that it answered someone else.
     t0 = datetime(2026, 11, 4, 1, 14, tzinfo=UTC)
-    fwd_segs = [{"type": "forward", "data": {"id": "res-1", "title": "sudo-rs 不兼容"}}]
+    fwd_segs = [_forward("res-1", "sudo-rs 不兼容")]
     answer = MessageView(86423, 501, t0, SELF, "耶梦加得", "[合并转发:sudo-rs 不兼容]", None, True, fwd_segs)
     aside = MessageView(86425, 502, t0 + timedelta(minutes=1), 10001, "小红", "看看", 300, False)
     react = MessageView(86426, 503, t0 + timedelta(minutes=1), 10002, "老王", "呃呃", 501, False)
@@ -247,7 +246,7 @@ async def test_recent_chat_shows_who_replies_to_what(offline: None, monkeypatch:
     monkeypatch.setattr(search, "find_by_qq_ids", find_by_qq_ids)
     resolved = Resolved("chat", 1, "", (), "self", 0, False)
     ctx = await context.build_context(
-        _event(Message("问个问题")), resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text=""
+        _event("问个问题"), resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text=""
     )
     assert "#86423 耶梦加得(你): [合并转发:sudo-rs 不兼容] (fwd#1)" in ctx.prompt
     assert "#86426 老王(10002) 回复 #86423 耶梦加得(你): 呃呃" in ctx.prompt
@@ -272,26 +271,14 @@ async def test_a_follow_up_prompt_has_only_the_chat_since_the_answer(
 
     monkeypatch.setattr(search, "messages_after", messages_after)
     handles = Handles()
-    handles.add("forward", {"id": "res-1"})
-    handles.add("image", {"file": "old.png"})
-    image = MessageSegment.image("https://example.com/new.png")
-    reply = {
-        "time": int(t0.timestamp()),
-        "message_type": "group",
-        "message_id": 501,
-        "real_id": 501,
-        "sender": {"user_id": SELF},
-        "message": [],
+    handles.add("forward", {"forward_id": "res-1"})
+    handles.add("image", {"ref": "old.png"})
+    image = {
+        "type": "image",
+        "data": {"ref": "new.png", "url": "https://example.com/new.png", "summary": "", "sticker": False, "sha1": ""},
     }
-    event = group_message(
-        Message([MessageSegment.reply(501), MessageSegment.text("为什么"), image]),
-        group_id=100,
-        user_id=FRIEND,
-        self_id=SELF,
-        message_id=7,
-        card="阿明",
-        reply=reply,
-    )
+    reply = Message(501, 100, Sender(SELF, ""), int(t0.timestamp()), [])
+    event = _event([seg.reply(501), seg.text("为什么"), image], reply, message_id=7)
     ctx = await context.build_followup_context(
         event,
         Settings(),

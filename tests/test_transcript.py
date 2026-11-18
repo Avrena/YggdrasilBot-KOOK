@@ -31,7 +31,7 @@ def _agent(
 
     @agent.tool
     async def view_image(ctx: RunContext[TraceNotes], id: int) -> ToolReturn:
-        ctx.deps.image(PNG, "image/png", segment={"file": "abc.png", "url": "https://example.com/abc.png"})
+        ctx.deps.image(PNG, "image/png", segment={"ref": "abc.png", "url": "https://example.com/abc.png", "sha1": ""})
         return ToolReturn(return_value=f"图片 #{id}", content=[BinaryContent(PNG, media_type="image/png")])
 
     @agent.tool

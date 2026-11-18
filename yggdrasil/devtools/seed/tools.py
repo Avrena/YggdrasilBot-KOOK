@@ -9,7 +9,7 @@ from typing import Any
 from pydantic_ai import BinaryContent, ModelRetry, RunContext, ToolReturn
 
 from yggdrasil.db.models import Message
-from yggdrasil.devtools.seed.chat import Chat, format_lines
+from yggdrasil.devtools.seed.chat import FORWARDS, Chat, format_lines
 from yggdrasil.devtools.seed.data import MEDIA, TECH, Media
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.transcript.notes import TraceNotes
@@ -26,7 +26,7 @@ class SeedDeps:
 
 def _image_of(m: Message) -> tuple[dict[str, Any], Media]:
     seg = next(s for s in m.segments if s["type"] == "image")
-    name = next(k for k, v in MEDIA.items() if seg["data"]["file"].startswith(v.md5))
+    name = next(k for k, v in MEDIA.items() if seg["data"]["sha1"] == v.sha1)
     return seg["data"], MEDIA[name]
 
 
@@ -68,33 +68,30 @@ async def expand_forward(ctx: RunContext[SeedDeps], handle: str) -> str:
     shown: list[ForwardNode] = []
     lines: list[str] = []
 
-    def walk(content: list[dict[str, Any]], depth: int) -> None:
-        for rec in content:
-            sender = rec["sender"]
-            sent = datetime.fromtimestamp(rec["time"]).astimezone()
+    def walk(forward_id: str, depth: int) -> None:
+        for node in FORWARDS[forward_id]:
+            sent = datetime.fromtimestamp(node["time"]).astimezone()
             shown.append(
                 ForwardNode(
                     depth=depth,
-                    user_id=sender["user_id"],
-                    sender_name=sender["nickname"],
+                    user_id=node["user_id"],
+                    sender_name=node["name"],
                     sent_at=sent,
-                    segments=rec["message"],
+                    segments=node["segments"],
                 )
             )
-            text = normalize(rec["message"]).text
-            lines.append(
-                f"{'  ' * depth}[{sent.strftime('%m-%d %H:%M')}] {sender['nickname']}({sender['user_id']}): {text}"
-            )
-            for seg in rec["message"]:
+            text = normalize(node["segments"]).text
+            lines.append(f"{'  ' * depth}[{sent.strftime('%m-%d %H:%M')}] {node['name']}({node['user_id']}): {text}")
+            for seg in node["segments"]:
                 if seg["type"] == "forward":
-                    walk(seg["data"]["content"], depth + 1)
+                    walk(seg["data"]["forward_id"], depth + 1)
 
     # A tldr on a remark about the forward quotes the remark; the forward is one step up its reply chain.
     target = ctx.deps.target.segments
     forward = next((s for s in target if s["type"] == "forward"), None) or next(
         s for s in ctx.deps.chat.keys["fwd"].segments if s["type"] == "forward"
     )
-    walk(forward["data"]["content"], 0)
+    walk(forward["data"]["forward_id"], 0)
     ctx.deps.notes.show(ctx.tool_call_id, QQForwardDisplay(nodes=shown))
     return "\n".join(lines)
 

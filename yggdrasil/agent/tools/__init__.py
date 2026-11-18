@@ -80,7 +80,7 @@ async def recall_message(ctx: RunContext[Deps]) -> str:
     target = ctx.deps.recall_target
     if target is None:
         raise ToolError("这次没有可以撤回的消息：请求者没有回复你的消息，或者没有权限让你撤回")
-    await ctx.deps.api.delete_msg(message_id=target)
+    await ctx.deps.qq.recall(group_id=ctx.deps.group_id, user_id=ctx.deps.user_id, message_id=target)
     ctx.deps.actions.append(f"recall {target}")
     return "已撤回"
 

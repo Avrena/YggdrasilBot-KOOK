@@ -3,14 +3,15 @@ when someone pasted the same link again (two separate QQ messages each time, not
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 
 from tests.support.groups import fresh_group
-from tests.support.onebot import group_message
+from tests.support.qq import FakeQQ, incoming
 from yggdrasil.pipeline import invoke
+from yggdrasil.qq import segments as seg
+from yggdrasil.qq.model import Incoming, Message, Sender
 from yggdrasil.runtime import GroupInfo, Snapshot
 from yggdrasil.settings import InteractionSettings
 from yggdrasil.triggers.index import Resolved
@@ -20,7 +21,7 @@ QUOTED, OTHER_QUOTED = 500, 501
 TLDR = Resolved("tldr", 1, "", (), "quoted_or_self", 0, False)
 CHAT = Resolved("chat", 2, "", (), "quoted_or_self", 0, False)
 SILENT = InteractionSettings().silent_emoji
-BOT = cast(Bot, object())  # never called: runs and reactions are faked
+QQ = FakeQQ(self_id=SELF)  # never called: runs and reactions are faked
 
 
 @dataclass
@@ -36,7 +37,7 @@ def group(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]) ->
     no_limits = {"ratelimit": {"user_per_minute": 0, "group_per_minute": 0}}
     snapshot(groups={GROUP: GroupInfo(GROUP, "g", True, no_limits)}, superusers=frozenset({OWNER}))
 
-    async def react(_api: Any, message_id: int, emoji: str) -> None:
+    async def react(_qq: Any, _group_id: int | None, message_id: int, emoji: str) -> None:
         g.reactions.append((message_id, emoji))
 
     async def run(self: invoke.Invocator) -> str:
@@ -48,34 +49,24 @@ def group(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]) ->
     return g
 
 
-def message(
-    message_id: int, user_id: int, text: str, *, quoting: int | None = None, image: bool = False
-) -> GroupMessageEvent:
-    segs = Message([MessageSegment.reply(quoting)] if quoting is not None else [])
-    segs.append(MessageSegment.text(text))
+def message(message_id: int, user_id: int, text: str, *, quoting: int | None = None, image: bool = False) -> Incoming:
+    segs = [seg.reply(quoting)] if quoting is not None else []
+    segs.append(seg.text(text))
     if image:
-        segs.append(MessageSegment.image("https://example.com/cat.png"))
-    quoted = {
-        "time": 1760000000,
-        "message_type": "group",
-        "message_id": quoting,
-        "real_id": quoting,
-        "sender": {"user_id": 20009, "card": "老王"},
-        "message": [{"type": "text", "data": {"text": "很长的一段话"}}],
-    }
-    return group_message(
-        segs,
-        group_id=GROUP,
-        user_id=user_id,
-        self_id=SELF,
-        message_id=message_id,
-        card="群友",
-        reply=quoted if quoting is not None else None,
+        segs.append(
+            {
+                "type": "image",
+                "data": {"ref": "r", "url": "https://example.com/cat.png", "summary": "", "sticker": False, "sha1": ""},
+            }
+        )
+    quoted = Message(quoting, GROUP, Sender(20009, "老王"), 1760000000, [seg.text("很长的一段话")]) if quoting else None
+    return incoming(
+        segs, group_id=GROUP, user_id=user_id, self_id=SELF, message_id=message_id, name="群友", reply=quoted
     )
 
 
-async def tldr(event: GroupMessageEvent, words: str = "") -> None:
-    await invoke.run(BOT, event, TLDR, "tldr", words)
+async def tldr(m: Incoming, words: str = "") -> None:
+    await invoke.run(QQ, m, TLDR, "tldr", words)
 
 
 async def test_one_answer_per_target(group: Group) -> None:
@@ -104,7 +95,7 @@ async def test_other_requests_still_run(group: Group) -> None:
     await tldr(message(7, BOB, "tldr", image=True))
     await tldr(message(8, OWNER, "tldr", quoting=QUOTED))  # superusers re-run on purpose
     for i in (9, 10):  # a chat answer is a conversation with its asker
-        await invoke.run(BOT, message(i, ALICE, "早", quoting=QUOTED), CHAT, "chat", "早")
+        await invoke.run(QQ, message(i, ALICE, "早", quoting=QUOTED), CHAT, "chat", "早")
     assert group.started == list(range(1, 11))
     assert group.reactions == []
 

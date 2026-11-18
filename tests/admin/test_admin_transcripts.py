@@ -40,7 +40,13 @@ class Seeded:
 @pytest.fixture
 async def seeded() -> AsyncIterator[Seeded]:
     image = b"\x89PNG\r\n\x1a\n" + os.urandom(16)
-    segment = {"file": f"{uuid.uuid4().hex}.png", "url": "https://example.com/expired.png", "sub_type": 0}
+    segment = {
+        "ref": f"{uuid.uuid4().hex}.png",
+        "url": "https://example.com/expired.png",
+        "summary": "[图片]",
+        "sticker": False,
+        "sha1": uuid.uuid4().hex + uuid.uuid4().hex[:8],
+    }
     now = datetime.now(UTC)
     async with get_session() as s:
         inv = Invocation(

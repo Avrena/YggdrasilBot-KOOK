@@ -156,7 +156,7 @@ async def generate_image(
     refs: list[tuple[bytes, str]] = []
     for ref in references or []:
         h = await resolve_ref(ctx, ref, "image", "file")
-        img = await load_image(deps.api, deps.group_id, h)
+        img = await load_image(deps.qq, deps.group_id, deps.user_id, h)
         deps.notes.image(img.data, img.content.media_type, segment=h.data)
         refs.append((img.data, img.content.media_type))
     try:
@@ -174,7 +174,7 @@ async def generate_image(
     cost = f"（花费 ${result.cost:.3f}）" if result.cost is not None else ""
     try:
         message_id = await send_image(
-            deps.api,
+            deps.qq,
             group_id=deps.group_id,
             user_id=deps.user_id,
             reply_to=deps.trigger_message_id,

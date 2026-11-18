@@ -1,0 +1,414 @@
+{
+  "_source": "Yogurt 0.1.0-dev.257 (Milky 1.3), 2026-11-17: real answers, trimmed; ids, names, texts and resource ids replaced",
+  "get_history_messages": {
+    "messages": [
+      {
+        "message_scene": "group",
+        "peer_id": 20001,
+        "message_seq": 3394,
+        "sender_id": 10000,
+        "time": 1791853673,
+        "segments": [
+          {
+            "type": "forward",
+            "data": {
+              "forward_id": "jughq1/7HAc3example+forwardid/wIoEQWr2bITi1AgxkVMd",
+              "title": "群聊的聊天记录",
+              "preview": [
+                "10000: 这个帖子我打不开，所以总结不了。",
+                "10000: 来源",
+                "10000: ⚙ 元数据"
+              ],
+              "summary": "查看3条转发消息"
+            }
+          }
+        ],
+        "group": {
+          "group_id": 20001,
+          "group_name": "测试群",
+          "member_count": 3,
+          "max_member_count": 200,
+          "remark": "",
+          "created_time": 1617374305,
+          "description": "",
+          "question": "",
+          "announcement": ""
+        },
+        "group_member": {
+          "user_id": 10000,
+          "nickname": "测试bot",
+          "sex": "unknown",
+          "group_id": 20001,
+          "card": "",
+          "title": "",
+          "level": 2,
+          "role": "admin",
+          "join_time": 1627093855,
+          "last_sent_time": 1794985862
+        }
+      },
+      {
+        "message_scene": "group",
+        "peer_id": 20001,
+        "message_seq": 3408,
+        "sender_id": 10001,
+        "time": 1792384748,
+        "segments": [
+          {
+            "type": "image",
+            "data": {
+              "resource_id": "EhRMlR0Ry1eRzHbaqecjcmCCo8MGfxiAICD_CiiEs4e4ocWXAzIEcHJvZFCAvaMB",
+              "temp_url": "https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=EhRMlR0Ry1eRzHbaqecjcmCCo8MGfxiAICD_CiiEs4e4ocWXAzIEcHJvZFCAvaMB&rkey=CAMSOexample",
+              "width": 1664,
+              "height": 362,
+              "summary": "[图片]",
+              "sub_type": "normal"
+            }
+          }
+        ],
+        "group": {
+          "group_id": 20001,
+          "group_name": "测试群",
+          "member_count": 3,
+          "max_member_count": 200,
+          "remark": "",
+          "created_time": 1617374305,
+          "description": "",
+          "question": "",
+          "announcement": ""
+        },
+        "group_member": {
+          "user_id": 10001,
+          "nickname": "群主",
+          "sex": "unknown",
+          "group_id": 20001,
+          "card": "",
+          "title": "",
+          "level": 2,
+          "role": "owner",
+          "join_time": 1627093855,
+          "last_sent_time": 1794985862
+        }
+      },
+      {
+        "message_scene": "group",
+        "peer_id": 20001,
+        "message_seq": 3416,
+        "sender_id": 10001,
+        "time": 1793323582,
+        "segments": [
+          {
+            "type": "reply",
+            "data": {
+              "message_seq": 3415,
+              "sender_id": 10001,
+              "time": 1793323573,
+              "segments": [
+                {
+                  "type": "text",
+                  "data": {
+                    "text": "这是无栈协程吧"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "type": "mention",
+            "data": {
+              "user_id": 10002,
+              "name": "成员乙"
+            }
+          },
+          {
+            "type": "text",
+            "data": {
+              "text": " "
+            }
+          }
+        ],
+        "group": {
+          "group_id": 20001,
+          "group_name": "测试群",
+          "member_count": 3,
+          "max_member_count": 200,
+          "remark": "",
+          "created_time": 1617374305,
+          "description": "",
+          "question": "",
+          "announcement": ""
+        },
+        "group_member": {
+          "user_id": 10001,
+          "nickname": "群主",
+          "sex": "unknown",
+          "group_id": 20001,
+          "card": "",
+          "title": "",
+          "level": 2,
+          "role": "owner",
+          "join_time": 1627093855,
+          "last_sent_time": 1794985862
+        }
+      },
+      {
+        "message_scene": "group",
+        "peer_id": 20001,
+        "message_seq": 3420,
+        "sender_id": 10001,
+        "time": 1793756946,
+        "segments": [
+          {
+            "type": "mention",
+            "data": {
+              "user_id": 10002,
+              "name": "成员乙"
+            }
+          },
+          {
+            "type": "text",
+            "data": {
+              "text": " "
+            }
+          },
+          {
+            "type": "text",
+            "data": {
+              "text": "把参考图转成涂鸦风格"
+            }
+          }
+        ],
+        "group": {
+          "group_id": 20001,
+          "group_name": "测试群",
+          "member_count": 3,
+          "max_member_count": 200,
+          "remark": "",
+          "created_time": 1617374305,
+          "description": "",
+          "question": "",
+          "announcement": ""
+        },
+        "group_member": {
+          "user_id": 10001,
+          "nickname": "群主",
+          "sex": "unknown",
+          "group_id": 20001,
+          "card": "",
+          "title": "",
+          "level": 2,
+          "role": "owner",
+          "join_time": 1627093855,
+          "last_sent_time": 1794985862
+        }
+      },
+      {
+        "message_scene": "group",
+        "peer_id": 20001,
+        "message_seq": 3423,
+        "sender_id": 10000,
+        "time": 1794985862,
+        "segments": [
+          {
+            "type": "text",
+            "data": {
+              "text": "好的"
+            }
+          }
+        ],
+        "group": {
+          "group_id": 20001,
+          "group_name": "测试群",
+          "member_count": 3,
+          "max_member_count": 200,
+          "remark": "",
+          "created_time": 1617374305,
+          "description": "",
+          "question": "",
+          "announcement": ""
+        },
+        "group_member": {
+          "user_id": 10000,
+          "nickname": "测试bot",
+          "sex": "unknown",
+          "group_id": 20001,
+          "card": "",
+          "title": "",
+          "level": 2,
+          "role": "admin",
+          "join_time": 1627093855,
+          "last_sent_time": 1794985862
+        }
+      }
+    ],
+    "next_message_seq": 3393
+  },
+  "get_message": {
+    "message": {
+      "message_scene": "group",
+      "peer_id": 20001,
+      "message_seq": 3415,
+      "sender_id": 10001,
+      "time": 1793323573,
+      "segments": [
+        {
+          "type": "reply",
+          "data": {
+            "message_seq": 3414,
+            "sender_id": 10001,
+            "time": 1793323566,
+            "segments": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "[聊天记录]"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "text",
+          "data": {
+            "text": "这是无栈协程吧"
+          }
+        }
+      ],
+      "group": {
+        "group_id": 20001,
+        "group_name": "测试群",
+        "member_count": 3,
+        "max_member_count": 200,
+        "remark": "",
+        "created_time": 1617374305,
+        "description": "",
+        "question": "",
+        "announcement": ""
+      },
+      "group_member": {
+        "user_id": 10001,
+        "nickname": "群主",
+        "sex": "unknown",
+        "group_id": 20001,
+        "card": "",
+        "title": "",
+        "level": 2,
+        "role": "owner",
+        "join_time": 1627093855,
+        "last_sent_time": 1794985862
+      }
+    }
+  },
+  "get_forwarded_messages": {
+    "messages": [
+      {
+        "message_seq": 5209404,
+        "time": 1791853672,
+        "sender_name": "10000",
+        "avatar_url": "https://example.com/avatar.png",
+        "segments": [
+          {
+            "type": "text",
+            "data": {
+              "text": "这个帖子我打不开，所以总结不了。"
+            }
+          }
+        ]
+      },
+      {
+        "message_seq": 2912213,
+        "time": 1791853672,
+        "sender_name": "10000",
+        "avatar_url": "https://example.com/avatar.png",
+        "segments": [
+          {
+            "type": "text",
+            "data": {
+              "text": "来源"
+            }
+          }
+        ]
+      },
+      {
+        "message_seq": 4298891,
+        "time": 1791853672,
+        "sender_name": "10000",
+        "avatar_url": "https://example.com/avatar.png",
+        "segments": [
+          {
+            "type": "text",
+            "data": {
+              "text": "⚙ 元数据"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "message_receive": {
+    "event_type": "message_receive",
+    "time": 1793323582,
+    "self_id": 10000,
+    "data": {
+      "message_scene": "group",
+      "peer_id": 20001,
+      "message_seq": 3416,
+      "sender_id": 10001,
+      "time": 1793323582,
+      "segments": [
+        {
+          "type": "reply",
+          "data": {
+            "message_seq": 3415,
+            "sender_id": 10001,
+            "time": 1793323573,
+            "segments": [
+              {
+                "type": "text",
+                "data": {
+                  "text": "这是无栈协程吧"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "mention",
+          "data": {
+            "user_id": 10000,
+            "name": "测试bot"
+          }
+        },
+        {
+          "type": "text",
+          "data": {
+            "text": " 解释一下"
+          }
+        }
+      ],
+      "group": {
+        "group_id": 20001,
+        "group_name": "测试群",
+        "member_count": 3,
+        "max_member_count": 200,
+        "remark": "",
+        "created_time": 1617374305,
+        "description": "",
+        "question": "",
+        "announcement": ""
+      },
+      "group_member": {
+        "user_id": 10001,
+        "nickname": "群主",
+        "sex": "unknown",
+        "group_id": 20001,
+        "card": "",
+        "title": "",
+        "level": 2,
+        "role": "owner",
+        "join_time": 1627093855,
+        "last_sent_time": 1794985862
+      }
+    }
+  }
+}

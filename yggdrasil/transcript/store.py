@@ -48,9 +48,9 @@ async def snapshot_messages(ids: set[int]) -> dict[str, QQMessage]:
 def _mentioned(segments: list[dict[str, Any]]) -> set[int]:
     out: set[int] = set()
     for seg in segments:
-        qq = str((seg.get("data") or {}).get("qq", "")) if seg.get("type") == "at" else ""
-        if qq.isdigit():
-            out.add(int(qq))
+        uid = (seg.get("data") or {}).get("user_id") if seg.get("type") == "mention" else None
+        if isinstance(uid, int) and uid > 0:
+            out.add(uid)
     return out
 
 

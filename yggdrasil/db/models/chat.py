@@ -38,7 +38,8 @@ class Message(Base):
     sent_at: Mapped[datetime]
     group_id: Mapped[int]
     user_id: Mapped[int]
-    # NapCat message ids are 32-bit hashes and repeat over time; only use them for recent lookups.
+    # The protocol's own id (Milky: the group seq; OneBot/SnowLuma: a 32-bit hash that repeats over time), so only use
+    # it for recent lookups within one group. ``message_seq`` is the group seq when known.
     qq_message_id: Mapped[int]
     message_seq: Mapped[int | None]
     reply_to_qq_id: Mapped[int | None]
@@ -66,9 +67,10 @@ class UserAlias(Base):
 class Sticker(Base):
     """A sticker seen in groups, one row per distinct sticker.
 
-    ``kind = 'image'``: a custom sticker (an image segment with ``sub_type`` 1). ``ref`` is the md5 QQ uses as its file
-    name; the image is saved on first sight (QQ links die when the rkey rotates) and the ``sticker`` task describes,
-    tags and moderates it. ``kind = 'mface'``: a QQ market face, ``ref`` = ``"<package_id>:<emoji_id>"``, sent by id.
+    ``kind = 'image'``: a custom sticker (an ``image`` segment with ``sticker`` set). ``ref`` is the content sha1 QQ
+    embeds in the NT file id (``image.sha1``); the image is saved on first sight (QQ links die when the rkey rotates)
+    and the ``sticker`` task describes, tags and moderates it. ``kind = 'mface'``: a QQ market face,
+    ``ref`` = ``"<package_id>:<emoji_id>"``, sent by id.
     """
 
     __tablename__ = "stickers"

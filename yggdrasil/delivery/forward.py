@@ -7,23 +7,15 @@ import base64
 import re
 import time
 from datetime import UTC, datetime
-from typing import Any, Literal
-
-from nonebot.adapters.onebot.v11 import ActionFailed, NetworkError
+from typing import Literal
 
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.core.log import LOGGER
-from yggdrasil.delivery.send import (
-    SEND_IMAGE_TIMEOUT_S,
-    MessageDropped,
-    is_dropped,
-    notify_dropped,
-    record_self,
-    send_text,
-)
-from yggdrasil.ingest.normalize import multimsg_resid
-from yggdrasil.napcat.api import NapCatAPI, image_seg, markdown_seg, node_seg, text_seg
-from yggdrasil.napcat.models import Segment
+from yggdrasil.delivery.send import SEND_IMAGE_TIMEOUT_S, MessageDropped, notify_dropped, record_self, send_text
+from yggdrasil.qq import segments as seg
+from yggdrasil.qq.client import QQ
+from yggdrasil.qq.model import Dropped, Node, QQError, Unconfirmed
+from yggdrasil.qq.segments import ForwardNodeData, Segment
 from yggdrasil.settings import InteractionSettings
 
 # Code is kept verbatim (only its fences and backticks go): emphasis rules would eat ``__init__`` or ``*args``.
@@ -90,7 +82,7 @@ def build_nodes(
     self_id: int,
     nickname: str,
     images: list[tuple[bytes, str]] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[Node]:
     bodies: list[str] = []
     sections = list(reply.sections)
     if len(sections) > cfg.max_sections:
@@ -99,30 +91,22 @@ def build_nodes(
         merged = "\n\n".join(s.content for s in extra)
         sections = [*keep, extra[0].model_copy(update={"content": merged})]
     for section in sections:
-        content = section.content if cfg.forward_render == "nested_markdown" else strip_markdown(section.content)
-        bodies.extend(split_text(content, cfg.node_max_chars))
+        bodies.extend(split_text(strip_markdown(section.content), cfg.node_max_chars))
     if reply.sources:
         bodies.append(_sources_text(reply))
     limit = cfg.forward_max_nodes - (1 if meta_text else 0)
     if len(bodies) > limit:
         bodies = [*bodies[: limit - 1], "\n\n".join(bodies[limit - 1 :])]
 
-    def node(text: str) -> dict[str, Any]:
-        if cfg.forward_render == "nested_markdown":
-            # NapCat only renders markdown inside a nested (double-layer) forward.
-            inner = node_seg(self_id, nickname, [markdown_seg(text)])
-            return node_seg(self_id, nickname, [inner])
-        return node_seg(self_id, nickname, [text_seg(text)])
-
-    nodes = [node(b) for b in bodies]
+    nodes = [Node(self_id, nickname, [seg.text(b)]) for b in bodies]
     for png, caption in images or []:
-        segs = [image_seg("base64://" + base64.b64encode(png).decode())]
+        segs = [seg.image("base64://" + base64.b64encode(png).decode())]
         if caption:
-            segs.insert(0, text_seg(caption + "\n"))
+            segs.insert(0, seg.text(caption + "\n"))
         # Keep sources last among text nodes but before metadata: insert images after the sections.
-        nodes.insert(len(nodes) - (1 if reply.sources else 0), node_seg(self_id, nickname, segs))
+        nodes.insert(len(nodes) - (1 if reply.sources else 0), Node(self_id, nickname, segs))
     if meta_text:
-        nodes.append(node_seg(self_id, nickname, [text_seg(meta_text)]))
+        nodes.append(Node(self_id, nickname, [seg.text(meta_text)]))
     return nodes
 
 
@@ -149,90 +133,73 @@ SEND_FORWARD_TIMEOUT_S = SEND_IMAGE_TIMEOUT_S
 FORWARD_CHECK_DELAYS_S = (0.0, 5.0, 10.0)
 _HISTORY_PAGE = 30
 _CLOCK_SKEW_S = 5
-# SnowLuma reports a send packet that got no reply, or an answer it couldn't decode, as a failed action although the
-# message may be in the group (it says "check the conversation before retrying"); other failures are definite. An answer
-# without a receipt (``send.is_dropped``) is handled before this: QQ dropped that message.
-_MAYBE_SENT = re.compile(r"message failed: |not confirmed|failed to decode SendMessageResponse")
 
 
-def _maybe_sent(e: ActionFailed | NetworkError) -> bool:
-    if isinstance(e, NetworkError):
-        return (e.msg or "").endswith("timeout")
-    return bool(_MAYBE_SENT.search(str(e.info.get("message") or e.info.get("wording") or "")))
-
-
-def _forward_id(segments: list[Segment]) -> str | None:
-    """Resid of the forward in a history message: a ``forward`` segment (SnowLuma) or the ``com.tencent.multimsg``
-    json card NapCat returns for the bot's own forwards."""
+def _forward_id(segments: list[Segment]) -> str:
+    """Id of the forward in a message, or ""."""
     for s in segments:
-        if s.type == "forward" and s.data.get("id"):
-            return str(s.data["id"])
-        if s.type == "json" and (resid := multimsg_resid(str(s.data.get("data", "")))):
-            return resid
-    return None
+        if s.get("type") == "forward" and (forward_id := (s.get("data") or {}).get("forward_id")):
+            return str(forward_id)
+    return ""
 
 
-def _text_of(segments: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for s in segments:
-        data = s.get("data") or {}
-        match s.get("type"):
-            case "text":
-                parts.append(str(data.get("text", "")))
-            case "markdown":
-                parts.append(str(data.get("content", "")))
-            case "node" | "forward" if isinstance(data.get("content"), list):
-                parts.append(_text_of(data["content"]))
-            case _:
-                pass
-    return "".join(parts)
-
-
-def _text_key(text: str) -> str:
+def _text_key(segments: list[Segment]) -> str:
+    text = "".join(str((s.get("data") or {}).get("text", "")) for s in segments if s.get("type") == "text")
     return "".join(text.split())[:60]
 
 
-async def _is_ours(api: NapCatAPI, resid: str, first: str) -> bool | None:
-    """Whether the forward ``resid`` opens with our first node (another run may have posted one meanwhile).
+async def _is_ours(qq: QQ, forward_id: str, first: str) -> bool | None:
+    """Whether the forward ``forward_id`` opens with our first node (another run may have posted one meanwhile).
     None: can't tell."""
     try:
-        records = (await api.get_forward_msg(id=resid)).messages
+        nodes = await qq.forward(forward_id)
     except Exception as e:
-        LOGGER.warning("get_forward_msg {} after an unconfirmed forward: {}", resid, e)
+        LOGGER.warning("fetching forward {} after an unconfirmed send: {}", forward_id, e)
         return None
-    theirs = _text_key(_text_of([s.model_dump() for s in records[0].segments])) if records else ""
+    theirs = _text_key(nodes[0].segments) if nodes else ""
     if not theirs or not first:
         return None
     return theirs == first
 
 
 async def _find_own_forward(
-    api: NapCatAPI, group_id: int, self_id: int, since: float, nodes: list[dict[str, Any]]
-) -> tuple[int | None, str] | Literal["absent", "unknown"]:
-    """(QQ id, resid) of our forward in the group posted at ``since`` or later. "absent" only when the history
+    qq: QQ, group_id: int, self_id: int, since: float, nodes: list[Node]
+) -> tuple[int, str] | Literal["absent", "unknown"]:
+    """(QQ id, forward id) of our forward in the group posted at ``since`` or later. "absent" only when the history
     reaches back to the send and no bot forward on it could be ours; else "unknown"."""
-    first = _text_key(_text_of(nodes[:1]))
+    first = _text_key(nodes[0].segments) if nodes else ""
     checked: dict[str, bool | None] = {}
     covered = False
     for delay in FORWARD_CHECK_DELAYS_S:
         await asyncio.sleep(delay)
         try:
-            page = (await api.get_group_msg_history(group_id=group_id, count=_HISTORY_PAGE)).messages
+            page = await qq.history(group_id, limit=_HISTORY_PAGE)
         except Exception as e:
             LOGGER.warning("history of {} after an unconfirmed forward: {}", group_id, e)
             covered = False
             continue
         for m in page:
-            if (m.user_id or m.sender.user_id) != self_id or m.time < since - _CLOCK_SKEW_S:
+            if m.sender.user_id != self_id or m.time < since - _CLOCK_SKEW_S:
                 continue
-            resid = _forward_id(m.segments)
-            if resid is None or resid in checked:
+            forward_id = _forward_id(m.segments)
+            if not forward_id or forward_id in checked:
                 continue
-            checked[resid] = mine = await _is_ours(api, resid, first)
+            checked[forward_id] = mine = await _is_ours(qq, forward_id, first)
             if mine:
-                return m.message_id, resid
+                return m.message_id, forward_id
         covered = bool(page) and min(m.time for m in page) <= since - _CLOCK_SKEW_S
     return "absent" if covered and None not in checked.values() else "unknown"
+
+
+async def _sent_forward_id(qq: QQ, group_id: int, user_id: int, message_id: int) -> str:
+    """The id of a forward we just sent, read back from the message (Milky's send returns none); "" when QQ won't
+    say. Only our record needs it: the record keeps the nodes, so the forward reads without it."""
+    try:
+        sent = await qq.message(group_id=group_id, user_id=user_id, message_id=message_id)
+    except Exception as e:
+        LOGGER.warning("fetching sent forward {} for its id failed: {}", message_id, e)
+        return ""
+    return _forward_id(sent.segments)
 
 
 def _record_forward(
@@ -240,25 +207,25 @@ def _record_forward(
     self_id: int,
     nickname: str,
     message_id: int,
-    res_id: str,
+    forward_id: str,
     title: str,
-    nodes: list[dict[str, Any]],
+    nodes: list[Node],
     meta_text: str | None,
 ) -> None:
-    # Keep the node texts with our own record: QQ hands self-sent forwards back as an opaque
-    # card, so this is how a later "reply to the bot's forward" can read what was in it.
-    stored = _stored_nodes(nodes, meta_text)
-    record_self(
-        group_id,
-        self_id,
-        nickname,
-        message_id,
-        [{"type": "forward", "data": {"id": res_id, "title": title, "content": stored}}],
-    )
+    # Keep the node texts with our own record, so a later "reply to the bot's forward" reads what was in it without
+    # asking QQ (which may not hand self-sent forwards back).
+    data = {
+        "forward_id": forward_id,
+        "title": title,
+        "preview": [],
+        "summary": "",
+        "nodes": _stored_nodes(nodes, meta_text),
+    }
+    record_self(group_id, self_id, nickname, message_id, [{"type": "forward", "data": data}])
 
 
 async def send_forward(
-    api: NapCatAPI,
+    qq: QQ,
     *,
     group_id: int | None,
     user_id: int,
@@ -271,45 +238,38 @@ async def send_forward(
 ) -> int | None:
     """The reply as a merged forward; returns the QQ id of what was sent.
 
-    A group forward QQ didn't confirm (no reply within ``SEND_FORWARD_TIMEOUT_S``, or SnowLuma's "maybe delivered"
-    failures) is looked for in the group's history; found, and opening with our first node, it counts as sent. Missing
-    from history that reaches back to the send (and carrying no pictures that may still be uploading), or rejected by
-    QQ outright, it failed and the answer goes out once as plain text instead. None: most likely sent (an unconfirmed
-    private forward, or history that can't tell), so it must not be sent again; like ``send_image``.
+    A group forward QQ didn't confirm (``Unconfirmed``: no answer within ``SEND_FORWARD_TIMEOUT_S``, or a "maybe
+    delivered" failure) is looked for in the group's history; found, and opening with our first node, it counts as
+    sent. Missing from history that reaches back to the send (and carrying no pictures that may still be uploading),
+    or rejected by QQ outright, it failed and the answer goes out once as plain text instead. None: most likely sent
+    (an unconfirmed private forward, or history that can't tell), so it must not be sent again; like ``send_image``.
     """
     nodes = build_nodes(reply, meta_text, cfg, self_id=self_id, nickname=nickname, images=images)
     title = (reply.title or "回复")[:30]  # only for our own message record; never sent as a preview
     target = group_id or user_id
     started = time.time()
     try:
-        if group_id is None:
-            res = await api.send_private_forward_msg(
-                user_id=user_id, messages=nodes, reply_timeout=SEND_FORWARD_TIMEOUT_S
-            )
-            return res.message_id
-        res = await api.send_group_forward_msg(group_id=group_id, messages=nodes, reply_timeout=SEND_FORWARD_TIMEOUT_S)
-    except (ActionFailed, NetworkError) as e:
-        if group_id is not None and is_dropped(e):
-            # Not "maybe delivered": QQ answered and assigned no sequence. The text copy would carry the same content.
+        sent = await qq.send_forward(
+            group_id=group_id, user_id=user_id, nodes=nodes, reply_timeout=SEND_FORWARD_TIMEOUT_S
+        )
+    except QQError as e:
+        if group_id is not None and isinstance(e, Dropped):
+            # Not "maybe delivered": QQ answered and posted nothing. The text copy would carry the same content.
             LOGGER.warning("forward to {} was dropped by QQ: {}", target, e)
-            await notify_dropped(api, group_id, self_id, nickname)
+            await notify_dropped(qq, group_id, self_id, nickname)
             raise MessageDropped(str(e)) from e
-        maybe_sent = _maybe_sent(e)
-        if isinstance(e, NetworkError) and not maybe_sent:
-            raise
-        if not maybe_sent:
+        if not isinstance(e, Unconfirmed):
             LOGGER.warning("forward to {} failed, sending the answer as text: {}", target, e)
         elif group_id is None:
             LOGGER.warning("forward to {} was not confirmed ({}); counting it as sent", target, e)
             return None
         else:
-            match await _find_own_forward(api, group_id, self_id, started, nodes):
-                case (message_id, resid):
+            match await _find_own_forward(qq, group_id, self_id, started, nodes):
+                case (message_id, forward_id):
                     LOGGER.info(
                         "forward to {} was not confirmed ({}) but is in the history as {}", target, e, message_id
                     )
-                    if message_id is not None:
-                        _record_forward(group_id, self_id, nickname, message_id, resid, title, nodes, meta_text)
+                    _record_forward(group_id, self_id, nickname, message_id, forward_id, title, nodes, meta_text)
                     return message_id
                 case "unknown":
                     LOGGER.warning(
@@ -319,8 +279,8 @@ async def send_forward(
                     )
                     return None
                 case "absent" if images:
-                    # Its pictures may still be uploading (SnowLuma has no overall limit on that): a text copy now
-                    # could be followed by the forward.
+                    # Its pictures may still be uploading (QQ has no overall limit on that): a text copy now could be
+                    # followed by the forward.
                     LOGGER.warning(
                         "forward to {} with pictures was not confirmed ({}) and isn't in the history yet; "
                         "counting it as sent",
@@ -335,10 +295,13 @@ async def send_forward(
                         e,
                     )
     else:
-        _record_forward(group_id, self_id, nickname, res.message_id, res.res_id or "", title, nodes, meta_text)
-        return res.message_id
+        if group_id is None:
+            return sent.message_id
+        forward_id = sent.forward_id or await _sent_forward_id(qq, group_id, user_id, sent.message_id)
+        _record_forward(group_id, self_id, nickname, sent.message_id, forward_id, title, nodes, meta_text)
+        return sent.message_id
     return await send_text(
-        api,
+        qq,
         group_id=group_id,
         user_id=user_id,
         reply_to=None,
@@ -348,32 +311,19 @@ async def send_forward(
     )
 
 
-def _stored_nodes(nodes: list[dict[str, Any]], meta_text: str | None) -> list[dict[str, Any]]:
-    """What our message record keeps of a sent forward: its nodes stamped with the send time, images as
-    placeholders, and no metadata node (it describes the run, not the answer, so a later expand_forward
-    must not hand it to the model as content)."""
+def _stored_nodes(nodes: list[Node], meta_text: str | None) -> list[ForwardNodeData]:
+    """What our message record keeps of a sent forward: its nodes stamped with the send time, images as "[图片]"
+    (no base64 PNGs in the message log), and no metadata node (it describes the run, not the answer, so a later
+    expand_forward must not hand it to the model as content)."""
     sent = int(datetime.now(UTC).timestamp())
-    meta = [text_seg(meta_text)] if meta_text else None
-    stored = []
-    for n in nodes:
-        if meta is not None and (n.get("data") or {}).get("content") == meta:
-            continue
-        node = _textual_node(n)
-        node["data"]["time"] = sent
-        stored.append(node)
-    return stored
-
-
-def _textual_node(node: dict[str, Any]) -> dict[str, Any]:
-    """Node with images replaced by placeholders (don't store base64 PNGs in the message log)."""
-    data = dict(node.get("data") or {})
-    content = []
-    for seg in data.get("content") or []:
-        if seg.get("type") == "image":
-            content.append({"type": "text", "data": {"text": "[图片]"}})
-        elif seg.get("type") == "node":
-            content.append(_textual_node(seg))
-        else:
-            content.append(seg)
-    data["content"] = content
-    return {"type": "node", "data": data}
+    meta = [seg.text(meta_text)] if meta_text else None
+    return [
+        {
+            "user_id": n.user_id,
+            "name": n.name,
+            "time": sent,
+            "segments": [seg.text("[图片]") if s["type"] == "image" else s for s in n.segments],
+        }
+        for n in nodes
+        if n.segments != meta
+    ]

@@ -1,17 +1,16 @@
-"""Import recent group history via OneBot ``get_group_msg_history`` (throttled)."""
+"""Import recent group history via ``QQ.history`` (throttled)."""
 
 import asyncio
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 
-from yggdrasil.bot.state import any_bot
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Group, Message
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
-from yggdrasil.napcat.api import NapCatAPI
-from yggdrasil.napcat.models import MessageRecord
+from yggdrasil.qq import client as qq_client
+from yggdrasil.qq import model as qq_model
 from yggdrasil.runtime import snapshot
 
 _PAGE = 50
@@ -34,14 +33,13 @@ async def backfill(group_id: int, *, before: datetime | None = None) -> int:
     With ``before`` it is a catch-up after a reconnect: only messages sent before then (newer ones
     arrive live), stopping at the first page that reaches stored history.
     """
-    bot = any_bot()
-    if bot is None:
+    qq = qq_client.connected()
+    if qq is None:
         LOGGER.warning("backfill {}: no bot connected", group_id)
         return 0
-    api = NapCatAPI(bot)
     target = snapshot().settings(group_id).memory.backfill_messages
-    # Message ids are hashes private to the protocol endpoint (NapCat and SnowLuma disagree), so stored
-    # history is also matched by sender + send second. Our own sends are stamped locally: allow ±1s.
+    # Message ids are protocol-native (Milky seq, OneBot hash): history stored through another protocol (or endpoint)
+    # carries other ids, so it is also matched by sender + send second. Our own sends are stamped locally: allow ±1s.
     async with get_session() as session:
         rows = (
             await session.execute(
@@ -51,9 +49,9 @@ async def backfill(group_id: int, *, before: datetime | None = None) -> int:
     known_ids = {r.qq_message_id for r in rows}
     known_at = {(r.user_id, int(r.sent_at.timestamp())) for r in rows}
 
-    def stored(m: MessageRecord) -> bool:
-        drift = (-1, 0, 1) if str(m.user_id) == bot.self_id else (0,)
-        return m.message_id in known_ids or any((m.user_id, m.time + d) in known_at for d in drift)
+    def stored(m: qq_model.Message) -> bool:
+        drift = (-1, 0, 1) if m.sender.user_id == qq.self_id else (0,)
+        return m.message_id in known_ids or any((m.sender.user_id, m.time + d) in known_at for d in drift)
 
     seen: set[int] = set()
     imported = 0
@@ -61,34 +59,33 @@ async def backfill(group_id: int, *, before: datetime | None = None) -> int:
     oldest_time: int | None = None
     while len(seen) < target:
         try:
-            history = await api.get_group_msg_history(group_id=group_id, count=_PAGE, before_id=cursor)
-        except Exception as e:
+            history = await qq.history(group_id, before=cursor, limit=_PAGE)
+        except qq_model.QQError as e:
             LOGGER.warning("backfill {} page failed: {}", group_id, e)
             break
-        batch = [m for m in history.messages if m.message_id is not None and m.message_id not in seen]
+        batch = [m for m in history if m.message_id not in seen]
         if not batch:
             break
         reached_known = False
         for m in batch:
-            assert m.message_id is not None
             seen.add(m.message_id)
             if stored(m):
                 reached_known = True
                 continue
-            if m.user_id is None:
+            if not m.sender.user_id:
                 continue
             if before is not None and m.time >= before.timestamp():
                 continue
             WRITER.submit(
                 IncomingMessage(
                     group_id=group_id,
-                    user_id=m.user_id,
+                    user_id=m.sender.user_id,
                     qq_message_id=m.message_id,
-                    message_seq=m.message_seq,
+                    message_seq=m.seq,
                     sent_at=datetime.fromtimestamp(m.time, UTC),
-                    sender_name=m.sender.card or m.sender.nickname,
-                    segments=[s.model_dump() for s in m.segments],
-                    is_self=str(m.user_id) == bot.self_id,
+                    sender_name=m.sender.name,
+                    segments=m.segments,
+                    is_self=m.sender.user_id == qq.self_id,
                 )
             )
             imported += 1

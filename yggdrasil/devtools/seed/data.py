@@ -33,8 +33,8 @@ class Media:
     mime: str
 
     @property
-    def md5(self) -> str:
-        return hashlib.md5(self.data).hexdigest().upper()  # QQ's file name scheme, not security
+    def sha1(self) -> str:
+        return hashlib.sha1(self.data).hexdigest()  # what QQ's file id carries; a sticker's identity, not security
 
     @property
     def url(self) -> str:
@@ -92,9 +92,9 @@ MEDIA = _media()
 
 def mface_segment() -> dict[str, Any]:
     return {
-        "type": "mface",
+        "type": "market_face",
         "data": {
-            "emoji_package_id": "230001",
+            "emoji_package_id": 230001,
             "emoji_id": "5f3c2e1a9b8d7c6e5f4a3b2c1d0e9f8a",
             "key": "seedkey0001",
             "summary": "[开心]",
@@ -104,7 +104,7 @@ def mface_segment() -> dict[str, Any]:
 
 
 def broken_ref() -> str:
-    return hashlib.md5(b"seed-broken-sticker").hexdigest().upper()
+    return hashlib.sha1(b"seed-broken-sticker").hexdigest()
 
 
 JOB_IDS = [f"{JOB_PREFIX}{s}" for s in ("train", "crawl", "site", "scrape", "live")]

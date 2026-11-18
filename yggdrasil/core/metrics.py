@@ -39,9 +39,9 @@ MODERATION_VERDICTS = METER.create_counter("ygg.moderation.verdicts", unit="{ver
 MODERATION_DURATION = METER.create_histogram(
     "ygg.moderation.duration", unit="s", explicit_bucket_boundaries_advisory=_LATENCY_BUCKETS
 )
-ONEBOT_API = METER.create_counter("ygg.onebot.api", unit="{call}")
-ONEBOT_API_DURATION = METER.create_histogram(
-    "ygg.onebot.api.duration", unit="s", explicit_bucket_boundaries_advisory=_LATENCY_BUCKETS
+QQ_API = METER.create_counter("ygg.qq.api", unit="{call}")
+QQ_API_DURATION = METER.create_histogram(
+    "ygg.qq.api.duration", unit="s", explicit_bucket_boundaries_advisory=_LATENCY_BUCKETS
 )
 RATELIMIT_REJECTED = METER.create_counter("ygg.ratelimit.rejected", unit="{request}")
 JOB_RUNS = METER.create_counter("ygg.job.runs", unit="{run}")

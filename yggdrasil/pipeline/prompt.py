@@ -10,16 +10,16 @@ from yggdrasil.agent.media import load_images, looks_like_image
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.telemetry import TRACER
 from yggdrasil.llm.registry import sees_images
-from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.people import self_label
 from yggdrasil.prompts import render
+from yggdrasil.qq.client import QQ
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.transcript.notes import TraceNotes
 
 
 async def inline_images(
-    ctx: BuiltContext, api: NapCatAPI, group_id: int | None, handler: str, limit: int, notes: TraceNotes
+    ctx: BuiltContext, qq: QQ, group_id: int | None, user_id: int, handler: str, limit: int, notes: TraceNotes
 ) -> str | list[UserContent]:
     """Attach the images of the messages the request is about up front when the route can see them.
 
@@ -31,7 +31,7 @@ async def inline_images(
     if not handles or not sees_images(handler):
         return ctx.prompt
     with TRACER.start_as_current_span("ygg.inline_images") as span:
-        loaded = await load_images(api, group_id, handles)
+        loaded = await load_images(qq, group_id, user_id, handles)
         span.set_attribute("ygg.images", len(loaded))
     if not loaded:
         return ctx.prompt

@@ -1,8 +1,9 @@
 """Transcripts for the console: the stored conversation plus what the pipeline did around it, ready to render.
 
 ``build`` merges events (moderation verdicts, the final outcome) into the entries by time, resolves a ``src`` for
-every image segment of the QQ messages it shows (the bytes the run kept, a stored sticker, an mface from QQ's CDN,
-else the original QQ link) and falls back to a few synthetic entries for runs recorded before transcripts existed.
+every image and market face of the QQ messages it shows (the bytes the run kept, the bot's own sent picture, a
+stored sticker, QQ's market face CDN, else the original QQ link), names QQ faces, and falls back to a few synthetic
+entries for runs recorded before transcripts existed.
 """
 
 import copy
@@ -18,6 +19,7 @@ from yggdrasil.admin.common import not_found
 from yggdrasil.agent.schema import BotReply, OpsReply
 from yggdrasil.db.models import Sticker, StickerBlob, Transcript
 from yggdrasil.db.session import get_session
+from yggdrasil.qq import faces
 from yggdrasil.stickers.collect import sighting
 from yggdrasil.transcript import store
 from yggdrasil.transcript.notes import image_key
@@ -56,7 +58,7 @@ class TranscriptOut(BaseModel):
     updated_at: datetime | None = None
 
 
-def _mface_src(data: dict[str, Any]) -> str | None:
+def _market_face_src(data: dict[str, Any]) -> str | None:
     if url := data.get("url"):
         return str(url)
     emoji = str(data.get("emoji_id") or "")
@@ -87,17 +89,26 @@ class _Sources:
             data = seg.get("data")
             if not isinstance(data, dict):
                 continue
-            if seg.get("type") == "mface":
-                data["src"] = _mface_src(data)
-            elif seg.get("type") == "image":
-                key = image_key(data)
-                s = sighting(seg)
-                if key and key in self._keys:
-                    data["src"] = BLOB_URL.format(self._keys[key])
-                elif s is not None and (sid := self._stickers.get((s.kind, s.ref))) is not None:
-                    data["src"] = STICKER_URL.format(sid)
-                else:
-                    data["src"] = data.get("url")
+            match seg.get("type"):
+                case "market_face":
+                    data["src"] = _market_face_src(data)
+                case "face":
+                    data["name"] = faces.name(str(data.get("face_id", "")))
+                case "image":
+                    key = image_key(data)
+                    s = sighting(seg)
+                    if key and key in self._keys:
+                        data["src"] = BLOB_URL.format(self._keys[key])
+                    elif blob := data.get("blob"):
+                        data["src"] = BLOB_URL.format(blob)
+                    elif s is not None and (sid := self._stickers.get((s.kind, s.ref))) is not None:
+                        data["src"] = STICKER_URL.format(sid)
+                    else:
+                        data["src"] = data.get("url")
+                case "forward":
+                    for node in data.get("nodes") or []:
+                        if isinstance(node, dict) and isinstance(node.get("segments"), list):
+                            node["segments"] = self.segments(node["segments"])
         return out
 
     def message(self, m: QQMessage) -> QQMessage:

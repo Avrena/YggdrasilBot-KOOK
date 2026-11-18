@@ -8,19 +8,20 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from nonebot.adapters.onebot.v11 import Bot
 from sqlalchemy import func, select, update
 
 from yggdrasil.agent.schema import BotReply
-from yggdrasil.bot.state import any_bot, identity
+from yggdrasil.bot.state import identity
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Invocation, ReviewItem
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery.forward import send_forward
 from yggdrasil.delivery.send import send_text
 from yggdrasil.moderation.guard import Verdict
-from yggdrasil.napcat.api import NapCatAPI, node_seg, text_seg
 from yggdrasil.people import member_label
+from yggdrasil.qq import segments as seg
+from yggdrasil.qq.client import QQ, connected
+from yggdrasil.qq.model import Node
 from yggdrasil.runtime import snapshot
 
 pending_count = 0
@@ -37,17 +38,16 @@ def parse_review_id(raw: str) -> int:
     return int(raw)
 
 
-async def notify_admins(bot: Bot, text: str) -> None:
-    api = NapCatAPI(bot)
+async def notify_admins(qq: QQ, text: str) -> None:
     for uid in snapshot().superusers:
         try:
-            await api.send_private_msg(user_id=uid, message=[text_seg(text)])
+            await qq.send(group_id=None, user_id=uid, segments=[seg.text(text)])
         except Exception as e:
             LOGGER.warning("notify admin {} failed: {}", uid, e)
 
 
 async def create_review(
-    bot: Bot,
+    qq: QQ,
     *,
     invocation_id: UUID | None,
     group_id: int,
@@ -73,8 +73,7 @@ async def create_review(
         await session.flush()
         review_id = item.id
 
-    ident = await identity(bot)
-    api = NapCatAPI(bot)
+    ident = await identity(qq)
     group = snapshot().groups.get(group_id)
     who = await member_label(group_id, user_id)
     header = (
@@ -83,14 +82,14 @@ async def create_review(
         f"{expire_minutes} 分钟内回复：通过 R{review_id} / 拒绝 R{review_id} / 改 R{review_id} 新内容"
     )
     nodes = [
-        node_seg(ident.self_id, ident.nickname, [text_seg(header)]),
-        node_seg(ident.self_id, ident.nickname, [text_seg("【请求】\n" + request_text[:1500])]),
-        node_seg(ident.self_id, ident.nickname, [text_seg("【候选回复】\n" + reply.full_text()[:3000])]),
+        Node(ident.self_id, ident.nickname, [seg.text(header)]),
+        Node(ident.self_id, ident.nickname, [seg.text("【请求】\n" + request_text[:1500])]),
+        Node(ident.self_id, ident.nickname, [seg.text("【候选回复】\n" + reply.full_text()[:3000])]),
     ]
     for uid in snapshot().superusers:
         try:
-            await api.send_private_forward_msg(user_id=uid, messages=nodes)
-            await api.send_private_msg(user_id=uid, message=[text_seg(header)])
+            await qq.send_forward(group_id=None, user_id=uid, nodes=nodes)
+            await qq.send(group_id=None, user_id=uid, segments=[seg.text(header)])
         except Exception as e:
             LOGGER.warning("review notify to {} failed: {}", uid, e)
     await refresh_pending()
@@ -112,17 +111,16 @@ async def decide(review_id: int, action: str, actor: str, edited_text: str | Non
         if item.expires_at < datetime.now(UTC):
             item.status = "expired"
             raise ReviewError(f"R{review_id} 已过期")
-        bot = any_bot()
+        qq = connected()
         sent_id: int | None = None
         if action != "reject":
-            if bot is None:
+            if qq is None:
                 raise ReviewError("bot 未连接，无法发送")
-            api = NapCatAPI(bot)
-            ident = await identity(bot)
+            ident = await identity(qq)
             settings = snapshot().settings(item.group_id)
             if action == "edit":
                 sent_id = await send_text(
-                    api,
+                    qq,
                     group_id=item.group_id,
                     user_id=item.user_id,
                     reply_to=item.trigger_qq_message_id,
@@ -133,7 +131,7 @@ async def decide(review_id: int, action: str, actor: str, edited_text: str | Non
             else:
                 reply = BotReply.model_validate(item.reply)
                 sent_id = await send_forward(
-                    api,
+                    qq,
                     group_id=item.group_id,
                     user_id=item.user_id,
                     reply=reply,

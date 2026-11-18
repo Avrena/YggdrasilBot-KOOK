@@ -1,0 +1,164 @@
+# Yogurt (https://acidify.ntqqrev.org/docs/yogurt/start): a QQ protocol implementation serving the Milky API, the
+# bot's main QQ connection. Unlike SnowLuma it runs no QQ client: one native binary, no privileges, no device
+# identity to pin. It needs a signing API (Yogurt ships none; bring your own) and listens on :3000; the bot dials
+# out to it, so nothing here points at the bot.
+#
+# Use this instead of snowluma.yaml, not next to it: one QQ account can't be logged in on both (kustomization.yaml).
+#
+# After the first apply:
+#   1. Log in by QR code: Yogurt prints it to its log and writes qrcode.png to its data directory
+#      (`kubectl -n yggdrasil logs -f yogurt-0`, or `kubectl -n yggdrasil cp yogurt-0:/app/data/qrcode.png qrcode.png`).
+#      The session is kept in session-store.json on the volume, so restarts log in by themselves.
+#   2. In the dashboard, 设置 → QQ 连接: address http://yogurt:3000, access token = MILKY_ACCESS_TOKEN below.
+#      The bot connects at once; the card shows the account it reached or why it can't.
+apiVersion: v1
+kind: Service
+metadata:
+  name: yogurt
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yogurt
+  ports:
+    - name: milky
+      port: 3000
+      targetPort: milky
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: yogurt
+  labels:
+    app.kubernetes.io/name: yogurt
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  serviceName: yogurt
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yogurt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yogurt
+        app.kubernetes.io/component: milky
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      terminationGracePeriodSeconds: 30
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # config.json is rewritten on every start from the values below, so the secret is the only place the token
+        # and the signing API live; edits made inside the pod don't survive a restart.
+        - name: config
+          image: busybox:1.37
+          command:
+            - sh
+            - -ec
+            - |
+              cat > /data/config.json <<EOF
+              {
+                "configVersion": 3,
+                "protocol": {
+                  "uin": $QQ_ACCOUNT,
+                  "password": "",
+                  "os": "Linux",
+                  "version": "$QQ_PROTOCOL_VERSION",
+                  "signApiUrl": "$SIGN_API_URL",
+                  "pcLagrangeSignToken": "$SIGN_TOKEN",
+                  "androidUseLegacySign": false,
+                  "autoRenewSession": true
+                },
+                "milky": {
+                  "http": {"host": "0.0.0.0", "port": 3000, "prefix": "", "accessToken": "$MILKY_ACCESS_TOKEN", "corsOrigins": []},
+                  "webhook": {"endpoints": []},
+                  "reportSelfMessage": false,
+                  "preloadContacts": false,
+                  "ffmpegPath": ""
+                },
+                "logging": {"ansiLevel": "NONE", "coreLogLevel": "INFO"},
+                "security": {"skipOnLaunchListenAddressCheck": false},
+                "debug": {"enableFaceDetailsApi": false}
+              }
+              EOF
+          env:
+            # The bot's QQ number.
+            - name: QQ_ACCOUNT
+              value: "10001"
+            # The Linux QQ build the signing API serves. "fetched" (ask the API) was rejected by Yogurt
+            # 0.1.0-dev.257; a fixed version works.
+            - name: QQ_PROTOCOL_VERSION
+              value: "46494"
+          envFrom:
+            - secretRef:
+                name: yogurt-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          volumeMounts:
+            - name: yogurt-data
+              mountPath: /data
+      containers:
+        - name: yogurt
+          # Community image (github.com/shoucandanghehe/yogurt-docker) of the release binaries; pin a version
+          # tag or digest you have tested.
+          image: ghcr.io/shoucandanghehe/yogurt-docker:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+          ports:
+            - name: milky
+              containerPort: 3000
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: milky
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            # Yogurt's working directory: config.json, session-store.json, qrcode.png, scripts/.
+            - name: yogurt-data
+              mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+  # Not worth backing up: a lost volume only means a new QR login.
+  volumeClaimTemplates:
+    - metadata:
+        name: yogurt-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

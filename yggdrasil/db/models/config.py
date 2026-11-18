@@ -128,7 +128,9 @@ class Admin(Base):
 
 
 class SettingsDoc(Base, TimestampMixin):
-    """Global settings document (key ``global``), validated by yggdrasil.settings.Settings."""
+    """Settings rows: ``global`` (the global document, validated by yggdrasil.settings.Settings) and ``qq.milky``
+    (the console-configured Milky connection ``{url, token_enc}``, the token Fernet-encrypted with YGG_SECRET_KEY;
+    managed only by ``admin.qq``)."""
 
     __tablename__ = "settings"
 

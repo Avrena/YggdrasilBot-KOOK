@@ -1,18 +1,16 @@
-"""QQ faked at the OneBot call: the real ``NapCatAPI`` over a scripted ``call_api``, and group message events."""
+"""QQ faked at the OneBot call: a scripted ``call_api`` (under ``qq.onebot.OneBotQQ``), and group message events."""
 
 import inspect
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any
 
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
-
-from yggdrasil.napcat.api import NapCatAPI
+from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
 
 
 class ScriptedBot:
     """NoneBot's OneBot ``Bot`` as far as the bot uses it (``self_id``, ``call_api``). Each action is answered from
-    ``answers``: OneBot data or a model to return, an exception to raise, or a function of the call's params that
-    returns (or raises) one. Every call is kept in ``calls``; an action without an answer fails."""
+    ``answers``: OneBot data to return, an exception to raise, or a function of the call's params that returns (or
+    raises) one. Every call is kept in ``calls``; an action without an answer fails."""
 
     def __init__(self, answers: Mapping[str, Any] | None = None, *, self_id: int = 10000) -> None:
         self.self_id = str(self_id)
@@ -37,17 +35,6 @@ class ScriptedBot:
         return [data for api, data in self.calls if api == action]
 
 
-class FakeNapCat(NapCatAPI):
-    """``NapCatAPI`` over a ``ScriptedBot``: the methods are the real ones, so the fake can't drift from them."""
-
-    def __init__(self, answers: Mapping[str, Any] | None = None, *, self_id: int = 10000) -> None:
-        self.script = ScriptedBot(answers, self_id=self_id)
-        super().__init__(cast(Bot, self.script))
-
-    def called(self, action: str) -> list[dict[str, Any]]:
-        return self.script.called(action)
-
-
 def group_message(
     message: Message | str,
     *,
@@ -59,8 +46,9 @@ def group_message(
     nickname: str | None = None,
     to_me: bool = False,
     reply: dict[str, Any] | None = None,
+    message_seq: int | None = None,
 ) -> GroupMessageEvent:
-    """A group message as the OneBot adapter delivers it."""
+    """A group message as the OneBot adapter delivers it; ``message_seq`` is SnowLuma's group seq."""
     msg = Message(message)
     sender: dict[str, Any] = {"user_id": user_id, "card": card}
     if nickname is not None:
@@ -82,5 +70,6 @@ def group_message(
             "to_me": to_me,
             "group_id": group_id,
             "reply": reply,
+            **({} if message_seq is None else {"message_seq": message_seq}),
         }
     )

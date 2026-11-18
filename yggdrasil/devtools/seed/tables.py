@@ -99,7 +99,7 @@ async def add_stickers() -> None:
             img = Image.open(io.BytesIO(media.data))
             sticker = Sticker(
                 kind="image",
-                ref=media.md5,
+                ref=media.sha1,
                 summary="动画表情",
                 status=spec["status"],
                 mime=media.mime,
@@ -126,7 +126,7 @@ async def add_stickers() -> None:
             kind="mface",
             ref=f"{mface['emoji_package_id']}:{mface['emoji_id']}",
             emoji_id=mface["emoji_id"],
-            package_id=mface["emoji_package_id"],
+            package_id=str(mface["emoji_package_id"]),
             key=mface["key"],
             summary="开心",
             seen_count=5,

@@ -7,6 +7,7 @@ import {
   putGlobalSettingsMutation,
 } from "@/client/@tanstack/react-query.gen";
 import { Disclosure, Field, JsonEditor, PageHeader, PendingButton, Pre, QueryState } from "@/components/common";
+import { QQConnectionCard } from "@/components/qq-connection";
 import { type JsonSchema, resolveSchema, SECTION_LABELS, SchemaObject, sparseDiff } from "@/components/schema-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -54,6 +55,9 @@ export function SettingsPage() {
           </PendingButton>
         }
       />
+      <div className="mb-6">
+        <QQConnectionCard />
+      </div>
       <Tabs defaultValue="form">
         <TabsList>
           <TabsTrigger value="form">表单</TabsTrigger>

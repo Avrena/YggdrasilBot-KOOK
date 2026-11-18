@@ -11,7 +11,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls
 from pydantic_ai.usage import UsageLimits
 
 from tests.support.groups import fresh_group
-from tests.support.onebot import FakeNapCat, group_message
+from tests.support.qq import FakeQQ, incoming
 from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.llm.registry import ResolvedModel
@@ -39,7 +39,7 @@ class Run:
         async def moderate(stage: str, *_a: Any, **_k: Any) -> Verdict:
             return Verdict(stage, "Skipped", 0.0)
 
-        async def react(_api: Any, _message_id: int, emoji: str) -> None:
+        async def react(_qq: Any, _group_id: int | None, _message_id: int, emoji: str) -> None:
             self.reactions.append(emoji)
 
         async def deliver(_inv: invoke.Invocator, reply: BotReply) -> None:
@@ -62,14 +62,14 @@ class Run:
         raise AssertionError("agents stream")
 
     async def start(self, watch: recalls.Watch) -> "asyncio.Task[str]":
-        event = group_message("@bot 问个问题", group_id=GROUP, user_id=ALICE, self_id=SELF, message_id=TRIGGER)
+        m = incoming("问个问题", group_id=GROUP, user_id=ALICE, self_id=SELF, message_id=TRIGGER, to_me=True)
         settings = Settings()
-        api = FakeNapCat(self_id=SELF)
+        qq = FakeQQ(self_id=SELF)
         # No group on the run itself: its rate-limit and invocation bookkeeping stay out of the way.
-        inv = invoke.Invocator(api.script, api, event, CHAT, "chat", "", settings, None, watch=watch)  # pyright: ignore[reportArgumentType]
+        inv = invoke.Invocator(qq, m, CHAT, "chat", "", settings, None, watch=watch)
         model = FunctionModel(self._never, stream_function=self.stream)
         agent = Agent(model, output_type=BotReply, deps_type=Deps)
-        deps = Deps(api, None, ALICE, settings, Handles(), "chat")
+        deps = Deps(qq, None, ALICE, settings, Handles(), "chat")
         resolved = ResolvedModel("chat", model, {}, UsageLimits(), "test")
         task = asyncio.create_task(
             inv._execute(agent, "问个问题", deps, resolved, "问个问题")  # pyright: ignore[reportPrivateUsage]

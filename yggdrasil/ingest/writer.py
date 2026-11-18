@@ -52,7 +52,7 @@ def strip_nul(value: Any) -> Any:
 
 def _kind(segments: list[dict[str, Any]]) -> str:
     types = {s.get("type") for s in segments}
-    for kind in ("forward", "file", "image", "mface", "record", "video", "json"):
+    for kind in ("forward", "file", "image", "market_face", "record", "video", "light_app"):
         if kind in types:
             return kind
     return "text"

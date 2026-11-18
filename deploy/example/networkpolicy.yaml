@@ -42,6 +42,26 @@ spec:
   policyTypes:
     - Ingress
 ---
+# yogurt.yaml: its Milky API (:3000) for the bot only. The QR code is read from the log or copied out with kubectl.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: yggdrasil-yogurt
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: yogurt
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: yggdrasil-bot
+      ports:
+        - port: 3000
+          protocol: TCP
+---
 # The render page only loads bundled assets (everything else is aborted in the page), so no egress at all.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

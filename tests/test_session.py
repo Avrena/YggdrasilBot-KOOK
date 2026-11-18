@@ -102,14 +102,14 @@ async def test_a_reply_resends_the_answers_run_unchanged() -> None:
 
 def test_handles_carry_over_and_keep_counting() -> None:
     handles = Handles()
-    handles.add("forward", {"id": "res-1"})
-    handles.add("image", {"file": "a.png"})
+    handles.add("forward", {"forward_id": "res-1"})
+    handles.add("image", {"ref": "a.png"})
     restored = sessions.load_handles(sessions.dump_handles(handles))
     fwd = restored.get("fwd#1")
     assert fwd is not None
-    assert fwd.data == {"id": "res-1"}
-    assert restored.add("image", {"file": "a.png"}) == "img#1"
-    assert restored.add("image", {"file": "b.png"}) == "img#2"
+    assert fwd.data == {"forward_id": "res-1"}
+    assert restored.add("image", {"ref": "a.png"}) == "img#1"
+    assert restored.add("image", {"ref": "b.png"}) == "img#2"
 
 
 @pytest.mark.db
@@ -117,7 +117,7 @@ async def test_only_a_recent_delivered_answer_is_continued() -> None:
     group_id, answer = fresh_group(), random.randint(1, 2**31)
     messages = [ModelRequest(parts=[UserPromptPart("问题")]), ModelResponse(parts=[_answer("答案")])]
     handles = Handles()
-    handles.add("forward", {"id": "res-1"})
+    handles.add("forward", {"forward_id": "res-1"})
     setup = sessions.Setup("tldr", "tldr 的规则", ["read_url", "view_image"], sandbox=False)
 
     def answered(reply_qq_message_id: int, status: str) -> Invocation:

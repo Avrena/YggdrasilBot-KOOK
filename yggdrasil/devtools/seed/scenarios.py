@@ -33,7 +33,7 @@ SAFE: Verdict = ("Safe", 0.02, "pass", [])
 Status = Literal[
     "ok", "done", "silent", "review", "rejected", "blocked_input", "failed", "cancelled", "ratelimited", "running"
 ]
-OpsStatus = Literal["done", "reply", "handoff"]
+OpsStatus = Literal["done", "reply"]
 
 
 @dataclass
@@ -256,7 +256,6 @@ RUNS: list[Run] = [
             Turn(output=OpsReply(mode="done")),
         ],
     ),
-    Run("ops_handoff", "ops", "handoff", [Turn(output=OpsReply(mode="handoff"))]),
     Run("ask_running", "chat", "running"),
     Run(
         "g_tldr",

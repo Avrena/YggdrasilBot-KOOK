@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from yggdrasil.config import APP_CONFIG, DB_CONFIG, LOG_CONFIG
 from yggdrasil.core.log import LOGGER, setup_logging
+from yggdrasil.qq.milky import Adapter as MilkyAdapter
 
 _tasks: list[asyncio.Task] = []
 _gauges: dict[str, list[tuple[float, dict[str, str]]]] = {}
@@ -72,20 +73,40 @@ async def _sandbox_gauges() -> None:
         LOGGER.exception("sandbox gauge refresh failed")
 
 
+def _protocols(self_ids: set[str]) -> dict[str, str]:
+    """The protocol ("milky" | "onebot") of each connected bot in ``self_ids``."""
+    from yggdrasil.qq.client import client
+
+    out: dict[str, str] = {}
+    for sid, bot in nonebot.get_bots().items():
+        if sid in self_ids:
+            with contextlib.suppress(TypeError):
+                out[sid] = client(bot).protocol
+    return out
+
+
+def _per_protocol(self_ids: set[str]) -> list[tuple[float, dict[str, str]]]:
+    counts = {"milky": 0, "onebot": 0}
+    for protocol in _protocols(self_ids).values():
+        counts[protocol] += 1
+    return [(float(n), {"protocol": p}) for p, n in counts.items()]
+
+
 def _register_gauges() -> None:
     from yggdrasil.bot import state
     from yggdrasil.core.metrics import observe_gauge
 
-    observe_gauge("ygg.onebot.connected", "{bot}", lambda: [(float(len(state.connected)), {})])
+    observe_gauge("ygg.qq.connected", "{bot}", lambda: _per_protocol(set(state.connected)))
     # Connected and not reported logged out: what actually decides whether QQ messages flow.
-    observe_gauge("ygg.onebot.logged_in", "{bot}", lambda: [(float(len(set(state.connected) - state.offline)), {})])
-    observe_gauge(
-        "ygg.onebot.heartbeat_age",
-        "s",
-        lambda: [
-            (time.time() - ts, {"self_id": sid}) for sid, ts in state.last_heartbeat.items() if sid in state.connected
-        ],
-    )
+    observe_gauge("ygg.qq.logged_in", "{bot}", lambda: _per_protocol(set(state.connected) - state.offline))
+
+    def heartbeat_age() -> list[tuple[float, dict[str, str]]]:
+        # OneBot only: Milky has no heartbeat, its last event says nothing about a quiet group's connection.
+        onebot = [sid for sid, p in _protocols(set(state.connected)).items() if p == "onebot"]
+        now = time.time()
+        return [(now - state.last_heartbeat[s], {"self_id": s}) for s in onebot if s in state.last_heartbeat]
+
+    observe_gauge("ygg.qq.heartbeat_age", "s", heartbeat_age)
     observe_gauge("ygg.review.pending", "{review}", lambda: _gauges.get("review", []))
     observe_gauge("ygg.partitions.runway", "mo", lambda: _gauges.get("runway", []))
     observe_gauge("ygg.memory.lag", "{message}", lambda: _gauges.get("lag", []))
@@ -111,10 +132,11 @@ def _health_routes(app: FastAPI) -> None:
 
     @app.get("/drainz", include_in_schema=False)
     async def drainz(max_wait: float = 170) -> dict[str, int]:
-        """preStop hook: hold the pod (and its OneBot connection) until in-flight replies are sent.
+        """preStop hook: hold the pod (and its QQ connections) until in-flight replies are sent.
 
-        The terminating pod is already out of the Service, so the dashboard is served by the new pod;
-        the connection moves when SIGTERM closes it and NapCat reconnects.
+        The terminating pod is already out of the Service, so the dashboard is served by the new pod. The QQ
+        connections move at shutdown: SnowLuma reconnects to the new pod once SIGTERM closes its socket, and the new
+        pod's Milky link connects once this one releases the link lease (``qq.milky_link``).
         """
         from yggdrasil.bot.inflight import drain
 
@@ -125,7 +147,8 @@ def _health_routes(app: FastAPI) -> None:
 
 def main() -> None:
     nonebot.init(
-        driver="~fastapi",
+        # FastAPI serves OneBot's reverse WebSocket and the dashboard; Milky needs an HTTP and a WebSocket client.
+        driver="~fastapi+~httpx+~websockets",
         host=APP_CONFIG.host,
         port=APP_CONFIG.port,
         onebot_access_token=APP_CONFIG.onebot_access_token or None,
@@ -149,14 +172,17 @@ def main() -> None:
     # NoneBot's uvicorn log config already routes uvicorn.* to loguru; stop a second copy via root.
     logging.getLogger("uvicorn").propagate = False
     driver = nonebot.get_driver()
+    # Milky has no static clients: qq.milky_link connects it as configured in the console.
     driver.register_adapter(OneBotV11Adapter)
+    driver.register_adapter(MilkyAdapter)
     app: FastAPI = nonebot.get_app()
 
     from yggdrasil.core.telemetry import setup_telemetry, shutdown_telemetry
-    from yggdrasil.napcat import hooks
+    from yggdrasil.qq import hooks, milky_link
 
     setup_telemetry("yggdrasil-bot", app)
     hooks.install()
+    milky_link.install()
     _register_gauges()
     _health_routes(app)
     try:

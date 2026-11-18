@@ -1,7 +1,7 @@
 # SnowLuma (image motricseven7/snowluma): Linux QQ with a hook that speaks OneBot v11. It dials out to the
 # bot's reverse WebSocket; nothing inside the cluster needs to reach it. Log in by scanning a QR code over
 # noVNC (`kubectl -n yggdrasil port-forward pod/snowluma-0 6081`, then http://127.0.0.1:6081).
-# NapCat works too: configure it the same way (reverse WS client, array messages, no self messages).
+# Configure it as a reverse WS client with array messages and no self messages (the bot records its own).
 #
 # QQ binds its login to the device. The StatefulSet keeps the QQ volumes, and the pod presents one fixed
 # desktop: MAC address, hostname, machine-id, a plain /etc/hosts and PID 1's cgroup. Changing any of these

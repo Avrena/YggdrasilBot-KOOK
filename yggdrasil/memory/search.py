@@ -181,7 +181,7 @@ async def messages_after(
 
 
 async def find_by_qq_id(group_id: int, qq_message_id: int) -> MessageView | None:
-    """Resolve a NapCat message id (ids repeat over time, so only the last 7 days are searched)."""
+    """Resolve a QQ message id (OneBot ids are hashes that repeat over time, so only the last 7 days are searched)."""
     since = datetime.now(UTC) - QQ_ID_LOOKBACK
     async with get_session() as session:
         row = (
@@ -241,7 +241,7 @@ def rrf_fuse[K: Hashable](rankings: Sequence[Sequence[K]], k: int = RRF_K) -> li
 
 # Segments that become handles (normalize's attachments).
 _MEDIA_PATH = (
-    '$[*] ? (@.type == "image" || @.type == "file" || @.type == "forward" || @.type == "json"'
+    '$[*] ? (@.type == "image" || @.type == "file" || @.type == "forward" || @.type == "light_app"'
     ' || @.type == "video" || @.type == "record")'
 )
 

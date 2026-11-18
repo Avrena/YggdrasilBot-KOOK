@@ -13,7 +13,7 @@ from pydantic_ai import RunContext
 from tests.support.agent import run_ctx
 from tests.support.db import insert_message, purge_groups, unit_vector
 from tests.support.groups import fresh_group
-from tests.support.onebot import FakeNapCat
+from tests.support.qq import FakeQQ
 from tests.support.routes import Routes
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
@@ -24,9 +24,9 @@ from yggdrasil.db.models import GlossaryTerm, MemoryVector, MessageChunk, Topic
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery.forward import send_forward
 from yggdrasil.ingest.writer import IncomingMessage
-from yggdrasil.napcat.api import node_seg, text_seg
-from yggdrasil.napcat.models import ForwardResult
 from yggdrasil.pipeline.record import Meta
+from yggdrasil.qq.model import Sent
+from yggdrasil.qq.segments import text as text_seg
 from yggdrasil.settings import ContextSettings, InteractionSettings, Settings
 
 pytestmark = pytest.mark.db
@@ -61,7 +61,7 @@ async def test_the_bots_own_forward_shows_its_send_time_and_no_metadata(recorded
         sources=[SourceRef(label="gist", url="https://example.com/gist")],
     )
     await send_forward(
-        FakeNapCat({"send_group_forward_msg": ForwardResult(message_id=41, res_id="res")}),
+        FakeQQ({"send_forward": Sent(41, "res")}),
         group_id=GROUP,
         user_id=20001,
         reply=reply,
@@ -81,12 +81,10 @@ async def test_the_bots_own_forward_shows_its_send_time_and_no_metadata(recorded
 
 async def test_forwards_stored_before_the_fix_show_no_empty_time_and_no_metadata() -> None:
     meta = "⚙ 元数据\n模型  some-model\ntrace  0123456789abcdef"
+    nodes = [{"user_id": SELF, "name": "Yggdrasil", "time": 0, "segments": [text_seg(t)]} for t in ("答案", meta)]
     stored = {
         "type": "forward",
-        "data": {
-            "id": "res",
-            "content": [node_seg(SELF, "Yggdrasil", [text_seg("答案")]), node_seg(SELF, "Yggdrasil", [text_seg(meta)])],
-        },
+        "data": {"forward_id": "res", "title": "解读", "preview": [], "summary": "", "nodes": nodes},
     }
 
     result = await _expand(_ctx(), stored)
@@ -229,7 +227,16 @@ async def test_search_history_keeps_message_hits_a_chunk_does_not_show_whole(his
         sent_at=datetime.now(UTC) - 240 * MINUTE,
         segments=[
             {"type": "text", "data": {"text": "老王的猫"}},
-            {"type": "image", "data": {"url": "https://example.com/c.png"}},
+            {
+                "type": "image",
+                "data": {
+                    "ref": "c",
+                    "url": "https://example.com/c.png",
+                    "summary": "[图片]",
+                    "sticker": False,
+                    "sha1": "",
+                },
+            },
         ],
     )
     short = await _message("老王", ago=239 * MINUTE)

@@ -12,7 +12,7 @@ from sqlalchemy import delete
 from yggdrasil.db.base import EMBED_DIM, Base
 from yggdrasil.db.models import EmbedSpace, Message, Provider
 from yggdrasil.db.session import get_session
-from yggdrasil.napcat.api import text_seg
+from yggdrasil.qq.segments import text as text_seg
 from yggdrasil.runtime import EmbedSpaceInfo
 
 

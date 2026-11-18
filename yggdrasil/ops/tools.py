@@ -15,7 +15,6 @@ from functools import wraps
 from typing import Any, Literal
 
 from fastapi import HTTPException
-from nonebot.adapters.onebot.v11 import Bot
 from pydantic import BaseModel
 from pydantic_ai import RunContext, Tool
 from sqlalchemy import func, select
@@ -40,8 +39,9 @@ from yggdrasil.db.models import (
 )
 from yggdrasil.db.session import get_session
 from yggdrasil.kv import redis_client
-from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.people import label, names_in_groups, self_label
+from yggdrasil.qq.client import QQ
+from yggdrasil.qq.model import Protocol, QQError
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import Settings
 from yggdrasil.tools.errors import ToolError
@@ -60,8 +60,7 @@ class QuotedMessage:
 
 @dataclass
 class OpsDeps:
-    bot: Bot
-    api: NapCatAPI
+    qq: QQ
     user_id: int
     group_id: int | None
     quoted: QuotedMessage | None = None
@@ -79,7 +78,7 @@ async def _labeler(
 ) -> Callable[[int | None, int | None], str | int | None]:
     """``名字(QQ)`` for users in listed rows (one alias lookup); the bot itself as ``{bot_name}(你)``."""
     names = await names_in_groups(pairs)
-    self_id = int(ctx.deps.bot.self_id)
+    self_id = ctx.deps.qq.self_id
     me = self_label(snapshot().settings(None).persona.name)
 
     def who(group_id: int | None, user_id: int | None) -> str | int | None:
@@ -113,6 +112,10 @@ def _op[**P](name: str, *, write: bool = False) -> Callable[[Callable[P, Awaitab
                 outcome = "error"
                 ctx.deps.notes.failed(ctx.tool_call_id)
                 return f"[失败] {e}"
+            except QQError as e:
+                outcome = "error"
+                ctx.deps.notes.failed(ctx.tool_call_id)
+                return f"[失败] QQ：{str(e)[:300]}"
             except Exception as e:
                 outcome = "error"
                 ctx.deps.notes.failed(ctx.tool_call_id)
@@ -355,7 +358,7 @@ async def set_group(
     ctx: RunContext[OpsDeps], group_id: int, enabled: bool | None = None, name: str | None = None
 ) -> str:
     """启用或停用一个群（不在列表里的会新建），或者改群名。只改传入的项。只知道群名时，
-    先用 napcat_api 调 get_group_list 找到群号；新建时把群名一起传进来。"""
+    先用 qq_api 查 bot 加入的群列表找到群号；新建时把群名一起传进来。"""
     async with get_session() as s:
         g = await s.get(Group, group_id)
         prev = {"name": g.name, "enabled": g.enabled} if g else None
@@ -516,7 +519,7 @@ async def recall_message(ctx: RunContext[OpsDeps]) -> str:
     q = ctx.deps.quoted
     if q is None or not q.is_self or ctx.deps.group_id is None:
         raise ToolError("没有回复 bot 在群里发的消息")
-    await ctx.deps.api.delete_msg(message_id=q.qq_message_id)
+    await ctx.deps.qq.recall(group_id=ctx.deps.group_id, user_id=ctx.deps.user_id, message_id=q.qq_message_id)
     return "已撤回"
 
 
@@ -580,60 +583,79 @@ async def decide_request(
     return f"E{row.id}（{row.kind}）→ {row.status}"
 
 
-# Never callable through napcat_api, whatever ops.napcat_write_actions says: leaving groups, account,
-# friends, join requests (requests go through decide_request, which records the decision).
-_NAPCAT_NEVER = frozenset(
-    {
-        "set_group_leave",
-        "delete_friend",
-        "set_friend_add_request",
-        "set_group_add_request",
-        "set_qq_profile",
-        "set_qq_avatar",
-        "set_self_longnick",
-        "set_online_status",
-        "set_diy_online_status",
-        "set_restart",
-        "clean_cache",
-        "bot_exit",
-    }
-)
-# Getters that hand out login secrets.
-_NAPCAT_SECRET = re.compile(r"cookie|csrf|credential|clientkey|rkey|token|password", re.IGNORECASE)
-_NAPCAT_MAX_CHARS = 8000
+# Never callable through qq_api, whatever ops.qq_write_actions says: leaving groups, account, friends, join requests
+# (requests go through decide_request, which records the decision), the protocol endpoint itself.
+_QQ_NEVER: dict[Protocol, frozenset[str]] = {
+    "onebot": frozenset(
+        {
+            "set_group_leave",
+            "delete_friend",
+            "set_friend_add_request",
+            "set_group_add_request",
+            "set_qq_profile",
+            "set_qq_avatar",
+            "set_self_longnick",
+            "set_online_status",
+            "set_diy_online_status",
+            "set_restart",
+            "clean_cache",
+            "bot_exit",
+        }
+    ),
+    "milky": frozenset(
+        {
+            "quit_group",
+            "delete_friend",
+            "accept_friend_request",
+            "reject_friend_request",
+            "accept_group_request",
+            "reject_group_request",
+            "accept_group_invitation",
+            "reject_group_invitation",
+            "set_avatar",
+            "set_nickname",
+            "set_bio",
+            "get_cookies",
+            "get_csrf_token",
+        }
+    ),
+}
+# Getters that hand out login secrets (either protocol).
+_QQ_SECRET = re.compile(r"cookie|csrf|credential|clientkey|rkey|token|password", re.IGNORECASE)
+_QQ_MAX_CHARS = 8000
 
 
-def napcat_gate(action: str, write_allowed: list[str]) -> bool:
-    """Whether ``action`` is a write (True) or a read (False); ToolError when it may not be called."""
-    if action in _NAPCAT_NEVER:
+def qq_gate(protocol: Protocol, action: str, write_allowed: list[str]) -> bool:
+    """Whether ``action`` of ``protocol`` is a write (True) or a read (False); ToolError when it may not be called."""
+    if action in _QQ_NEVER[protocol]:
         raise ToolError(f"{action} 不允许通过对话调用")
     bare = action.lstrip("_.")
     if bare.startswith("get_"):
-        if _NAPCAT_SECRET.search(bare):
+        if _QQ_SECRET.search(bare):
             raise ToolError(f"{action} 会返回登录凭据，不允许调用")
         return False
     if action not in write_allowed:
-        raise ToolError(f"{action} 不在允许的写接口里（设置 ops.napcat_write_actions）")
+        raise ToolError(f"{action} 不在允许的写接口里（设置 ops.qq_write_actions）")
     return True
 
 
-@_op("napcat_api")
-async def napcat_api(ctx: RunContext[OpsDeps], action: str, params: dict[str, Any] | None = None) -> str:
-    """直接调用 NapCat（OneBot 11 及 NapCat 扩展）接口，例如 get_group_list、get_group_info、
-    get_group_member_list、get_group_member_info、get_msg、get_group_msg_history、get_essence_msg_list。
-    get_ 开头的只读接口都能调；会改东西的接口只能调设置 ops.napcat_write_actions 里列出的
+@_op("qq_api")
+async def qq_api(ctx: RunContext[OpsDeps], action: str, params: dict[str, Any] | None = None) -> str:
+    """直接调用当前连接的 QQ 协议接口（协议、接口名和参数写法见系统提示），例如查群列表、群信息、群成员、消息、
+    群历史、精华消息。get_ 开头的只读接口都能调；会改东西的接口只能调设置 ops.qq_write_actions 里列出的
     （默认：撤回、禁言、全员禁言、踢人、改群名片、设/删精华、发群公告、发消息），这类调用会记入审计且不能撤销。"""
     action = action.strip()
-    write = napcat_gate(action, snapshot().settings(None).ops.napcat_write_actions)
+    qq = ctx.deps.qq
+    write = qq_gate(qq.protocol, action, snapshot().settings(None).ops.qq_write_actions)
     params = params or {}
-    result = await ctx.deps.bot.call_api(action, **params)
+    result = await qq.call(action, params)
     if write:
         async with get_session() as s:
-            s.add(ConfigAudit(actor=ctx.deps.actor, entity="napcat", entity_id=action, action="call", detail=params))
+            s.add(ConfigAudit(actor=ctx.deps.actor, entity="qq", entity_id=action, action="call", detail=params))
         ctx.deps.actions.append(f"已调用 {action}")
     text = _json(result)
-    if len(text) > _NAPCAT_MAX_CHARS:
-        text = text[:_NAPCAT_MAX_CHARS] + f"…（已截断，共 {len(text)} 字符；需要的话换更精确的接口或参数）"
+    if len(text) > _QQ_MAX_CHARS:
+        text = text[:_QQ_MAX_CHARS] + f"…（已截断，共 {len(text)} 字符；需要的话换更精确的接口或参数）"
     return text
 
 
@@ -646,7 +668,7 @@ _READ: tuple[Callable[..., Awaitable[str]], ...] = (
     list_triggers,
     list_reviews,
     recent_invocations,
-    napcat_api,
+    qq_api,
     list_events,
 )
 _WRITE: tuple[Callable[..., Awaitable[str]], ...] = (

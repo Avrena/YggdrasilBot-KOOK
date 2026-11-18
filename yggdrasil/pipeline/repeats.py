@@ -7,28 +7,27 @@ the repeat too. Chat requests are never repeats: an answer is a conversation wit
 
 import hashlib
 
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent
-
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.kv import redis_client
+from yggdrasil.qq.model import Incoming
 from yggdrasil.triggers.index import Resolved
 
 
-def key(event: MessageEvent, resolved: Resolved, handler: str, request_text: str) -> str | None:
+def key(incoming: Incoming, resolved: Resolved, handler: str, request_text: str) -> str | None:
     """A tldr request's identity: its group, the quoted message and the words after the keyword (a link, or what
     to focus on). None for a request that is never a repeat: a bare "tldr", whose target (the recent chat) moves
     on, or one with attachments, whose placeholders don't tell two images apart.
     """
-    if handler != "tldr" or not isinstance(event, GroupMessageEvent):
+    if handler != "tldr" or incoming.group_id is None:
         return None
-    if normalize([{"type": seg.type, "data": dict(seg.data)} for seg in event.original_message]).attachments:
+    if normalize(incoming.segments).attachments:
         return None
     words = " ".join(request_text.split())  # no casefold: short links and video ids differ by case alone
-    reply = event.reply if resolved.target in ("quoted_or_self", "quoted") else None  # as context.target_message
+    reply = incoming.reply if resolved.target in ("quoted_or_self", "quoted") else None  # as context.target_message
     target = str(reply.message_id) if reply is not None else ""
     if not target and not words:
         return None
-    return f"ygg:repeat:{event.group_id}:{target}:{hashlib.blake2b(words.encode(), digest_size=16).hexdigest()}"
+    return f"ygg:repeat:{incoming.group_id}:{target}:{hashlib.blake2b(words.encode(), digest_size=16).hexdigest()}"
 
 
 async def first(key: str, seconds: int) -> bool:

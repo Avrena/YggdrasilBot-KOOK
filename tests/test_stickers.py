@@ -34,10 +34,8 @@ def _png() -> bytes:
 
 
 def _sticker_seg(ref: str) -> dict[str, Any]:
-    return {
-        "type": "image",
-        "data": {"file": f"{ref}.jpg", "url": f"https://example.com/{ref}", "summary": "[动画表情]", "sub_type": 1},
-    }
+    data = {"ref": f"res-{ref}", "url": f"https://example.com/{ref}", "summary": "[动画表情]", "sticker": True}
+    return {"type": "image", "data": data | {"sha1": ref}}
 
 
 def _msg(group_id: int, *segments: dict[str, Any], is_self: bool = False) -> IncomingMessage:
@@ -58,7 +56,7 @@ async def refs() -> AsyncIterator[Callable[[], str]]:
     made: list[str] = []
 
     def new() -> str:
-        made.append(uuid.uuid4().hex.upper())
+        made.append(uuid.uuid4().hex + uuid.uuid4().hex[:8])  # shaped like a sha1
         return made[-1]
 
     yield new
@@ -74,7 +72,7 @@ def fetches(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     plan: dict[str, list[Any]] = {"calls": []}
 
     async def fetch(item: PendingFetch) -> bytes:
-        ref = item.file.split(".")[0]
+        ref = item.media_ref.removeprefix("res-")
         plan["calls"].append(ref)
         queued = plan.get(ref) or []
         outcome = queued.pop(0) if queued else _png()
@@ -108,11 +106,11 @@ async def test_sightings_count_per_group_and_the_image_is_saved_once(
     package, emoji = refs(), refs()  # market face ids, cleaned up with the refs
     photo = {
         "type": "image",
-        "data": {"file": f"{refs()}.jpg", "url": "https://example.com/p", "summary": "", "sub_type": 0},
+        "data": {"ref": "p", "url": "https://example.com/p", "summary": "[图片]", "sticker": False, "sha1": refs()},
     }
     market = {
-        "type": "mface",
-        "data": {"emoji_package_id": package, "emoji_id": emoji, "key": "k", "summary": "[吃瓜]"},
+        "type": "market_face",
+        "data": {"emoji_package_id": package, "emoji_id": emoji, "key": "k", "summary": "[吃瓜]", "url": ""},
     }
     await _ingest(
         _msg(GROUP_A, _sticker_seg(x)),

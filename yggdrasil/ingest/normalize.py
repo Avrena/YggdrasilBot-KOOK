@@ -1,7 +1,7 @@
-"""Turn OneBot segments into placeholder text (the memory/LLM view of a message).
+"""Turn ``qq.segments`` segments into placeholder text (the memory/LLM view of a message).
 
 Non-text content is never expanded at ingest time: images, files, forwards and
-cards become short placeholders, and the raw segments are kept in ``messages.segments``
+cards become short placeholders, and the segments are kept in ``messages.segments``
 so tools can fetch the real content on demand.
 """
 
@@ -11,9 +11,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from yggdrasil.qq import faces
+
 # A link ends before trailing ASCII punctuation ("see https://a.example/x." or "…/x/;"): it belongs to the sentence.
 URL_RE = re.compile(r"https?://[^\s\u3000，。！？、）」』\])>\"']+(?<![.,;:!?])")
 _RECORD_TYPES = {"record": "语音", "video": "视频"}
+# Titles QQ gives every forward of a kind; they say nothing about the content.
+_GENERIC_FORWARD_TITLES = {"群聊的聊天记录", "聊天记录"}
 
 
 @dataclass(slots=True)
@@ -31,17 +35,13 @@ class Normalized:
     urls: list[str] = field(default_factory=list)
 
 
-def is_sticker_image(data: dict[str, Any]) -> bool:
-    """Custom stickers arrive as image segments with ``sub_type`` 1 and a summary such as ``[动画表情]``."""
-    summary = str(data.get("summary") or "").strip("[]")
-    return str(data.get("sub_type")) == "1" or bool(summary and summary != "图片")
-
-
 def _card(raw: str) -> tuple[str, str | None]:
-    """Title and URL of a json card (mini-program, share link, news)."""
+    """Title and URL of a light app card (mini-program, share link, news)."""
     try:
         doc = json.loads(raw)
     except (TypeError, ValueError):
+        return "卡片", None
+    if not isinstance(doc, dict):
         return "卡片", None
     title = doc.get("prompt") or ""
     url = None
@@ -56,28 +56,21 @@ def _card(raw: str) -> tuple[str, str | None]:
     return str(title).strip() or "卡片", url
 
 
-def multimsg_resid(raw: str) -> str | None:
-    """Merged forwards the bot itself sent come back from get_msg as a ``com.tencent.multimsg``
-    json card instead of a ``forward`` segment; its ``resid`` works with get_forward_msg."""
+def _int(value: Any) -> int | None:
     try:
-        doc = json.loads(raw)
+        return int(value)
     except (TypeError, ValueError):
         return None
-    if not isinstance(doc, dict) or doc.get("app") != "com.tencent.multimsg":
-        return None
-    detail = (doc.get("meta") or {}).get("detail") or {}
-    resid = detail.get("resid") if isinstance(detail, dict) else None
-    return str(resid) if resid else None
 
 
 def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | None = None) -> Normalized:
-    """``mention`` renders an at target for a model (``名字(QQ)``); without it the raw ``@<qq>`` is kept,
-    which is what ingest stores in ``plain_text``."""
+    """``mention`` renders a mention target for a model (``名字(QQ)``); without it the raw ``@<name or qq>`` is
+    kept, which is what ingest stores in ``plain_text``."""
     out = Normalized(text="")
     parts: list[str] = []
     rendered_at = False  # previous part is a mention rendered through ``mention``
-    # QQ follows a markdown segment or a market-face image with a plain-text fallback of the same content
-    # (the markdown source, the ``[summary]``); that copy is dropped so the content shows once.
+    # QQ follows a markdown segment or a market face with a plain-text fallback of the same content (the markdown
+    # source, the ``[summary]``); that copy is dropped so the content shows once.
     echo: str | None = None
     for seg in segments:
         after_at, rendered_at = rendered_at, False
@@ -90,66 +83,53 @@ def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | No
                 if text == fallback:
                     continue
                 if after_at and text[:1].isspace():
-                    text = text[1:]  # the at already ends with a space (the stored form keeps both)
+                    text = text[1:]  # the mention already ends with a space (the stored form keeps both)
                 parts.append(text)
-            case "at":
-                qq = str(data.get("qq", ""))
-                if qq == "all":
-                    parts.append("@全体成员")
-                    continue
-                uid = int(qq) if qq.isdigit() else None
+            case "mention":
+                uid = _int(data.get("user_id"))
                 if uid is not None:
                     out.mentions.append(uid)
                 if uid is not None and mention is not None:
                     parts.append(f"@{mention(uid)} ")
                     rendered_at = True
                     continue
-                name = data.get("name") or qq
-                parts.append(f"@{str(name).lstrip('@')} ")
+                name = str(data.get("name") or "").lstrip("@") or str(data.get("user_id", ""))
+                parts.append(f"@{name} ")
+            case "mention_all":
+                parts.append("@全体成员")
             case "reply":
-                rid = str(data.get("id", ""))
-                out.reply_to = int(rid) if rid.lstrip("-").isdigit() else None
+                out.reply_to = _int(data.get("message_id"))
             case "face":
-                raw = data.get("raw") or {}
-                label = (raw.get("faceText") if isinstance(raw, dict) else None) or f"表情{data.get('id', '')}"
-                parts.append(f"[表情:{str(label).lstrip('/')}]")
-            case "mface":
-                summary = str(data.get("summary") or "表情包").strip("[]")
+                face_id = str(data.get("face_id", ""))
+                parts.append(f"[表情:{faces.name(face_id) or f'表情{face_id}'}]")
+            case "market_face":
+                summary = str(data.get("summary") or "").strip("[]") or "表情包"
                 parts.append(f"[表情包:{summary}]")
                 out.attachments.append(Attachment("mface", data))
                 echo = data.get("summary")
             case "image":
                 summary = str(data.get("summary") or "").strip("[]")
-                parts.append(f"[表情包:{summary or '动画表情'}]" if is_sticker_image(data) else "[图片]")
+                parts.append(f"[表情包:{summary or '动画表情'}]" if data.get("sticker") else "[图片]")
                 out.attachments.append(Attachment("image", data))
-                if data.get("emoji_id"):
-                    echo = data.get("summary")
             case "record" | "video":
                 parts.append(f"[{_RECORD_TYPES[kind]}]")
                 out.attachments.append(Attachment(kind, data))
             case "file":
-                parts.append(f"[文件:{data.get('file') or data.get('name') or '未命名'}]")
+                parts.append(f"[文件:{data.get('file_name') or '未命名'}]")
                 out.attachments.append(Attachment("file", data))
             case "forward":
-                # The bot's own forwards carry the title QQ shows on the card.
+                # The bot's own forwards are titled after the answer; QQ's generic titles add nothing.
                 title = str(data.get("title") or "").strip()
-                parts.append(f"[合并转发:{title}]" if title else "[合并转发]")
+                parts.append(f"[合并转发:{title}]" if title not in _GENERIC_FORWARD_TITLES and title else "[合并转发]")
                 out.attachments.append(Attachment("forward", data))
-            case "json" if resid := multimsg_resid(str(data.get("data", ""))):
-                parts.append("[合并转发]")
-                out.attachments.append(Attachment("forward", {"id": resid}))
-            case "json":
-                title, url = _card(str(data.get("data", "")))
+            case "light_app":
+                title, url = _card(str(data.get("json_payload", "")))
                 parts.append(f"[卡片:{title}]")
                 out.attachments.append(Attachment("card", {"title": title, "url": url}))
                 if url:
                     out.urls.append(url)
             case "xml":
                 parts.append("[卡片]")
-            case "poke":
-                parts.append("[戳一戳]")
-            case "dice" | "rps":
-                parts.append(f"[{kind}:{data.get('result', '')}]")
             case "markdown":
                 content = str(data.get("content", ""))
                 parts.append(f"[markdown]{content}")

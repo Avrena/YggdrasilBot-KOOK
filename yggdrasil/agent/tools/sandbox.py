@@ -371,9 +371,10 @@ async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
     with _sandbox_errors():
         await session.require()
     h = await resolve_ref(ctx, handle, "file", "image")
-    cfg = ctx.deps.settings.tools
-    blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
-    if not (h.data.get("file") or h.data.get("name")) and name == "file":
+    deps = ctx.deps
+    cfg = deps.settings.tools
+    blob, name = await media_bytes(deps.qq, deps.group_id, deps.user_id, h, cfg.file_max_mb * 1024 * 1024)
+    if not h.data.get("file_name") and name == "file":
         name = ""  # media_bytes' placeholder: nothing to go by
     fallback = re.sub(r"\W+", "-", handle).strip("-") or "file"
     if is_image(blob):

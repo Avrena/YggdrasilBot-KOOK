@@ -50,7 +50,7 @@ class StickerGroupUsage(BaseModel):
 
 
 class StickerDetail(StickerOut):
-    ref: str  # image: the md5 QQ uses as file name; mface: "<package_id>:<emoji_id>"
+    ref: str  # image: the content sha1 from the NT file id; mface: "<package_id>:<emoji_id>"
     emoji_id: str | None
     package_id: str | None
     key: str

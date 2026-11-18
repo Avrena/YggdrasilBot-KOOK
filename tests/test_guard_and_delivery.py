@@ -83,11 +83,11 @@ def test_forward_nodes_order_sections_images_sources_metadata():
         sources=[SourceRef(label="src", url="https://e.x")],
     )
     nodes = build_nodes(reply, "meta", InteractionSettings(), self_id=1, nickname="b", images=[(b"\x89PNG", "图")])
-    kinds = [n["data"]["content"][-1]["type"] for n in nodes]
+    kinds = [n.segments[-1]["type"] for n in nodes]
     assert kinds == ["text", "image", "text", "text"]
-    assert nodes[0]["data"]["content"][0]["data"]["text"] == "一段话"
-    assert nodes[2]["data"]["content"][0]["data"]["text"].startswith("来源")
-    assert nodes[-1]["data"]["content"][0]["data"]["text"] == "meta"
+    assert nodes[0].segments[0]["data"]["text"] == "一段话"
+    assert nodes[2].segments[0]["data"]["text"].startswith("来源")
+    assert nodes[-1].segments[0]["data"]["text"] == "meta"
 
 
 def test_forward_nodes_are_capped_by_merging_the_tail():
@@ -95,11 +95,11 @@ def test_forward_nodes_are_capped_by_merging_the_tail():
     cfg = InteractionSettings(forward_max_nodes=5, max_sections=10)
     nodes = build_nodes(reply, "meta", cfg, self_id=1, nickname="b")
     assert len(nodes) == 5
-    assert "s19" in nodes[3]["data"]["content"][0]["data"]["text"]
+    assert "s19" in nodes[3].segments[0]["data"]["text"]
 
 
 def test_sections_over_the_cap_are_folded_into_the_last_one():
     reply = BotReply(mode="forward", sections=[Section(content=t * 2) for t in "abcd"])
     nodes = build_nodes(reply, None, InteractionSettings(max_sections=2), self_id=1, nickname="b")
-    texts = [n["data"]["content"][0]["data"]["text"] for n in nodes]
+    texts = [n.segments[0]["data"]["text"] for n in nodes]
     assert texts == ["aa", "bb\n\ncc\n\ndd"]

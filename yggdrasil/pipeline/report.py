@@ -8,7 +8,6 @@ moderation, concurrency slots, token budget, delivery and invocation record. The
 
 import secrets
 
-from nonebot.adapters.onebot.v11 import Bot
 from pydantic_ai import Tool
 from pydantic_ai.usage import RunUsage
 
@@ -18,16 +17,17 @@ from yggdrasil.agent.tools import sandbox as sandbox_tools
 from yggdrasil.agent.tools import suite_enabled, tool_names, tools_for
 from yggdrasil.agent.tools.images import MAX_IMAGES, attach_image
 from yggdrasil.agent.tools.jobs import JOB_CONTROL_TOOLS, jobs
-from yggdrasil.bot.state import any_bot, identity
+from yggdrasil.bot.state import identity
 from yggdrasil.core.log import LOGGER
 from yggdrasil.delivery.send import send_text
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model
 from yggdrasil.llm.streaming import RunStats
-from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.people import member_label
 from yggdrasil.pipeline import ratelimit
 from yggdrasil.pipeline.invoke import Invocator
 from yggdrasil.pipeline.prompt import instructions
+from yggdrasil.qq import client as qq_client
+from yggdrasil.qq.client import QQ
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import SandboxError, manager
 from yggdrasil.sandbox.job_model import KIND_TEXT, STATUS_TEXT, Job, ReportDeferred, fmt_duration
@@ -40,24 +40,23 @@ _RESULT_CHARS = 12000
 async def run_report(job: Job) -> str | None:
     """Report ``job`` to its requester; returns the invocation id. Raises ``ReportDeferred`` when it cannot
     start yet (no bot connection, the requester's queue is full)."""
-    bot = any_bot()
-    if bot is None:
+    qq = qq_client.connected()
+    if qq is None:
         raise ReportDeferred("no bot connection")
     snap = snapshot()
     if not snap.group_enabled(job.group_id):
         LOGGER.info("sandbox job {}: group {} is disabled, no report", job.id, job.group_id)
         return None
     settings = snap.settings(job.group_id)
-    api = NapCatAPI(bot)
     if await ratelimit.tokens_exhausted(job.group_id, settings.ratelimit):
         # No model call past the group's daily budget: a plain notice still closes the loop.
-        await _notice(bot, api, job, settings)
+        await _notice(qq, job, settings)
         await ratelimit.add_tokens(job.group_id, _relay_tokens(job))
         return None
     async with ratelimit.slot(job.group_id, job.user_id, settings.ratelimit) as granted:
         if not granted:
             raise ReportDeferred("requester's queue is full")
-        inv = ReportInvocator(bot, api, job, settings)
+        inv = ReportInvocator(qq, job, settings)
         await inv.run()
         return str(inv.invocation_id) if inv.invocation_id is not None else None
 
@@ -70,13 +69,13 @@ def _headline(job: Job) -> str:
     return f"后台任务「{job.title}」{STATUS_TEXT[job.status]}"
 
 
-async def _notice(bot: Bot, api: NapCatAPI, job: Job, settings: Settings) -> None:
-    ident = await identity(bot)
+async def _notice(qq: QQ, job: Job, settings: Settings) -> None:
+    ident = await identity(qq)
     text = f"{_headline(job)}（今天的用量已到上限，不再生成详细说明）。"
     for link in job.links:
         text += f"\n{link.get('url')}"
     await send_text(
-        api,
+        qq,
         group_id=job.group_id,
         user_id=job.user_id,
         reply_to=job.trigger_message_id,
@@ -89,10 +88,9 @@ async def _notice(bot: Bot, api: NapCatAPI, job: Job, settings: Settings) -> Non
 class ReportInvocator(Invocator):
     """A chat run without a triggering event: replies to the job's trigger message."""
 
-    def __init__(self, bot: Bot, api: NapCatAPI, job: Job, settings: Settings) -> None:
+    def __init__(self, qq: QQ, job: Job, settings: Settings) -> None:
         self._setup(
-            bot,
-            api,
+            qq,
             "chat",
             settings,
             job.group_id,
@@ -106,7 +104,7 @@ class ReportInvocator(Invocator):
 
     async def _run(self) -> str:
         job = self.job
-        ident = await identity(self.bot)
+        ident = await identity(self.qq)
         self.notes.bot = (ident.self_id, self.settings.persona.name)
         sandbox_on = suite_enabled(
             self.settings,
@@ -122,7 +120,7 @@ class ReportInvocator(Invocator):
             LOGGER.warning("chat has no model route; job {} is not reported", job.id)
             return "failed"
         deps = Deps(
-            self.api,
+            self.qq,
             self.group_id,
             self.user_id,
             self.settings,
@@ -213,9 +211,9 @@ class ReportInvocator(Invocator):
     async def deliver(self, reply: BotReply) -> None:
         # A forward message cannot quote: a short quoted line first tells the requester which request this is.
         if self.job.trigger_message_id:
-            ident = await identity(self.bot)
+            ident = await identity(self.qq)
             await send_text(
-                self.api,
+                self.qq,
                 group_id=self.group_id,
                 user_id=self.user_id,
                 reply_to=self.job.trigger_message_id,

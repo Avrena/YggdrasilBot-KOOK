@@ -19,8 +19,8 @@ class Blob:
 
 
 def image_key(data: dict[str, Any]) -> str | None:
-    """The identity of an OneBot image segment, the same one ``Handles.add`` de-duplicates on."""
-    key = data.get("file_id") or data.get("file") or data.get("url")
+    """The identity of an ``image`` segment's data, the one ``Handles.add`` de-duplicates on."""
+    key = data.get("sha1") or data.get("ref") or data.get("url")
     return str(key) if key else None
 
 
@@ -51,7 +51,7 @@ class TraceNotes:
         self.displays[call_id] = QQMessagesDisplay(message_ids=ids)
 
     def image(self, data: bytes, mime: str, *, segment: dict[str, Any] | None = None) -> str | None:
-        """Keep an image the run used; ``segment`` is the OneBot image data it came from, so QQ messages showing
+        """Keep an image the run used; ``segment`` is the ``image`` segment data it came from, so QQ messages showing
         that image can be rendered with these bytes after the QQ link has expired."""
         if not self.full or not data:
             return None

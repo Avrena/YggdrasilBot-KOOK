@@ -1,12 +1,10 @@
-"""Process-wide bot state: identity cache, connection and heartbeat tracking."""
+"""Process-wide bot state: identity cache, connection and heartbeat tracking (keyed by the bot's ``self_id``)."""
 
 import time
 from dataclasses import dataclass
 
-import nonebot
-from nonebot.adapters.onebot.v11 import Bot
-
-from yggdrasil.napcat.api import NapCatAPI
+from yggdrasil.qq.client import QQ
+from yggdrasil.qq.model import QQError
 
 
 @dataclass(slots=True)
@@ -18,7 +16,8 @@ class Identity:
 _identities: dict[str, Identity] = {}
 connected: dict[str, float] = {}
 last_heartbeat: dict[str, float] = {}
-# Bots NapCat reported as logged out (KickedOffLine) while the WebSocket stays up; cleared on reconnect.
+# Accounts the protocol reported logged out (``notice.bot_offline``) while the connection stays up; cleared on
+# reconnect.
 offline: set[str] = set()
 # Latest message id from someone other than the bot, per group (for quote-when-busy).
 last_group_message: dict[int, int] = {}
@@ -32,35 +31,29 @@ def should_quote(group_id: int | None, trigger_message_id: int, mode: str) -> bo
     return last_group_message.get(group_id, trigger_message_id) != trigger_message_id
 
 
-async def identity(bot: Bot) -> Identity:
-    ident = _identities.get(bot.self_id)
+async def identity(qq: QQ) -> Identity:
+    key = str(qq.self_id)
+    ident = _identities.get(key)
     if ident is None:
         try:
-            info = await NapCatAPI(bot).get_login_info()
-            ident = Identity(info.user_id, info.nickname)
-        except Exception:
-            ident = Identity(int(bot.self_id), "Bot")
-        _identities[bot.self_id] = ident
+            login = await qq.login()
+            ident = Identity(login.user_id, login.nickname)
+        except QQError:
+            ident = Identity(qq.self_id, "Bot")
+        _identities[key] = ident
     return ident
 
 
-def mark_connected(bot: Bot) -> None:
-    connected[bot.self_id] = time.time()
-    last_heartbeat[bot.self_id] = time.time()
-    offline.discard(bot.self_id)
+def mark_connected(self_id: str) -> None:
+    connected[self_id] = time.time()
+    last_heartbeat[self_id] = time.time()
+    offline.discard(self_id)
 
 
-def mark_disconnected(bot: Bot) -> None:
-    connected.pop(bot.self_id, None)
-    _identities.pop(bot.self_id, None)
+def mark_disconnected(self_id: str) -> None:
+    connected.pop(self_id, None)
+    _identities.pop(self_id, None)
 
 
 def heartbeat(self_id: str) -> None:
     last_heartbeat[self_id] = time.time()
-
-
-def any_bot() -> Bot | None:
-    for bot in nonebot.get_bots().values():
-        if isinstance(bot, Bot):
-            return bot
-    return None

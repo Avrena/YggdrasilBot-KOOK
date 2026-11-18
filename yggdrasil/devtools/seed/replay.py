@@ -12,8 +12,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
-from nonebot.adapters.onebot.v11 import Message as OneBotMessage
 from pydantic import BaseModel
 from pydantic_ai import Agent, PromptedOutput
 from pydantic_ai.exceptions import ModelHTTPError
@@ -34,6 +32,7 @@ from yggdrasil.memory import search
 from yggdrasil.memory.search import MessageView
 from yggdrasil.people import self_label
 from yggdrasil.prompts import render
+from yggdrasil.qq import model as qq
 from yggdrasil.sandbox.job_model import Job
 from yggdrasil.settings import Settings
 from yggdrasil.transcript import store
@@ -83,36 +82,30 @@ def _model(run: Run, turns: list[Turn], model: str) -> FunctionModel:
     return FunctionModel(respond, model_name=model)
 
 
-def _event(trigger: Message, quoted: Message | None) -> GroupMessageEvent:
-    def message(segments: list[dict[str, Any]]) -> OneBotMessage:
-        return OneBotMessage([MessageSegment(s["type"], s["data"]) for s in segments if s["type"] != "reply"])
+def _incoming(trigger: Message, quoted: Message | None) -> qq.Incoming:
+    def message(m: Message) -> qq.Message:
+        return qq.Message(
+            message_id=m.qq_message_id,
+            group_id=m.group_id,
+            sender=qq.Sender(m.user_id, m.sender_name),
+            time=int(m.sent_at.timestamp()),
+            segments=list(m.segments),
+            seq=m.message_seq,
+        )
 
-    data: dict[str, Any] = {
-        "time": int(trigger.sent_at.timestamp()),
-        "self_id": SELF,
-        "post_type": "message",
-        "sub_type": "normal",
-        "user_id": trigger.user_id,
-        "message_type": "group",
-        "message_id": trigger.qq_message_id,
-        "message": message(trigger.segments),
-        "original_message": message(trigger.segments),
-        "raw_message": "",
-        "font": 0,
-        "sender": {"user_id": trigger.user_id, "card": trigger.sender_name},
-        "to_me": True,
-        "group_id": trigger.group_id,
-    }
-    if quoted is not None:
-        data["reply"] = {
-            "time": int(quoted.sent_at.timestamp()),
-            "message_type": "group",
-            "message_id": quoted.qq_message_id,
-            "real_id": quoted.qq_message_id,
-            "sender": {"user_id": quoted.user_id, "nickname": quoted.sender_name},
-            "message": message(quoted.segments),
-        }
-    return GroupMessageEvent.model_validate(data)
+    base = message(trigger)
+    return qq.Incoming(
+        message_id=base.message_id,
+        group_id=base.group_id,
+        sender=base.sender,
+        time=base.time,
+        segments=base.segments,
+        seq=base.seq,
+        self_id=SELF,
+        text=_request_text(trigger),
+        to_me=True,
+        reply=message(quoted) if quoted is not None else None,
+    )
 
 
 def _request_text(m: Message) -> str:
@@ -153,7 +146,9 @@ async def _prompt(run: Run, chat: Chat | None, trigger: Message | None, notes: T
             text, who = PRIVATE_TEXT, f"{MEMBERS[run.user_id]}({run.user_id})"
             asker = QQMessage(user_id=run.user_id, sender_name=MEMBERS[run.user_id], segments=[text_segment(text)])
         notes.context = QQContextDisplay(trigger=asker, blocks=["请求"])
-        instructions = render("ops_system", now=now, where=where, in_group=run.group_id is not None, nonce=nonce)
+        instructions = render(
+            "ops_system", now=now, where=where, in_group=run.group_id is not None, protocol="milky", nonce=nonce
+        )
         return instructions, f'<请求-{nonce} 发送者="{who}">\n{text}\n</请求-{nonce}>'
     settings = Settings()
     tool_names = [t.__name__ for t in CHAT_TOOLS]
@@ -168,7 +163,12 @@ async def _prompt(run: Run, chat: Chat | None, trigger: Message | None, notes: T
         request_text = "" if run.handler == "tldr" else _request_text(trigger)
         with _as_of(trigger.sent_at):
             ctx = await build_context(
-                _event(trigger, quoted), resolved, settings, self_id=SELF, bot_name=PERSONA, request_text=request_text
+                _incoming(trigger, quoted),
+                resolved,
+                settings,
+                self_id=SELF,
+                bot_name=PERSONA,
+                request_text=request_text,
             )
         notes.context = ctx.display
         prompt, nonce = ctx.prompt, ctx.nonce

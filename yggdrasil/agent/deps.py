@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from yggdrasil.ingest.normalize import normalize
-from yggdrasil.napcat.api import NapCatAPI
+from yggdrasil.qq.client import QQ
 from yggdrasil.settings import Settings
 from yggdrasil.transcript.notes import TraceNotes
 
@@ -12,6 +12,13 @@ if TYPE_CHECKING:
     from yggdrasil.sandbox import Session
 
 _PREFIX = {"image": "img", "file": "file", "forward": "fwd", "card": "card", "url": "url"}
+# What identifies an attachment, most specific first: a file, the content hash, the protocol's media handle, a
+# forward, a link.
+_IDENTITY_KEYS = ("file_id", "sha1", "ref", "forward_id", "url")
+
+
+def _identity(data: dict[str, Any]) -> tuple[str, str] | None:
+    return next(((k, str(data[k])) for k in _IDENTITY_KEYS if data.get(k)), None)
 
 
 @dataclass(slots=True)
@@ -37,14 +44,10 @@ class Handles:
         prefix = _PREFIX.get(kind)
         if prefix is None:
             return None
-        # De-duplicate identical attachments (same file id / url).
-        ident = data.get("file_id") or data.get("file") or data.get("id") or data.get("url")
+        # De-duplicate identical attachments (``_identity``).
+        ident = _identity(data)
         for h in self.items.values():
-            if (
-                h.kind == kind
-                and ident
-                and (h.data.get("file_id") or h.data.get("file") or h.data.get("id") or h.data.get("url")) == ident
-            ):
+            if h.kind == kind and ident is not None and _identity(h.data) == ident:
                 return h.key
         self._counters[prefix] += 1
         key = f"{prefix}#{self._counters[prefix]}"
@@ -66,7 +69,7 @@ class Handles:
 
 @dataclass
 class Deps:
-    api: NapCatAPI
+    qq: QQ
     group_id: int | None
     user_id: int
     settings: Settings

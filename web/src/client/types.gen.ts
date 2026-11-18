@@ -1226,6 +1226,65 @@ export type Me = {
 };
 
 /**
+ * MilkyIn
+ */
+export type MilkyIn = {
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Token
+     */
+    token?: string | null;
+};
+
+/**
+ * MilkyLinkOut
+ */
+export type MilkyLinkOut = {
+    /**
+     * Managed
+     */
+    managed: boolean;
+    /**
+     * Url
+     */
+    url: string | null;
+    /**
+     * Connected
+     */
+    connected: boolean;
+    /**
+     * Self Id
+     */
+    self_id: number | null;
+    /**
+     * Error
+     */
+    error: string | null;
+    /**
+     * Since
+     */
+    since: string | null;
+};
+
+/**
+ * MilkyOut
+ */
+export type MilkyOut = {
+    /**
+     * Url
+     */
+    url: string | null;
+    /**
+     * Token Set
+     */
+    token_set: boolean;
+    link: MilkyLinkOut;
+};
+
+/**
  * ModelCaps
  */
 export type ModelCaps = {
@@ -1324,9 +1383,9 @@ export type OpsReply = {
     /**
      * Mode
      *
-     * done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）；handoff：不是管理操作，交给普通答疑（只在群聊里用）
+     * done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）
      */
-    mode: 'done' | 'reply' | 'handoff';
+    mode: 'done' | 'reply';
     /**
      * Text
      *
@@ -1949,8 +2008,8 @@ export type QqForwardDisplay = {
 /**
  * QQMessage
  *
- * A QQ message as it was when the run used it. ``segments`` are raw OneBot segments; the API adds ``src`` to
- * image segment data when it can serve the picture.
+ * A QQ message as it was when the run used it. ``segments`` are ``qq.segments`` segments; the API adds ``src``
+ * to image and market face data when it can serve the picture, and ``name`` to faces.
  */
 export type QqMessage = {
     /**
@@ -3890,6 +3949,79 @@ export type PutGroupSettingsResponses = {
 };
 
 export type PutGroupSettingsResponse = PutGroupSettingsResponses[keyof PutGroupSettingsResponses];
+
+export type DeleteQqMilkyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/qq/milky';
+};
+
+export type DeleteQqMilkyResponses = {
+    /**
+     * Successful Response
+     */
+    200: MilkyOut;
+};
+
+export type DeleteQqMilkyResponse = DeleteQqMilkyResponses[keyof DeleteQqMilkyResponses];
+
+export type GetQqMilkyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/qq/milky';
+};
+
+export type GetQqMilkyResponses = {
+    /**
+     * Successful Response
+     */
+    200: MilkyOut;
+};
+
+export type GetQqMilkyResponse = GetQqMilkyResponses[keyof GetQqMilkyResponses];
+
+export type PutQqMilkyData = {
+    body: MilkyIn;
+    path?: never;
+    query?: never;
+    url: '/qq/milky';
+};
+
+export type PutQqMilkyErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PutQqMilkyError = PutQqMilkyErrors[keyof PutQqMilkyErrors];
+
+export type PutQqMilkyResponses = {
+    /**
+     * Successful Response
+     */
+    200: MilkyOut;
+};
+
+export type PutQqMilkyResponse = PutQqMilkyResponses[keyof PutQqMilkyResponses];
+
+export type DeleteQqMilkyTokenData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/qq/milky/token';
+};
+
+export type DeleteQqMilkyTokenResponses = {
+    /**
+     * Successful Response
+     */
+    200: MilkyOut;
+};
+
+export type DeleteQqMilkyTokenResponse = DeleteQqMilkyTokenResponses[keyof DeleteQqMilkyTokenResponses];
 
 export type ListGroupsData = {
     body?: never;
