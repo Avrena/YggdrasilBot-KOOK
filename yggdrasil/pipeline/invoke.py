@@ -14,6 +14,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from yggdrasil.agent import bridge
 from yggdrasil.agent.budget import ToolBudget
 from yggdrasil.agent.context import build_context, build_followup_context
 from yggdrasil.agent.deps import Deps, Handles
@@ -428,6 +429,8 @@ class Invocator:
                 if not t.done():
                     t.cancel()
             self._account(resolved_model.label, run_usage, deps, run_stats)
+            # No sh / py runs any more: the code it started can't call the bot from here on.
+            await bridge.close_run(deps)
         if self.watch.recalled:
             return await self._recalled()
 

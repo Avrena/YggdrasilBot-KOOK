@@ -76,13 +76,16 @@ def fmt_duration(seconds: float) -> str:
 
 @dataclass(frozen=True)
 class Requester:
-    """Who started a job, from where: the report replies to ``trigger_message_id``."""
+    """Who started a job, from where: the report replies to ``trigger_message_id``. ``handles`` (``Handles.dump``) and
+    ``tools`` are the requesting run's handles and tool bridge tools, so the job's code can use both."""
 
     group_id: int
     user_id: int
     trigger_message_id: int | None
     invocation_id: str | None
     request_text: str
+    handles: dict[str, Any] = field(default_factory=dict)
+    tools: tuple[str, ...] = ()
 
 
 @dataclass
@@ -112,6 +115,7 @@ class Job:
     images: list[dict[str, str]] = field(default_factory=list)  # {"path", "caption"} from omp's show
     links: list[dict[str, Any]] = field(default_factory=list)  # {"port", "url"} from omp's publish
     usage: dict[str, int] = field(default_factory=dict)  # relay usage (agent jobs)
+    handles: dict[str, Any] = field(default_factory=dict)  # the requesting run's handles (Handles.dump)
     renewed_at: float = 0.0
     cancel: str = ""  # who asked to cancel: "chat:<qq>" / "admin:<email>"; written only by ``cancel``
     report: ReportState = ""
@@ -178,6 +182,7 @@ class Job:
                 images=json.loads(data.get("images") or "[]"),
                 links=json.loads(data.get("links") or "[]"),
                 usage=json.loads(data.get("usage") or "{}"),
+                handles=json.loads(data.get("handles") or "{}"),
                 renewed_at=float(data.get("renewed_at") or 0),
                 cancel=data.get("cancel", ""),
                 report=cast(ReportState, data.get("report", "")),

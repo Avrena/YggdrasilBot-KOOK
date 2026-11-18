@@ -24,6 +24,7 @@ This module is the poller; the record and its Redis keys are in ``job_model``, t
 from __future__ import annotations
 
 import asyncio
+import json
 import posixpath
 import time
 from collections.abc import Awaitable, Callable
@@ -70,6 +71,7 @@ from yggdrasil.transcript.schema import Entry
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
+    from yggdrasil.relay.grants import ToolScope
     from yggdrasil.sandbox.state import Link
     from yggdrasil.settings import Settings, ToolSettings
 
@@ -120,13 +122,23 @@ _CAS_STATUS = (
 )
 
 
-# --- relay (agent jobs) -------------------------------------------------------------------------------------
+# --- relay (agent jobs) and tool bridge (every job) --------------------------------------------------------------
 
 
 def relay_enabled() -> bool:
     from yggdrasil import relay
 
     return relay.relay_url() is not None
+
+
+def _bridge_scope(req: Requester, cfg: ToolSettings) -> ToolScope | None:
+    """What the job's code may do through the tool bridge (``agent.bridge``): the requesting run's tools, as the
+    requester; None when ``tools.bridge_job_limit`` turns it off."""
+    from yggdrasil import relay
+
+    if cfg.bridge_job_limit <= 0:
+        return None
+    return relay.ToolScope(req.tools, req.user_id, req.invocation_id, cfg.bridge_job_limit)
 
 
 # --- the runner ---------------------------------------------------------------------------------------------
@@ -335,10 +347,9 @@ class JobRunner:
         r = self._r()
         try:
             await r.hdel(keep_key(job.group_id, job.workspace), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
-            if job.kind == "agent":
-                from yggdrasil import relay
+            from yggdrasil import relay
 
-                await relay.revoke_token(job.id)
+            await relay.revoke_token(job.id)
             now = self._clock()
             if await self._cas(
                 job.id, "starting", status="failed", error=error[:2000], ended_at=repr(now), report="skipped"
@@ -368,6 +379,7 @@ class JobRunner:
             created_at=now,
             deadline=now + limit_s,
             renewed_at=now,
+            handles=req.handles,
         )
 
     async def _started(self, job: Job, pid: int, ops: JobOps) -> None:
@@ -392,7 +404,10 @@ class JobRunner:
 
     async def start_command(self, req: Requester, backend: Any, *, workspace: str, script: str, title: str) -> Job:
         """Start ``script`` detached in the group's workspace ``workspace`` (``backend``: the invocation's session
-        backend, attached to it)."""
+        backend, attached to it). With the tool bridge served, ``<job dir>/bridge.json`` carries the job's token,
+        which the helper hands to the script as ``YGG_BRIDGE_URL`` / ``YGG_BRIDGE_TOKEN``."""
+        from yggdrasil import relay
+
         cfg = self._settings(req.group_id).tools
         claim, limit_s = await self._admit(req, backend, workspace, "command", cfg)
         job = self._new(req, "command", workspace, claim, title, script, limit_s)
@@ -400,6 +415,18 @@ class JobRunner:
         ops = self._ops(backend)
         sent = False
         try:
+            url, scope = relay.relay_url(), _bridge_scope(req, cfg)
+            if url is not None and scope is not None:
+                token = await relay.issue_token(
+                    group_id=req.group_id,
+                    job_id=job.id,
+                    models=[],
+                    max_input_tokens=0,
+                    max_output_tokens=0,
+                    ttl_s=int(limit_s) + 600,
+                    scope=scope,
+                )
+                await ops.write(f"{job.dir}/bridge.json", json.dumps({"url": url, "token": token}).encode())
             await ops.write(f"{job.dir}/script.sh", script.encode())
             sent = True
             pid = await ops.start_sh(job.dir)
@@ -435,6 +462,7 @@ class JobRunner:
         await self._reserve(job, cfg)
         ops = self._ops(backend)
         sent = False
+        scope = _bridge_scope(req, cfg)
         try:
             token = await relay.issue_token(
                 group_id=req.group_id,
@@ -443,6 +471,7 @@ class JobRunner:
                 max_input_tokens=cfg.sandbox_job_max_input_tokens,
                 max_output_tokens=cfg.sandbox_job_max_output_tokens,
                 ttl_s=int(limit_s) + 600,
+                scope=scope,
             )
             specs = [
                 omp.ModelSpec(
@@ -458,7 +487,12 @@ class JobRunner:
             ]
             await ops.write(omp.MODELS_PATH, omp.models_yaml(base_url, specs).encode())
             rules = f"{job.dir}/rules.md"
-            rules_text = render_rules(settings, job, links=bool(self._link_domain()))
+            rules_text = render_rules(
+                settings,
+                job,
+                links=bool(self._link_domain()),
+                bridge_limit=scope.limit if scope is not None else None,
+            )
             await ops.write(rules, rules_text.encode())
             full = settings.privacy.capture_llm_content
             now = datetime.fromtimestamp(self._clock(), UTC)
@@ -473,6 +507,7 @@ class JobRunner:
                 rules_path=rules,
                 max_time_s=int(limit_s + WRAP_UP_S) + 120,
                 token=token,
+                bridge_url=base_url if scope is not None else None,
             )
             sent = True
             pid = await ops.start_rpc(job.dir, argv, env, cwd=omp.OMP_HOME)
@@ -718,11 +753,11 @@ class JobRunner:
         job.status, job.ended_at = status, self._clock()
         self._tool_starts.pop(job.id, None)
         job.result, job.error = result[:20000], error[:2000]
-        if job.kind == "agent":
-            from yggdrasil import relay
+        from yggdrasil import relay
 
-            try:
-                await relay.revoke_token(job.id)
+        try:
+            await relay.revoke_token(job.id)
+            if job.kind == "agent":
                 usage = await relay.relay_usage(job.id)
                 job.usage = {
                     "requests": usage.requests,
@@ -730,8 +765,8 @@ class JobRunner:
                     "cached_tokens": usage.cached_tokens,
                     "output_tokens": usage.output_tokens,
                 }
-            except Exception:
-                LOGGER.exception("relay cleanup for sandbox job {} failed", job.id)
+        except Exception:
+            LOGGER.exception("relay cleanup for sandbox job {} failed", job.id)
         job.report = "skipped" if job.cancel.startswith("chat:") else "pending"
         job.report_at = self._clock()
         r = self._r()
@@ -886,7 +921,8 @@ def _link_domain() -> str | None:
     return APP_CONFIG.sandbox_link_domain
 
 
-def render_rules(settings: Settings, job: Job, *, links: bool) -> str:
+def render_rules(settings: Settings, job: Job, *, links: bool, bridge_limit: int | None = None) -> str:
+    """omp's rules for ``job``; ``bridge_limit``: its code may call the bot's tools that many times (None: none)."""
     from yggdrasil.prompts import render
 
     return (
@@ -897,6 +933,7 @@ def render_rules(settings: Settings, job: Job, *, links: bool) -> str:
             job_dir=job.dir,
             minutes=int((job.deadline - job.created_at) // 60),
             links=links,
+            bridge_limit=bridge_limit,
         )
         + "\n"
     )

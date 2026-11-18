@@ -13,11 +13,12 @@ fails with the group's list. The suite is switched on per group by the pseudo to
 which prints a single JSON line. ``py`` side effects (``show`` / ``publish`` / ``unpublish`` in the kernel) are
 only requests in the cell's ``effects.jsonl``; the bot carries them out after the cell (a shown picture becomes an
 ``img#N`` handle the reply may embed, a link object for a published port) and appends the outcome to the tool result.
+Their code may call the bot's tools through the tool bridge (``agent.bridge``): the run's token goes into the step or
+cell directory as ``bridge.json``, and the result ends with a line saying which tools the code called.
 """
 
 import asyncio
 import json
-import re
 import secrets
 import time
 import weakref
@@ -35,8 +36,9 @@ from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.workspaces import WorkspaceError
 from pydantic_ai_harness import FileSystem
 
+from yggdrasil.agent import bridge
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.media import ModelImage, is_image, media_bytes, media_type, model_image
+from yggdrasil.agent.media import ModelImage, file_name, media_bytes, model_image
 from yggdrasil.agent.tools.base import ToolResult, accounting, chat_tool, resolve_ref, vision
 from yggdrasil.agent.tools.images import show_image
 from yggdrasil.core.log import LOGGER
@@ -110,15 +112,6 @@ def _sandbox_errors() -> Iterator[None]:
         raise ToolError(str(e)) from e
     except WorkspaceError as e:
         raise ToolError(f"工作区出错：{e}") from e
-
-
-_UNSAFE_NAME = re.compile(r"[^\w.\-]+")
-
-
-def safe_name(name: str, fallback: str) -> str:
-    """A plain file name for ``/workspace/in/``: no directories, no shell-hostile characters."""
-    base = _UNSAFE_NAME.sub("_", PurePosixPath(name.replace("\\", "/")).name).strip("._")[:120]
-    return base or fallback
 
 
 def _step_dir(kind: str) -> str:
@@ -199,15 +192,28 @@ async def sh(ctx: RunContext[Deps], script: str, timeout: int | None = None) -> 
     if not script.strip():
         raise ToolError("脚本是空的")
     step = _step_dir("sh")
-    with _sandbox_errors():
-        await session.backend.write_bytes(f"{step}/script.sh", script.encode("utf-8"))
+    await _write_step(ctx, session, step, "script.sh", script)
     result, seconds, notices = await _run_helper(
         session,
         lambda s: [YGG, "sh", "run", step, "--timeout", f"{s:g}"],
         wanted=_timeout(ctx.deps.settings.tools, timeout),
         label=f"sh {step}: {script[:400]}",
     )
-    return "\n".join([*notices, format_sh(result, seconds)])
+    return "\n".join([*notices, format_sh(result, seconds), *_bridged(ctx)])
+
+
+async def _write_step(ctx: RunContext[Deps], session: Session, step: str, name: str, source: str) -> None:
+    """The script or cell, and the run's ``bridge.json`` next to it when its code may call the bot."""
+    bridge_json = await bridge.bridge_file(ctx)
+    with _sandbox_errors():
+        await session.backend.write_bytes(f"{step}/{name}", source.encode("utf-8"))
+        if bridge_json is not None:
+            await session.backend.write_bytes(f"{step}/bridge.json", bridge_json)
+
+
+def _bridged(ctx: RunContext[Deps]) -> list[str]:
+    line = bridge.summary(ctx)
+    return [line] if line else []
 
 
 # --- py -----------------------------------------------------------------------------
@@ -319,8 +325,7 @@ async def py(
         with _sandbox_errors():
             await session.backend.exec([YGG, "py", "restart"], seconds=30)
     cell = _step_dir("cells")
-    with _sandbox_errors():
-        await session.backend.write_bytes(f"{cell}/code.py", code.encode("utf-8"))
+    await _write_step(ctx, session, cell, "code.py", code)
     result, seconds, notices = await _run_helper(
         session,
         lambda s: [YGG, "py", "run", cell, "--timeout", f"{s:g}", "--max-images", str(PY_MAX_IMAGES)],
@@ -338,6 +343,7 @@ async def py(
     dropped = int(result.get("images_dropped") or 0) + max(0, len(result.get("images") or []) - PY_MAX_IMAGES)
     if dropped:
         parts.append(f"[另有 {dropped} 张图没有返回（每次最多 {PY_MAX_IMAGES} 张）]")
+    parts += _bridged(ctx)
     if not images:
         return "\n".join(parts)
     if sees_images(ctx.deps.task):
@@ -376,14 +382,9 @@ async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
     deps = ctx.deps
     cfg = deps.settings.tools
     limit = cfg.file_max_mb * 1024 * 1024
-    blob, name = await media_bytes(deps.qq, deps.group_id, deps.user_id, h, limit, made=deps.made_images)
-    if not h.data.get("file_name") and name == "file":
-        name = ""  # media_bytes' placeholder: nothing to go by
-    fallback = re.sub(r"\W+", "-", handle).strip("-") or "file"
-    if is_image(blob):
-        fallback += "." + media_type(blob).removeprefix("image/").replace("jpeg", "jpg")
+    blob, _ = await media_bytes(deps.qq, deps.group_id, deps.user_id, h, limit, made=deps.made_images)
     with _sandbox_errors():
-        rel = await _free_in_path(session, safe_name(name, fallback))
+        rel = await _free_in_path(session, file_name(handle, h, blob))
         path = await session.put_bytes(rel, blob)
     return f"{handle} 已放到 {path}（{len(blob)} 字节）"
 

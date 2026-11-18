@@ -45,6 +45,7 @@ COPY --chmod=0755 reap /opt/ygg/reap
 COPY --chmod=0755 bin/ygg /opt/ygg/ygg
 COPY lib/ygg /opt/ygg/lib/ygg
 RUN echo /opt/ygg/lib > "$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/ygg.pth" \
+    && ln -s /opt/ygg/ygg /usr/local/bin/ygg \
     && python3 -m compileall -q /opt/ygg/lib \
     && chmod -R a+rX /opt/ygg
 ENV HOME=/workspace LANG=C.UTF-8
@@ -122,7 +123,9 @@ RUN useradd -u 1000 -U -d /workspace -M -s /bin/bash sandbox \
 COPY --chmod=0755 reap /opt/ygg/reap
 COPY --chmod=0755 bin/ygg /opt/ygg/ygg
 COPY lib/ygg /opt/ygg/lib/ygg
+# `ygg` on PATH: workspace scripts call the bot's tools with `ygg tool` / `ygg media`.
 RUN echo /opt/ygg/lib > /usr/local/lib/python3.13/site-packages/ygg.pth \
+    && ln -s /opt/ygg/ygg /usr/local/bin/ygg \
     && python3 -m compileall -q /opt/ygg/lib \
     && chmod -R a+rX /opt/ygg/lib
 

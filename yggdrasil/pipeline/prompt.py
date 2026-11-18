@@ -13,6 +13,7 @@ from yggdrasil.llm.registry import sees_images
 from yggdrasil.people import self_label
 from yggdrasil.prompts import render
 from yggdrasil.qq.client import QQ
+from yggdrasil.relay import relay_url
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.transcript.notes import TraceNotes
@@ -68,6 +69,8 @@ def instructions(
         tools=tools,
         sandbox=sandbox,
         sandbox_links=bool(APP_CONFIG.sandbox_link_domain),
+        # Workspace code can call the bot's tools (agent.bridge): the relay is served and the limit allows calls.
+        sandbox_bridge=sandbox is not None and sandbox.bridge_run_limit > 0 and relay_url() is not None,
         report=report,
         style=render("style_rules"),
         data_rules=render(

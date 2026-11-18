@@ -1,4 +1,5 @@
-"""The relay's HTTP side: Anthropic ``POST /v1/messages`` (SSE or JSON) and ``GET /v1/models``.
+"""The relay's HTTP side: Anthropic ``POST /v1/messages`` (SSE or JSON) and ``GET /v1/models``, plus the tool bridge
+(``/v1/tools``, ``/v1/media``: :mod:`yggdrasil.relay.bridge`).
 
 A request is checked against its token's grant (expiry, model allowlist, budget) and reserves its
 ``max_tokens`` of the output budget (clamped to what is left, so parallel requests can't overrun it).
@@ -32,6 +33,7 @@ from starlette.routing import Route
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.llm.registry import record_usage
+from yggdrasil.relay import bridge
 from yggdrasil.relay.grants import (
     Grant,
     Target,
@@ -40,6 +42,7 @@ from yggdrasil.relay.grants import (
     configured_url,
     relay_models,
     release,
+    request_token,
     reserve_output,
     route_targets,
     set_serving,
@@ -65,17 +68,8 @@ def _error(status: int, kind: str, message: str) -> JSONResponse:
     return JSONResponse({"type": "error", "error": {"type": kind, "message": message}}, status, headers=headers)
 
 
-def _client_token(request: Request) -> str | None:
-    if key := request.headers.get("x-api-key", "").strip():
-        return key
-    scheme, _, value = request.headers.get("authorization", "").partition(" ")
-    if scheme.lower() == "bearer" and value.strip():
-        return value.strip()
-    return None
-
-
 async def _grant(request: Request) -> Grant | Response:
-    token = _client_token(request)
+    token = request_token(request.headers)
     if token is None:
         return _error(401, "authentication_error", "缺少中转令牌")
     grant = await authenticate(token)
@@ -258,6 +252,7 @@ class Relay:
             routes=[
                 Route("/v1/messages", self.messages, methods=["POST"]),
                 Route("/v1/models", self.models, methods=["GET"]),
+                *bridge.routes(),
             ]
         )
 

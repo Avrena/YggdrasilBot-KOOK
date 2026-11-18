@@ -180,6 +180,7 @@ async def _prompt(run: Run, chat: Chat | None, trigger: Message | None, notes: T
         tools=tool_names,
         sandbox=None,
         sandbox_links=False,
+        sandbox_bridge=False,
         report=run.handler == "report",
         style=render("style_rules"),
         data_rules=render("data_rules", nonce=nonce, me=self_label(PERSONA), sandbox=False),

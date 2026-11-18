@@ -123,3 +123,4 @@ typeCheckingMode = "basic"
 include = ["yggdrasil", "tests", "migration"]
 exclude = ["yggdrasil/sandbox/_proto/process_pb2*"]
 pythonVersion = "3.13"
+extraPaths = ["sandbox/lib"]  # the in-sandbox ``ygg`` helper, imported by its host-side tests

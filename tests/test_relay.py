@@ -85,7 +85,7 @@ async def client(upstream: Routes) -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def _token(job_id: str = "job1", **kw: int) -> str:
-    args = {"max_input_tokens": 1_000_000, "max_output_tokens": 100_000, "ttl_s": 600, **kw}
+    args: dict[str, Any] = {"max_input_tokens": 1_000_000, "max_output_tokens": 100_000, "ttl_s": 600, **kw}
     return await issue_token(group_id=10001, job_id=job_id, models=[MODEL], **args)
 
 

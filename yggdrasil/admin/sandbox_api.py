@@ -261,8 +261,8 @@ def _ending(job: Job) -> list[Entry]:
 
 @router.get("/jobs/{job_id}/transcript")
 async def get_job_transcript(job_id: str) -> transcripts.TranscriptOut:
-    """The job as a conversation: omp's messages for agent jobs (live while it runs), the script and its output
-    for command jobs."""
+    """The job as a conversation: omp's messages for agent jobs (live while it runs), the script, the bot tools its
+    code called and its output for command jobs."""
     r = runner()
     job = await r.get(job_id)
     if job is not None:
@@ -283,7 +283,9 @@ async def get_job_transcript(job_id: str) -> transcripts.TranscriptOut:
             duration_ms=int((job.ended_at - job.created_at) * 1000) if job.ended_at is not None else None,
             parts=[_text(job.result)] if job.result else [],
         )
-        items = [Entry(kind="user", at=started, parts=[_text(job.spec)])]
+        row = await store.for_job(job_id)  # a command job's transcript holds only its tool bridge calls
+        bridged = [Entry.model_validate(e) for e in row.entries] if row is not None else []
+        items = [Entry(kind="user", at=started, parts=[_text(job.spec)]), *bridged]
         if not job.running:
             items.append(output)
         return transcripts.TranscriptOut(

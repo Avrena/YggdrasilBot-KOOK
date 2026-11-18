@@ -69,6 +69,7 @@ gVisor pod, claimed from a warm pool.
 - `sh` runs shell scripts; `py` is a persistent IPython kernel with a scriptable headless Chromium.
 - `background` runs long commands, and `delegate` hands a small multi-step task to an inner coding agent, which works quickly: the bot rewrites the request into a narrow task, and at the time limit (10 minutes by default) the agent is told to stop and summarize what it finished. `delegate` can be switched off on its own (`tools.sandbox_delegate`). Both report back to the group when they finish.
 - Agents inside a workspace reach models through the bot's LLM relay, with a short-lived per-job token and budget instead of a provider key.
+- Code in a workspace can call the chat model's own tools and fetch chat images and files by reference over the same relay port (`tool(...)` / `media(...)` in `py`, `ygg tool` / `ygg media` in shell scripts and background jobs), so one script can batch dozens of searches or page reads. Tokens are per chat run or job, with their own call limit (30 per run, 120 per job by default).
 - Services started in a workspace can be published on a public link, on a domain reserved for untrusted content.
 
 ### Rendering

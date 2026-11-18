@@ -1,9 +1,18 @@
-"""`/opt/ygg/ygg` command line. Each command prints exactly one JSON line on success; usage errors exit 2 with a
-message on stderr. Subcommand modules are imported on demand so `sh` / `proc` / `port` / `rpc` start fast."""
+"""`/opt/ygg/ygg` command line. Each command the bot runs prints exactly one JSON line on success; usage errors
+exit 2 with a message on stderr. `tool` / `media` are for workspace scripts instead: they print plain text (the
+tool result, the written path) and exit 1 with the bridge's error on stderr. Subcommand modules are imported on
+demand so `sh` / `proc` / `port` / `rpc` start fast."""
 
 import argparse
+import json
 import os
 import sys
+from typing import Any
+
+BRIDGE_USAGE = """usage:
+  ygg tool <name> [key=value ...] [--json OBJ]
+  ygg tool --list
+  ygg media <ref> [-o PATH]"""
 
 USAGE = """usage:
   ygg sh run <dir> --timeout S [--head N] [--tail N]
@@ -14,19 +23,24 @@ USAGE = """usage:
   ygg port <port>
   ygg rpc start <job_dir> [--env K=V]... [--cwd DIR] -- <argv...>
   ygg rpc send <job_dir> (--json STR | --file PATH)
-  ygg rpc close <job_dir>"""
+  ygg rpc close <job_dir>
+""" + BRIDGE_USAGE.removeprefix("usage:\n")
 
 HEAD, TAIL, MAX_IMAGES = 2000, 6000, 6
 
 
 class _Parser(argparse.ArgumentParser):
+    usage_text = USAGE
+
     def error(self, message: str) -> None:  # type: ignore[override]
-        sys.stderr.write(f"ygg: {message}\n{USAGE}\n")
+        sys.stderr.write(f"ygg: {message}\n{self.usage_text}\n")
         sys.exit(2)
 
 
-def _parser(prog: str) -> _Parser:
-    return _Parser(prog=prog, add_help=False)
+def _parser(prog: str, usage_text: str = USAGE) -> _Parser:
+    p = _Parser(prog=prog, add_help=False)
+    p.usage_text = usage_text
+    return p
 
 
 def _nonneg(value: str) -> int:
@@ -51,6 +65,10 @@ def _output_args(p: _Parser) -> None:
 def main(argv: list[str]) -> int:
     cli = os.path.abspath(argv[0])
     args = argv[1:]
+    if args[:1] == ["tool"]:
+        return _tool(args[1:])
+    if args[:1] == ["media"]:
+        return _media(args[1:])
     if len(args) < 2 and args[:1] != ["port"]:
         sys.stderr.write(USAGE + "\n")
         return 2
@@ -149,3 +167,54 @@ def _split(args: list[str]) -> tuple[list[str], bool, list[str]]:
         return args, False, []
     i = args.index("--")
     return args[:i], True, args[i + 1 :]
+
+
+def _tool(rest: list[str]) -> int:
+    p = _parser("ygg tool", BRIDGE_USAGE)
+    p.add_argument("name", nargs="?")
+    p.add_argument("pairs", nargs="*")
+    p.add_argument("--json", dest="raw")
+    p.add_argument("--list", action="store_true")
+    ns = p.parse_intermixed_args(rest)
+    from ygg import _bridge
+
+    if ns.list:
+        if ns.name or ns.raw is not None:
+            p.error("--list 不接其他参数")
+        return _bridge.cli_list()
+    if not ns.name:
+        p.error("需要工具名（或 --list 列出可用工具）")
+    args: dict[str, Any] = {}
+    if ns.raw is not None:
+        try:
+            obj = json.loads(ns.raw)
+        except ValueError:
+            obj = None
+        if not isinstance(obj, dict):
+            p.error("--json 必须是一个 JSON 对象")
+        args.update(obj)
+    for pair in ns.pairs:
+        key, eq, value = pair.partition("=")
+        if not eq or not key:
+            p.error(f"参数要写成 key=value，收到 {pair!r}")
+        args[key] = _value(value)
+    return _bridge.cli_tool(ns.name, args)
+
+
+def _value(text: str) -> Any:
+    """A key=value value: JSON when it parses (numbers, true/false/null, lists, objects, quoted strings), else
+    the text itself."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _media(rest: list[str]) -> int:
+    p = _parser("ygg media", BRIDGE_USAGE)
+    p.add_argument("ref")
+    p.add_argument("-o", "--output", dest="out")
+    ns = p.parse_args(rest)
+    from ygg import _bridge
+
+    return _bridge.cli_media(ns.ref, ns.out)

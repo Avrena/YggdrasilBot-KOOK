@@ -7,6 +7,8 @@
   /workspace/.ygg/procs/<name>.log.
 - `wait_port(port, timeout=30)`: wait until something listens on the port (it must listen on 0.0.0.0).
 - `await browser()`, `await shot()`, `await snapshot()`, `await close_browser()`: the persistent Chromium page.
+- `tool(name, **args) -> str`, `tools()`, `media(ref, dest=None) -> Path`, `BridgeError`: call the bot's tools and
+  fetch chat images / files by reference (see `ygg._bridge`).
 
 Effects (`show`, `publish`, `unpublish`) are appended to the current cell's effects.jsonl and carried out by the
 bot once the cell ends. Imports stay cheap: this module is imported by every kernel at start.
@@ -22,17 +24,23 @@ import sys
 import time
 from typing import Any
 
+from ygg import _bridge
+from ygg._bridge import BridgeError, media, tool, tools
 from ygg._browser import Text, browser, close_browser, shot, snapshot
 
 __all__ = [
+    "BridgeError",
     "Proc",
     "browser",
     "close_browser",
+    "media",
     "publish",
     "shot",
     "show",
     "snapshot",
     "start",
+    "tool",
+    "tools",
     "unpublish",
     "wait_port",
 ]
@@ -48,11 +56,13 @@ _names: dict[str, int] = {}
 
 
 def _begin(cell_dir: str) -> None:
-    """Silent preamble of every cell: effects of this cell go to ``cell_dir``. Exported through the environment
-    too, so scripts this cell runs (`subprocess`, `!python x.py`) can call `show` / `publish` as well."""
+    """Silent preamble of every cell: effects of this cell go to ``cell_dir``, and the cell's bridge credentials
+    (its bridge.json; none without one) replace the previous cell's. Both are exported through the environment
+    too, so scripts this cell runs (`subprocess`, `!python x.py`) can call `show` / `publish` / `tool` as well."""
     global _cell
     _cell = cell_dir
     os.environ[_CELL_ENV] = cell_dir
+    _bridge.export(cell_dir)
     touch()
 
 

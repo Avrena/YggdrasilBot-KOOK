@@ -365,7 +365,7 @@ Environment variables (`yggdrasil/config.py` has the authoritative list):
 | `YGG_SANDBOX_TOKEN` | unset | sandboxd bearer token; the sandbox is off without it |
 | `YGG_SANDBOX_NAMESPACE`, `YGG_SANDBOX_WARMPOOL` | `yggdrasil`, `yggdrasil-sandbox` | where workspaces are claimed from |
 | `YGG_SANDBOX_LINK_DOMAIN` | unset | wildcard domain for public links; publishing is off without it |
-| `YGG_RELAY_URL` | unset | base URL workspaces reach the LLM relay at; `delegate` is off without it |
+| `YGG_RELAY_URL` | unset | base URL workspaces reach the LLM relay and tool bridge at; `delegate` and the tool bridge are off without it |
 | `YGG_RELAY_PORT` | `8090` | port the bot serves the relay on |
 
 Processes (one image, `ghcr.io/<you>/yggdrasil-bot`):
@@ -492,7 +492,8 @@ volumes (SnowLuma's or Yogurt's) are not worth backing up: losing them means a n
   `/onebot`.
 - **Secrets.** Provider keys are encrypted at rest with `YGG_SECRET_KEY` and never shown back in full. Agents
   in workspaces never see a provider key: the relay issues per-job tokens with a model allowlist and a token
-  budget.
+  budget. The tool bridge on the same port gives workspace code short-lived tokens too (one per chat run or
+  job), scoped to the group's enabled tools and capped at a call limit; any code in the workspace can read them.
 - **SnowLuma is privileged.** It injects its hook into QQ with ptrace and adjusts the pod's identity with
   bind mounts. Keep it isolated: no inbound traffic (NetworkPolicy), its WebUI on loopback only, access by
   port-forward.
@@ -539,7 +540,9 @@ printf %s "$TOKEN" | sha256sum    # -> --auth-token-sha256=<digest>
 **4. Network.** In `sandbox/sandbox.yaml`, replace the placeholder `203.0.113.10/32` with your nodes' public
 IPs (workspaces must not reach your own services through the public address). In `sandbox/relay.yaml` and
 `sandbox/kustomization.yaml`, pick a free ClusterIP in your Service CIDR for the LLM relay; workspaces use
-public DNS and reach the relay by IP.
+public DNS and reach the relay by IP. The same port also serves the tool bridge (workspace code calling the
+bot's tools with `ygg tool` / `tool(...)` and fetching chat media with `ygg media` / `media(...)`), so it needs
+no extra network rule.
 
 **5. Public links (optional).** Workspaces can publish a port as `https://<random id>.<domain>`. Point a
 wildcard DNS record `*.<domain>` at your ingress, add a matching wildcard certificate, and set
@@ -554,8 +557,9 @@ served from workspaces are untrusted. The bot creates a Service and an IngressRo
 **Background jobs.** `background` runs long shell commands and `delegate` hands multi-step tasks to an inner
 coding agent in the workspace. Job state lives in Redis and under `/workspace/.ygg/jobs/`, so jobs continue
 across bot restarts; when one finishes, the bot replies to the requester with the result. Limits (concurrent
-jobs, run time, relay token budgets) are tool settings; the Sandbox page lists workspaces and jobs, shows job
-events and usage, and can cancel jobs or destroy workspaces.
+jobs, run time, relay token budgets, tool bridge calls: `bridge_run_limit` per chat run, `bridge_job_limit` per
+job) are tool settings; the Sandbox page lists workspaces and jobs, shows job events and usage, and can cancel
+jobs or destroy workspaces.
 
 > [!NOTE]
 > agent-sandbox v1.0.7 does not replace warm pods when the SandboxTemplate changes. After a new sandbox image

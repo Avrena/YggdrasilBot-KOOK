@@ -4003,7 +4003,7 @@
           "sandbox"
         ],
         "summary": "Get Job Transcript",
-        "description": "The job as a conversation: omp's messages for agent jobs (live while it runs), the script and its output\nfor command jobs.",
+        "description": "The job as a conversation: omp's messages for agent jobs (live while it runs), the script, the bot tools its\ncode called and its output for command jobs.",
         "operationId": "get_job_transcript",
         "parameters": [
           {
@@ -4465,6 +4465,146 @@
         "title": "BotReply",
         "description": "The structured answer of the chat / tldr agents."
       },
+      "BridgeCall": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Args"
+          },
+          "chars": {
+            "type": "integer",
+            "title": "Chars",
+            "default": 0
+          },
+          "parts": {
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextPart"
+                },
+                {
+                  "$ref": "#/components/schemas/ThinkingPart"
+                },
+                {
+                  "$ref": "#/components/schemas/ImagePart"
+                },
+                {
+                  "$ref": "#/components/schemas/ToolCallPart"
+                },
+                {
+                  "$ref": "#/components/schemas/OutputPart"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "type",
+                "mapping": {
+                  "image": "#/components/schemas/ImagePart",
+                  "output": "#/components/schemas/OutputPart",
+                  "text": "#/components/schemas/TextPart",
+                  "thinking": "#/components/schemas/ThinkingPart",
+                  "tool_call": "#/components/schemas/ToolCallPart"
+                }
+              }
+            },
+            "type": "array",
+            "title": "Parts",
+            "default": []
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "error",
+              "retry",
+              "cancelled"
+            ],
+            "title": "Outcome",
+            "default": "ok"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/QQContextDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/QQMessagesDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/QQForwardDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PageDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/HitsDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ImagesDisplay"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "kind",
+                  "mapping": {
+                    "hits": "#/components/schemas/HitsDisplay",
+                    "images": "#/components/schemas/ImagesDisplay",
+                    "page": "#/components/schemas/PageDisplay",
+                    "qq_context": "#/components/schemas/QQContextDisplay",
+                    "qq_forward": "#/components/schemas/QQForwardDisplay",
+                    "qq_messages": "#/components/schemas/QQMessagesDisplay"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "BridgeCall",
+        "description": "A bot tool (or ``media``, a fetch of an attachment's bytes) that code in a workspace called through the tool\nbridge. Kept on the ``sh`` / ``py`` tool entry whose code made it (a job's on an event entry); like entries, it\ncarries arguments and result text only in ``full`` mode."
+      },
       "DecideIn": {
         "properties": {
           "action": {
@@ -4817,6 +4957,20 @@
               }
             ],
             "title": "Outcome"
+          },
+          "bridge": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BridgeCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bridge"
           },
           "text": {
             "anyOf": [

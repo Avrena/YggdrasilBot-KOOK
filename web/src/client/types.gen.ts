@@ -211,6 +211,62 @@ export type BotReply = {
 };
 
 /**
+ * BridgeCall
+ *
+ * A bot tool (or ``media``, a fetch of an attachment's bytes) that code in a workspace called through the tool
+ * bridge. Kept on the ``sh`` / ``py`` tool entry whose code made it (a job's on an event entry); like entries, it
+ * carries arguments and result text only in ``full`` mode.
+ */
+export type BridgeCall = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * At
+     */
+    at?: string | null;
+    /**
+     * Args
+     */
+    args?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Chars
+     */
+    chars?: number;
+    /**
+     * Parts
+     */
+    parts?: Array<TextPart | ThinkingPart | ImagePart | ToolCallPart | OutputPart>;
+    /**
+     * Outcome
+     */
+    outcome?: 'ok' | 'error' | 'retry' | 'cancelled';
+    /**
+     * Duration Ms
+     */
+    duration_ms?: number | null;
+    /**
+     * Display
+     */
+    display?: ({
+        kind: 'qq_context';
+    } & QqContextDisplay) | ({
+        kind: 'qq_messages';
+    } & QqMessagesDisplay) | ({
+        kind: 'qq_forward';
+    } & QqForwardDisplay) | ({
+        kind: 'page';
+    } & PageDisplay) | ({
+        kind: 'hits';
+    } & HitsDisplay) | ({
+        kind: 'images';
+    } & ImagesDisplay) | null;
+};
+
+/**
  * DecideIn
  */
 export type DecideIn = {
@@ -379,6 +435,10 @@ export type Entry = {
      * Outcome
      */
     outcome?: 'ok' | 'error' | 'retry' | 'cancelled' | null;
+    /**
+     * Bridge
+     */
+    bridge?: Array<BridgeCall> | null;
     /**
      * Text
      */

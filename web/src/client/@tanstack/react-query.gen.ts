@@ -1790,8 +1790,8 @@ export const getJobTranscriptQueryKey = (options: Options<GetJobTranscriptData>)
 /**
  * Get Job Transcript
  *
- * The job as a conversation: omp's messages for agent jobs (live while it runs), the script and its output
- * for command jobs.
+ * The job as a conversation: omp's messages for agent jobs (live while it runs), the script, the bot tools its
+ * code called and its output for command jobs.
  */
 export const getJobTranscriptOptions = (options: Options<GetJobTranscriptData>) => queryOptions<GetJobTranscriptResponse, GetJobTranscriptError, GetJobTranscriptResponse, ReturnType<typeof getJobTranscriptQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {

@@ -9,11 +9,12 @@ from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from tests.support.agent import run_ctx
 from tests.support.files import png
 from yggdrasil.agent.deps import Deps
+from yggdrasil.agent.media import safe_name
 from yggdrasil.agent.schema import BotReply, Section
 from yggdrasil.agent.tools import sandbox as sandbox_tools
 from yggdrasil.agent.tools import suite_enabled, tool_names
 from yggdrasil.agent.tools.images import reply_images
-from yggdrasil.agent.tools.sandbox import format_py, format_sh, py, safe_name, sandbox_put, sh
+from yggdrasil.agent.tools.sandbox import format_py, format_sh, py, sandbox_put, sh
 from yggdrasil.moderation.image import parse_answer
 from yggdrasil.sandbox import SandboxError
 from yggdrasil.sandbox.backend import ExecResult

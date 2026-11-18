@@ -12,7 +12,7 @@ import time
 IDLE_EXIT = 20 * 60
 PRELOAD = [
     "import ygg",
-    "from ygg import show, publish, unpublish, start, wait_port, browser, shot, snapshot",
+    "from ygg import show, publish, unpublish, start, wait_port, browser, shot, snapshot, tool, media",
 ]
 
 

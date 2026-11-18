@@ -147,6 +147,21 @@ Display = Annotated[
 Outcome = Literal["ok", "error", "retry", "cancelled"]
 
 
+class BridgeCall(BaseModel):
+    """A bot tool (or ``media``, a fetch of an attachment's bytes) that code in a workspace called through the tool
+    bridge. Kept on the ``sh`` / ``py`` tool entry whose code made it (a job's on an event entry); like entries, it
+    carries arguments and result text only in ``full`` mode."""
+
+    name: str
+    at: datetime | None = None
+    args: dict[str, Any] | None = None
+    chars: int = 0  # of the arguments as JSON
+    parts: list[Part] = []  # the result text the code got
+    outcome: Outcome = "ok"
+    duration_ms: int | None = None
+    display: Display | None = None
+
+
 class Entry(BaseModel):
     """One turn. Fields beyond ``kind``/``at``/``parts`` apply to some kinds only (noted per field)."""
 
@@ -164,6 +179,7 @@ class Entry(BaseModel):
     call_id: str | None = None
     name: str | None = None
     outcome: Outcome | None = None
+    bridge: list[BridgeCall] | None = None  # tool (sh / py) and event (job) entries: the code's tool bridge calls
     # event
     text: str | None = None
     level: Literal["info", "warn", "error"] | None = None

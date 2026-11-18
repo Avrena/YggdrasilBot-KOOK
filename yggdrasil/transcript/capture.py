@@ -200,6 +200,7 @@ def _tool_entry(
         outcome=outcome,
         duration_ms=_ms(record.started, record.ended) if record else None,
         display=notes.displays.get(call_id),
+        bridge=notes.bridge.get(call_id),
     )
 
 

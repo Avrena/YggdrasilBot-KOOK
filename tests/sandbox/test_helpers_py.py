@@ -50,12 +50,24 @@ async def test_preloaded_names_and_top_level_await(fresh: SandboxdWorkspace) -> 
     r = await run(
         fresh,
         "import asyncio\nawait asyncio.sleep(0.01)\n"
-        "print(all(callable(f) for f in (show, publish, unpublish, start, wait_port, browser, shot, snapshot)))\n"
+        "print(all(callable(f) for f in (show, publish, unpublish, start, wait_port, browser, shot, snapshot, tool,"
+        " media)))\n"
         "ygg.__name__",
     )
     assert r["status"] == "ok", r
     assert r["output"] == "True\n"
     assert r["result"] == "'ygg'"
+
+
+async def test_each_cell_exports_its_own_bridge_credentials(fresh: SandboxdWorkspace) -> None:
+    show = "import os\nprint(os.environ.get('YGG_BRIDGE_TOKEN', 'none'))\n"
+    with_bridge = f"{scratch('py')}-{next(_cells)}"
+    await put(fresh, f"{with_bridge}/bridge.json", '{"url": "http://10.43.255.90:8090", "token": "t1"}')
+    await put(fresh, f"{with_bridge}/code.py", show)
+    first = await ygg(fresh, "py", "run", with_bridge, "--timeout", "30", seconds=90)
+    assert first["output"] == "t1\n", first
+    second = await run(fresh, show)  # no bridge.json: the previous cell's token is gone
+    assert second["output"] == "none\n", second
 
 
 async def test_error_has_clean_traceback(fresh: SandboxdWorkspace) -> None:

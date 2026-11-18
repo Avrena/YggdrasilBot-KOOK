@@ -4,9 +4,10 @@ import asyncio
 import io
 import itertools
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import PurePath
+from pathlib import PurePath, PurePosixPath
 
 import httpx
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageSequence, ImageStat
@@ -34,6 +35,11 @@ _MAX_DECODE_FRAMES = 600
 _DEFAULT_FRAME_MS = 100  # browsers play GIF frames of 0-10 ms at 100 ms
 _SHEET_GAP = 4
 _IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
+_UNSAFE_NAME = re.compile(r"[^\w.\-]+")
+
+
+class MediaTooLarge(ToolError):
+    """An attachment is larger than the caller allows."""
 
 
 async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
@@ -45,7 +51,7 @@ async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
         async for chunk in resp.aiter_bytes():
             size += len(chunk)
             if size > max_bytes:
-                raise ToolError(f"文件太大（超过 {max_bytes // 1024 // 1024}MB）")
+                raise MediaTooLarge(f"文件太大（超过 {max_bytes // 1024 // 1024}MB）")
             chunks.append(chunk)
     return b"".join(chunks)
 
@@ -118,6 +124,21 @@ def media_type(blob: bytes) -> str:
     if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
         return "image/webp"
     return "image/jpeg"
+
+
+def safe_name(name: str, fallback: str) -> str:
+    """A plain file name: no directories, no shell-hostile characters."""
+    base = _UNSAFE_NAME.sub("_", PurePosixPath(name.replace("\\", "/")).name).strip("._")[:120]
+    return base or fallback
+
+
+def file_name(ref: str, h: Handle, blob: bytes) -> str:
+    """What to call the bytes of attachment ``ref`` in a workspace: its own file name, else one made from the ref
+    (``img-3.png``)."""
+    fallback = re.sub(r"\W+", "-", ref).strip("-") or "file"
+    if is_image(blob):
+        fallback += "." + media_type(blob).removeprefix("image/").replace("jpeg", "jpg")
+    return safe_name(str(h.data.get("file_name") or ""), fallback)
 
 
 def fit_image(blob: bytes) -> bytes:

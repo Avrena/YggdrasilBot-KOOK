@@ -2,14 +2,22 @@
 
 Tools call into the run's :class:`TraceNotes` (``deps.notes``) with their ``ctx.tool_call_id``. Only references are
 kept during the run (message ids, image bytes); messages are snapshotted once when the transcript is saved. With
-``full=False`` (``privacy.capture_llm_content`` off) nothing is collected.
+``full=False`` (``privacy.capture_llm_content`` off) nothing is collected but the outline of tool bridge calls (their
+callers leave out arguments and results then).
 """
 
 import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
-from yggdrasil.transcript.schema import Display, ImagesDisplay, QQContextDisplay, QQMessagesDisplay, ShownImage
+from yggdrasil.transcript.schema import (
+    BridgeCall,
+    Display,
+    ImagesDisplay,
+    QQContextDisplay,
+    QQMessagesDisplay,
+    ShownImage,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +44,7 @@ class TraceNotes:
     image_keys: dict[str, str] = field(default_factory=dict)  # image segment key -> sha256 of the bytes we loaded
     blobs: dict[str, Blob] = field(default_factory=dict)  # images to store, by sha256
     errors: set[str] = field(default_factory=set)  # tool calls whose tool turned an exception into error text
+    bridge: dict[str, list[BridgeCall]] = field(default_factory=dict)  # tool bridge calls by the sh/py call making them
     context: QQContextDisplay | None = None
     bot: tuple[int, str] | None = None  # (QQ number, persona name): how the console labels the bot's own messages
 
@@ -77,3 +86,7 @@ class TraceNotes:
     def failed(self, call_id: str | None) -> None:
         if call_id:
             self.errors.add(call_id)
+
+    def bridged(self, call_id: str, call: BridgeCall) -> None:
+        """Code run by tool call ``call_id`` called ``call`` through the tool bridge."""
+        self.bridge.setdefault(call_id, []).append(call)

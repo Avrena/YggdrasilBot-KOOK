@@ -1,21 +1,25 @@
 """Scoped relay tokens, their per-job usage, and the models a token may be granted.
 
-Each background agent job gets one random token. Code inside the workspace can read it, so the real
-controls are the grant: model allowlist, input/output token budget and expiry. Redis keeps only the
-token's sha256 (``ygg:relay:token:<sha256>`` → grant JSON, expiring with the grant), the job's current
-token (``ygg:relay:job:<job id>`` → sha256, for revocation), the job's usage hash
-(``ygg:relay:usage:<job id>``, kept a week after the last request so the report can read it) and its
-in-flight output reservations (``ygg:relay:pending:<job id>``: request id → ``"<tokens>:<expires epoch>"``).
+Each background job (and each chat run whose code uses the tool bridge, as ``run-<invocation id>``) gets one random
+token. Code inside the workspace can read it, so the real controls are the grant: model allowlist, input/output
+token budget, the tool scope (which bot tools the bridge lets it call, for whom, how many times) and expiry. Redis
+keeps only the token's sha256 (``ygg:relay:token:<sha256>`` → grant JSON, expiring with the grant), the job's current
+token (``ygg:relay:job:<job id>`` → sha256, for revocation), the job's usage hash (``ygg:relay:usage:<job id>``, kept
+a week after the last request so the report can read it), its in-flight output reservations
+(``ygg:relay:pending:<job id>``: request id → ``"<tokens>:<expires epoch>"``) and its bridge call count
+(``ygg:relay:calls:<job id>``, shared by every replica).
 
-Concurrent requests can't overrun the output budget: each one reserves its ``max_tokens`` (clamped to what
-is left) atomically with the budget check and releases it when its usage is recorded. A reservation whose
-request never released it (process killed mid-stream) lapses after ``_RESERVATION_S``.
+Concurrent requests can't overrun the output budget: each one reserves its ``max_tokens`` (clamped to what is left)
+atomically with the budget check and releases it when its usage is recorded. A reservation whose request never
+released it (process killed mid-stream) lapses after ``_RESERVATION_S``.
 """
 
 import hashlib
 import json
+import math
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
 from yggdrasil.config import APP_CONFIG
@@ -52,13 +56,25 @@ class RelayUsage:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolScope:
+    """What a token may do through the tool bridge: call ``tools`` and fetch media, ``limit`` times in all, on behalf
+    of ``user_id`` in the grant's group (``invocation_id``: the chat run that asked)."""
+
+    tools: tuple[str, ...]
+    user_id: int
+    invocation_id: str | None
+    limit: int
+
+
+@dataclass(frozen=True, slots=True)
 class Grant:
     group_id: int
-    job_id: str
+    job_id: str  # the background job, or ``run-<invocation id>`` for a chat run's bridge token
     models: tuple[str, ...]
     max_input_tokens: int
     max_output_tokens: int
     expires_at: float  # epoch seconds
+    scope: ToolScope | None = None  # None: no tool bridge
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +107,20 @@ def digest(token: str) -> str:
 
 def pending_key(job_id: str) -> str:
     return f"{_PREFIX}:pending:{job_id}"
+
+
+def calls_key(job_id: str) -> str:
+    return f"{_PREFIX}:calls:{job_id}"
+
+
+def request_token(headers: Mapping[str, str]) -> str | None:
+    """The token a request carries: ``x-api-key`` (Anthropic SDKs) or ``Authorization: Bearer``."""
+    if key := headers.get("x-api-key", "").strip():
+        return key
+    scheme, _, value = headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    return None
 
 
 _serving = False
@@ -160,11 +190,19 @@ async def relay_models() -> list[RelayModel]:
 
 
 async def issue_token(
-    *, group_id: int, job_id: str, models: list[str], max_input_tokens: int, max_output_tokens: int, ttl_s: int
+    *,
+    group_id: int,
+    job_id: str,
+    models: list[str],
+    max_input_tokens: int,
+    max_output_tokens: int,
+    ttl_s: int,
+    scope: ToolScope | None = None,
 ) -> str:
-    """A fresh token for ``job_id``; a token the job already had stops working. Usage keeps accumulating."""
-    if not models:
-        raise ValueError("a relay grant needs at least one model")
+    """A fresh token for ``job_id``; a token the job already had stops working. Usage and bridge calls keep
+    accumulating."""
+    if not models and scope is None:
+        raise ValueError("a relay grant needs a model or a tool scope")
     if ttl_s <= 0:
         raise ValueError("ttl_s must be positive")
     token = secrets.token_urlsafe(32)
@@ -176,6 +214,7 @@ async def issue_token(
         max_input_tokens=max_input_tokens,
         max_output_tokens=max_output_tokens,
         expires_at=time.time() + ttl_s,
+        scope=scope,
     )
     redis = redis_client()
     old = await redis.get(job_key(job_id))
@@ -191,7 +230,7 @@ async def issue_token(
 async def revoke_token(job_id: str) -> None:
     redis = redis_client()
     key = await redis.getdel(job_key(job_id))
-    await redis.delete(pending_key(job_id), *([token_key(str(key))] if key else []))
+    await redis.delete(pending_key(job_id), calls_key(job_id), *([token_key(str(key))] if key else []))
 
 
 async def relay_usage(job_id: str) -> RelayUsage:
@@ -210,8 +249,27 @@ async def authenticate(token: str) -> Grant | None:
     if not raw:
         return None
     data = json.loads(raw)
-    grant = Grant(**{**data, "models": tuple(data["models"])})
+    scope = data.get("scope")
+    grant = Grant(
+        **{
+            **data,
+            "models": tuple(data["models"]),
+            "scope": ToolScope(**{**scope, "tools": tuple(scope["tools"])}) if scope else None,
+        }
+    )
     return grant if grant.expires_at > time.time() else None
+
+
+async def count_call(grant: Grant) -> bool:
+    """Count one bridge call of ``grant``'s job; False when that is past its scope's limit."""
+    if grant.scope is None:
+        return False
+    key = calls_key(grant.job_id)
+    async with redis_client().pipeline(transaction=True) as pipe:
+        pipe.incr(key)
+        pipe.expireat(key, math.ceil(grant.expires_at) + 60)
+        calls, _ = await pipe.execute()
+    return int(calls) <= grant.scope.limit
 
 
 @dataclass(frozen=True, slots=True)

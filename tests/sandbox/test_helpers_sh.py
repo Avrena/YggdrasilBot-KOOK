@@ -28,6 +28,21 @@ async def test_run_merges_output_and_reports_exit(sandbox_ws: SandboxdWorkspace)
     assert r["out_path"] == f"{d}/out"
 
 
+async def test_run_and_start_export_the_bridge_credentials(sandbox_ws: SandboxdWorkspace) -> None:
+    show = 'echo "${YGG_BRIDGE_URL:-none} ${YGG_BRIDGE_TOKEN:-none}"\n'
+    d = await _script(sandbox_ws, show)
+    await put(sandbox_ws, f"{d}/bridge.json", json.dumps({"url": "http://10.43.255.90:8090", "token": "t1"}))
+    r = await ygg(sandbox_ws, "sh", "run", d, "--timeout", "10")
+    assert r["output"] == "http://10.43.255.90:8090 t1\n"
+    plain = await _script(sandbox_ws, show)
+    assert (await ygg(sandbox_ws, "sh", "run", plain, "--timeout", "10"))["output"] == "none none\n"
+    job = await _script(sandbox_ws, show)
+    await put(sandbox_ws, f"{job}/bridge.json", json.dumps({"url": "http://10.43.255.90:8090", "token": "t2"}))
+    await ygg(sandbox_ws, "sh", "start", job)
+    await wait_file(sandbox_ws, f"{job}/exit")
+    assert (await bash(sandbox_ws, 'cat "$1/out"', job)) == "http://10.43.255.90:8090 t2\n"
+
+
 async def test_background_job_does_not_hold_the_call(sandbox_ws: SandboxdWorkspace) -> None:
     d = await _script(sandbox_ws, "sleep 60 &\necho started\n")
     r = await ygg(sandbox_ws, "sh", "run", d, "--timeout", "30", seconds=20)

@@ -104,7 +104,7 @@ def test_handles_carry_over_and_keep_counting() -> None:
     handles = Handles()
     handles.add("forward", {"forward_id": "res-1"})
     handles.add("image", {"ref": "a.png"})
-    restored = sessions.load_handles(sessions.dump_handles(handles))
+    restored = Handles.load(handles.dump())
     fwd = restored.get("fwd#1")
     assert fwd is not None
     assert fwd.data == {"forward_id": "res-1"}

@@ -18,6 +18,7 @@ import { type ReactNode, createContext, useContext, useMemo, useState } from "re
 import { listProvidersOptions } from "@/client/@tanstack/react-query.gen";
 import type {
   BotReply,
+  BridgeCall,
   Entry,
   HitsDisplay,
   OpsReply,
@@ -522,6 +523,38 @@ function toolIcon(entry: Entry | undefined, terminal: boolean): ReactNode {
   return <WrenchIcon />;
 }
 
+/** The bot tools code called through the tool bridge, each as a tool card (`ygg:<name>`). */
+function BridgeCards({ calls }: { calls: BridgeCall[] }) {
+  return (
+    <Trace>
+      {calls.map((c, i) => (
+        <ToolCard
+          key={i}
+          call={{ type: "tool_call", id: `ygg-${i}`, name: `ygg:${c.name}`, args: c.args, chars: c.chars }}
+          entry={{
+            kind: "tool",
+            at: c.at,
+            name: c.name,
+            parts: c.parts,
+            outcome: c.outcome,
+            duration_ms: c.duration_ms,
+            display: c.display,
+          }}
+        />
+      ))}
+    </Trace>
+  );
+}
+
+/** `web_search×2、read_url×1 · 3.2s`, and how many failed. */
+function bridgeSummary(calls: BridgeCall[]): string {
+  const counts = new Map<string, number>();
+  for (const c of calls) counts.set(c.name, (counts.get(c.name) ?? 0) + 1);
+  const ms = calls.reduce((sum, c) => sum + (c.duration_ms ?? 0), 0);
+  const errors = calls.filter((c) => c.outcome !== "ok").length;
+  return `${[...counts].map(([name, n]) => `${name}×${n}`).join("、")} · ${fmtMs(ms)}${errors ? ` · ${errors} 次出错` : ""}`;
+}
+
 /** One tool call from arguments to result (AI Elements "Tool"; shell tools as "Terminal"). */
 function ToolCard({ call, entry }: { call?: ToolCallPart; entry?: Entry }) {
   const { live } = useTranscript();
@@ -567,6 +600,7 @@ function ToolCard({ call, entry }: { call?: ToolCallPart; entry?: Entry }) {
           {badge && <Badge variant={outcome === "error" ? "destructive" : "outline"}>{badge}</Badge>}
           {call && !call.args && !!call.chars && <TraceDescription>参数 {call.chars} 字</TraceDescription>}
           {entry?.duration_ms != null && <TraceDescription>{fmtMs(entry.duration_ms)}</TraceDescription>}
+          {!!entry?.bridge?.length && <TraceDescription>调用 bot {entry.bridge.length} 次</TraceDescription>}
         </TraceLine>
       }
     >
@@ -578,6 +612,12 @@ function ToolCard({ call, entry }: { call?: ToolCallPart; entry?: Entry }) {
         call && <Missing chars={call.chars} what="参数" />
       )}
       {entry && <ToolResult entry={entry} terminal={terminal} />}
+      {!!entry?.bridge?.length && (
+        <div className="grid gap-1.5">
+          <SubHeading>代码调用了 bot 的工具：{bridgeSummary(entry.bridge)}</SubHeading>
+          <BridgeCards calls={entry.bridge} />
+        </div>
+      )}
     </Row>
   );
 }
@@ -675,6 +715,8 @@ function AssistantEntry({ entry, results }: { entry: Entry; results: Map<string,
 }
 
 function EventEntry({ entry }: { entry: Entry }) {
+  // A job's code calling the bot: the call itself.
+  if (entry.bridge?.length) return <BridgeCards calls={entry.bridge} />;
   const parts = entry.parts ?? [];
   const body = parts.length > 0 && <PromptParts parts={parts} />;
   if (entry.level === "error") {

@@ -251,6 +251,20 @@ class ToolSettings(BaseModel):
     sandbox_job_max_output_tokens: int = Field(
         default=100_000, ge=1_000, description="每个后台大任务经中转最多消耗的输出 token"
     )
+    bridge_run_limit: int = Field(
+        default=30,
+        ge=0,
+        le=500,
+        description="一次请求里，工作区代码（sh / py）通过 ygg 调用 bot 工具、取聊天里的图片和文件"
+        "最多多少次（不占模型自己的工具调用次数；0 关闭）",
+    )
+    bridge_job_limit: int = Field(
+        default=120,
+        ge=0,
+        le=2000,
+        description="每个后台任务（后台命令和后台大任务）通过 ygg 调用 bot 工具、取聊天里的图片和文件"
+        "最多多少次（0 关闭）",
+    )
 
     @model_validator(mode="after")
     def _sandbox_timeouts(self) -> Self:

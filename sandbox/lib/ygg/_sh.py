@@ -1,4 +1,5 @@
-"""`ygg sh run|start` and `ygg proc kill`: bash scripts written by the bot into a per-call directory."""
+"""`ygg sh run|start` and `ygg proc kill`: bash scripts written by the bot into a per-call directory. A
+``bridge.json`` there (the bot's tool bridge credentials) is exported to the script as YGG_BRIDGE_URL / _TOKEN."""
 
 import os
 import signal
@@ -7,6 +8,7 @@ import sys
 import time
 from typing import Any
 
+from ygg._bridge import environ as bridge_environ
 from ygg._common import (
     WORKSPACE,
     alive,
@@ -61,7 +63,13 @@ def run(directory: str, timeout: float, head: int, tail: int) -> int:
     started = time.monotonic()
     try:
         proc = subprocess.Popen(
-            [*_BASH, script], cwd=WORKSPACE, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True
+            [*_BASH, script],
+            cwd=WORKSPACE,
+            env=bridge_environ(directory),
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=out,
+            start_new_session=True,
         )
     finally:
         os.close(out)
@@ -139,6 +147,7 @@ def supervise(directory: str) -> int:
         child = subprocess.Popen(
             [*_BASH, os.path.join(directory, "script.sh")],
             cwd=WORKSPACE,
+            env=bridge_environ(directory),
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=out,

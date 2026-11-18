@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from pydantic_ai import RunContext, Tool
 
+from yggdrasil.agent.bridge import allowed_tools
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.tools.base import ToolResult, chat_tool
 from yggdrasil.sandbox import SandboxError, Session
@@ -26,6 +27,7 @@ def _session(ctx: RunContext[Deps]) -> Session:
 
 
 def _requester(deps: Deps) -> Requester:
+    """Who asks for a job, with this run's handles and tool bridge tools for the job's code."""
     assert deps.group_id is not None
     return Requester(
         group_id=deps.group_id,
@@ -33,6 +35,8 @@ def _requester(deps: Deps) -> Requester:
         trigger_message_id=deps.trigger_message_id,
         invocation_id=deps.invocation_id,
         request_text=deps.request_text,
+        handles=deps.handles.dump(),
+        tools=allowed_tools(deps.settings, deps.group_id),
     )
 
 

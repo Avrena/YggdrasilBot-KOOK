@@ -648,8 +648,8 @@ export const getJob = <ThrowOnError extends boolean = false>(options: Options<Ge
 /**
  * Get Job Transcript
  *
- * The job as a conversation: omp's messages for agent jobs (live while it runs), the script and its output
- * for command jobs.
+ * The job as a conversation: omp's messages for agent jobs (live while it runs), the script, the bot tools its
+ * code called and its output for command jobs.
  */
 export const getJobTranscript = <ThrowOnError extends boolean = false>(options: Options<GetJobTranscriptData, ThrowOnError>): RequestResult<GetJobTranscriptResponses, GetJobTranscriptErrors, ThrowOnError> => (options.client ?? client).get<GetJobTranscriptResponses, GetJobTranscriptErrors, ThrowOnError>({ url: '/sandbox/jobs/{job_id}/transcript', ...options });
 

@@ -11,18 +11,16 @@ still mean what they meant.
 """
 
 import json
-from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from sqlalchemy import delete, select
 
-from yggdrasil.agent.deps import Handle, Handles
+from yggdrasil.agent.deps import Handles
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Invocation, InvocationSession
 from yggdrasil.db.session import get_session
@@ -54,18 +52,6 @@ class Session:
     created_at: datetime
 
 
-def dump_handles(handles: Handles) -> dict[str, Any]:
-    return {
-        "items": [{"key": h.key, "kind": h.kind, "data": h.data} for h in handles.items.values()],
-        "counters": dict(handles._counters),  # pyright: ignore[reportPrivateUsage]
-    }
-
-
-def load_handles(raw: dict[str, Any]) -> Handles:
-    items = {i["key"]: Handle(i["key"], i["kind"], i["data"]) for i in raw.get("items", [])}
-    return Handles(items, Counter(raw.get("counters", {})))
-
-
 async def save(
     invocation_id: UUID,
     setup: Setup,
@@ -93,7 +79,7 @@ async def save(
                     sandbox=setup.sandbox,
                     skills=setup.skills,
                     messages=payload,
-                    handles=dump_handles(handles),
+                    handles=handles.dump(),
                     nonce=nonce,
                     seen_message_id=seen_message_id,
                 )
@@ -128,7 +114,7 @@ async def load(group_id: int, answer_qq_id: int, max_age: timedelta) -> Session 
         row.invocation_id,
         Setup(row.handler, row.instructions, list(row.tools), row.sandbox, list(row.skills)),
         messages,
-        load_handles(row.handles),
+        Handles.load(row.handles),
         row.nonce,
         row.seen_message_id,
         row.created_at,

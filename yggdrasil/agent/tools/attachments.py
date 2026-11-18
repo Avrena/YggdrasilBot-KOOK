@@ -34,7 +34,7 @@ async def read_file(ctx: RunContext[Deps], handle: str) -> ToolResult:
     doc = await asyncio.to_thread(parse_document, blob, name, max_pages=cfg.file_max_pages)
     note = "（内容已截断）" if doc.truncated else ""
     header = f"文件：{name}（{doc.kind}，{doc.pages} 页）{note}"
-    if doc.scanned_pages and sees_images(ctx.deps.task):
+    if doc.scanned_pages and _hands_images(deps):
         pages: list[Any] = []
         for i, page in enumerate(doc.scanned_pages, 1):
             pages += [f"第 {i} 页：", BinaryContent(data=page, media_type=media_type(page))]
@@ -61,9 +61,14 @@ async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> 
     return await _show_image(ctx, handle, h, img, question)
 
 
+def _hands_images(deps: Deps) -> bool:
+    """Whether images go to the model as images: never for a text-only caller (the tool bridge)."""
+    return not deps.text_only and sees_images(deps.task)
+
+
 async def _show_image(ctx: RunContext[Deps], ref: str, h: Handle, img: ModelImage, question: str) -> ToolResult:
     ctx.deps.notes.image(img.data, img.content.media_type, segment=h.data)
-    if sees_images(ctx.deps.task):
+    if _hands_images(ctx.deps):
         return ToolReturn(
             return_value=f"{ref} 的原图附在下一条消息里，直接看图。",
             content=[f"{ref}{img.note}：", img.content],

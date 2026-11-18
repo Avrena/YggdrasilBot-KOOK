@@ -8,6 +8,7 @@ from yggdrasil.settings import Settings
 from yggdrasil.transcript.notes import TraceNotes
 
 if TYPE_CHECKING:
+    from yggdrasil.agent.bridge import RunBridge
     from yggdrasil.sandbox import Session
 
 _PREFIX = {"image": "img", "file": "file", "forward": "fwd", "card": "card", "url": "url"}
@@ -65,6 +66,18 @@ class Handles:
     def get(self, key: str) -> Handle | None:
         return self.items.get(key.strip())
 
+    def dump(self) -> dict[str, Any]:
+        """JSON-safe, for a run kept for continuations or a job that resolves the run's handles later."""
+        return {
+            "items": [{"key": h.key, "kind": h.kind, "data": h.data} for h in self.items.values()],
+            "counters": dict(self._counters),
+        }
+
+    @classmethod
+    def load(cls, raw: dict[str, Any]) -> "Handles":
+        items = {i["key"]: Handle(i["key"], i["kind"], i["data"]) for i in raw.get("items", [])}
+        return cls(items, Counter(raw.get("counters", {})))
+
 
 @dataclass
 class Deps:
@@ -93,3 +106,7 @@ class Deps:
     # Bytes of the images this run made (render_*, workspace show()) by the sha256 their img#N handle names as
     # ``blob``; the handle data stays JSON-safe for continuations, which read the bytes back from the blob store.
     made_images: dict[str, bytes] = field(default_factory=dict)
+    # Tool results must be text (calls through the tool bridge): view_image and scanned read_file pages are described
+    # by the vision model instead of handed over as images.
+    text_only: bool = False
+    bridge: "RunBridge | None" = None  # the run's tool bridge token, issued by its first sh / py call (agent.bridge)

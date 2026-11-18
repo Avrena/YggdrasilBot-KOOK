@@ -31,6 +31,8 @@ MODELS_PATH = f"{OMP_HOME}/{OMP_CONFIG_DIR}/agent/models.yml"
 SESSIONS_ROOT = f"{OMP_HOME}/{OMP_CONFIG_DIR}/sessions"
 PROVIDER = "ygg"
 TOKEN_ENV = "YGG_RELAY_TOKEN"
+BRIDGE_URL_ENV = "YGG_BRIDGE_URL"
+BRIDGE_TOKEN_ENV = "YGG_BRIDGE_TOKEN"
 TOOLS = "bash,read,edit,write,grep,glob,eval,todo"  # no task (sub-agents) and no web_search
 EVENTS = (
     "agent_start",
@@ -168,9 +170,10 @@ def session_dir(group_id: int) -> str:
 
 
 def launch(
-    *, group_id: int, model: str, rules_path: str, max_time_s: int, token: str
+    *, group_id: int, model: str, rules_path: str, max_time_s: int, token: str, bridge_url: str | None = None
 ) -> tuple[list[str], dict[str, str]]:
-    """argv and environment of the omp process (docs/SANDBOX.md §0.7)."""
+    """argv and environment of the omp process (docs/SANDBOX.md §0.7). With ``bridge_url`` its code may call the bot's
+    tools: the relay token doubles as the tool bridge token (``yggdrasil.agent.bridge``)."""
     argv = [
         OMP_BIN,
         "--mode",
@@ -204,6 +207,8 @@ def launch(
         "OTEL_SDK_DISABLED": "true",
         TOKEN_ENV: token,
     }
+    if bridge_url is not None:
+        env |= {BRIDGE_URL_ENV: bridge_url, BRIDGE_TOKEN_ENV: token}
     return argv, env
 
 
