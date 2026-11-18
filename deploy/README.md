@@ -22,7 +22,8 @@ such as the QQ device identity and the secret key, are expensive to change later
 flowchart TB
   subgraph ns["namespace yggdrasil"]
     direction TB
-    snowluma["snowluma<br/>StatefulSet · QQ + OneBot v11"]
+    yogurt["yogurt<br/>StatefulSet · QQ + Milky (recommended)"]
+    snowluma["snowluma<br/>StatefulSet · QQ + OneBot v11 (alternative)"]
     bot["yggdrasil-bot<br/>Deployment · 1 replica"]
     worker["yggdrasil-worker<br/>Deployment"]
     scheduler["yggdrasil-scheduler<br/>Deployment · 1 replica"]
@@ -36,6 +37,7 @@ flowchart TB
     searxng["yggdrasil-searxng (optional)"]
     sbx["sandbox warm pool (optional)"]
   end
+  bot -- "Milky :3000 (/event, /api)" --> yogurt
   snowluma -- "ws :8080/onebot/v11/ws" --> bot
   ingress["Ingress controller + SSO"] -- "dashboard, /api" --> bot
   migration --> pg
@@ -44,29 +46,35 @@ flowchart TB
   bot & worker --> embed & browser
 ```
 
+Yogurt and SnowLuma are alternatives: one QQ account can't be logged in on both, so `kustomization.yaml` lists
+exactly one of them (SnowLuma as shipped, `yogurt.yaml` commented out). The bot always registers both protocols:
+it dials out to Yogurt once the address is set in the dashboard, and accepts SnowLuma's reverse WebSocket.
+
 | File | Kind | Role | Needed |
 |---|---|---|---|
 | `namespace.yaml` | Namespace | | yes |
 | `config.yaml` | ConfigMap `yggdrasil-config` | deployment settings shared by every role | yes |
-| `secret.example.yaml` | Secret template (not applied) | access token, encryption key | yes, created by you |
+| `secret.example.yaml` | Secret templates (not applied) | `yggdrasil-secrets` (access token, encryption key); `yogurt-secrets` (Milky token, signing API) | yes, created by you |
 | `postgres.yaml` | CNPG `Cluster` | PostgreSQL 18 + `pg_search` + `pgvector` | yes |
 | `redis.yaml` | StatefulSet + Service | queues, rate limits, live config, sandbox state | yes |
 | `migration.yaml` | Job | schema migrations before each release | yes |
-| `bot.yaml` | Deployment + Service + ServiceAccount | OneBot connection, agents, dashboard, `/api` | yes |
+| `bot.yaml` | Deployment + Service + ServiceAccount | QQ connection (Milky out, OneBot in), agents, dashboard, `/api` | yes |
 | `worker.yaml` | Deployment | memory pipelines, embeddings, maintenance | yes |
 | `scheduler.yaml` | Deployment | cron for the worker | yes |
-| `snowluma.yaml` | StatefulSet | the QQ client speaking OneBot v11 | yes (or your own OneBot endpoint) |
+| `yogurt.yaml` | StatefulSet + Service | QQ protocol endpoint speaking Milky; the bot connects to it | one QQ endpoint: recommended |
+| `snowluma.yaml` | StatefulSet | the QQ client speaking OneBot v11 | one QQ endpoint: the alternative (or your own OneBot endpoint) |
 | `render.yaml` | Deployment + Service | `render_*` tools | recommended |
 | `browser.yaml` | Deployment + Service | real Chrome for `read_url` (JavaScript apps, anti-bot pages) | recommended |
 | `embed.yaml` | Deployment + Service + PVC | local embedding model for memory search | recommended (or a hosted API) |
 | `guard.yaml` | Deployment + Service + PVC | Qwen3Guard moderation | optional |
 | `searxng.yaml` | Deployment + Service + ConfigMap | self-hosted web search backend | optional |
-| `networkpolicy.yaml` | NetworkPolicies | keep `/onebot`, SnowLuma and the browser isolated | recommended |
+| `networkpolicy.yaml` | NetworkPolicies | keep `/onebot`, SnowLuma, Yogurt and the browser isolated | recommended |
 | `ingress.yaml` | Traefik Middleware + IngressRoute | SSO-protected dashboard | yes, adapt to your ingress |
 | `sandbox/` | kustomize Component | Linux workspaces for the model (gVisor) | optional, see [§9](#9-sandbox-workspaces-optional) |
 
 All manifests run as non-root with a read-only root filesystem, dropped capabilities and `RuntimeDefault`
-seccomp, except SnowLuma, which must be privileged (see [§8](#8-security-model)).
+seccomp, except SnowLuma, which must be privileged (see [§8](#8-security-model)). Yogurt runs no QQ client and
+needs no privileges.
 
 ### Sizing
 
@@ -77,7 +85,8 @@ Requests and limits as shipped; production serves a few active groups with these
 | bot | 200m | 512Mi / 2Gi | |
 | worker | 200m | 512Mi / 2Gi | |
 | scheduler | 20m | 128Mi / 512Mi | |
-| snowluma | 300m | 768Mi / 3Gi | 14Gi (QQ data and media cache) |
+| snowluma (alternative) | 300m | 768Mi / 3Gi | 14Gi (QQ data and media cache) |
+| yogurt (recommended) | 50m | 128Mi / 1Gi | 1Gi (config and login session) |
 | render | 200m | 1Gi / 3Gi | |
 | embed | 500m (limit 4) | 1Gi / 4Gi | 3Gi (model cache) |
 | postgres | 100m | 512Mi | 20Gi |
@@ -85,8 +94,9 @@ Requests and limits as shipped; production serves a few active groups with these
 | guard (optional) | 500m (limit 2) | 1Gi / 3Gi | 2Gi |
 | sandbox, per warm pod (optional) | 100m (limit 2) | 256Mi / 4Gi | up to 7Gi ephemeral |
 
-The core set requests about 1.6 CPU and 4.5Gi of memory. Embedding and moderation run on CPU; the limits keep
-them from starving the node when a backlog is embedded.
+The core set with SnowLuma requests about 1.6 CPU and 4.5Gi of memory; Yogurt instead of SnowLuma saves about
+250m and 640Mi. Embedding and moderation run on CPU; the limits keep them from starving the node when a backlog
+is embedded.
 
 ## 2. Before you start
 
@@ -108,6 +118,8 @@ nothing below is k3s-specific except where noted (Traefik, the Service CIDR for 
 
 - **A QQ account for the bot.** Use a dedicated account. Third-party clients are against QQ's terms and
   accounts can be restricted; a stable device identity avoids repeated logins but does not remove the risk.
+- **A PC signing API for Yogurt** (Lagrange V2 style: a URL and a token). Yogurt ships none; bring your own.
+  SnowLuma needs none.
 - **An LLM provider** with an OpenAI-compatible (`/v1/chat/completions`) or Anthropic-compatible
   (`/v1/messages`) API. Every chat-like task needs **tool calling**; vision-capable models get images directly.
   Background agents inside workspaces (`delegate`) need an Anthropic-format provider.
@@ -153,17 +165,18 @@ Edit these before the first apply:
 
 | File | What to set |
 |---|---|
-| `kustomization.yaml` | image names and tags; enable `guard.yaml`, `searxng.yaml` or the `sandbox` component if wanted |
+| `kustomization.yaml` | image names and tags; the QQ endpoint (`yogurt.yaml` or `snowluma.yaml`, not both); enable `guard.yaml`, `searxng.yaml` or the `sandbox` component if wanted |
 | `config.yaml` | `YGG_SUPERUSERS` (your QQ number), `YGG_ADMIN_EMAILS` (your SSO email), `TZ`, optional telemetry |
 | `ingress.yaml` | the dashboard host and your SSO proxy's forward-auth address; TLS |
+| `yogurt.yaml` | `QQ_ACCOUNT` and `QQ_PROTOCOL_VERSION` (a fixed Linux QQ build such as `46494` that your signing API serves; `fetched` is rejected by current Yogurt builds) in the `config` init container; pin the image tag |
 | `snowluma.yaml` | `QQ_ACCOUNT`, and a device identity you keep forever: `MACHINE_ID` (`openssl rand -hex 16`), the MAC address in `net-identity`, `HOST_NAME` |
 | `postgres.yaml` | storage size and class; backups ([§7.4](#74-backups)) |
 | `networkpolicy.yaml` | the ingress controller's namespace and labels if it is not k3s' Traefik |
 
 > [!IMPORTANT]
-> The device identity in `snowluma.yaml` (MAC address, machine-id, hostname) must stay the same for the life
-> of the account. Changing any of it makes QQ treat the pod as a new device, which forces a new QR login and
-> draws more risk-control attention. Do not reuse values from examples or other deployments.
+> With SnowLuma, the device identity in `snowluma.yaml` (MAC address, machine-id, hostname) must stay the same
+> for the life of the account. Changing any of it makes QQ treat the pod as a new device, which forces a new QR
+> login and draws more risk-control attention. Do not reuse values from examples or other deployments.
 
 ### 4.2 Install the operators
 
@@ -174,7 +187,7 @@ documentation. Check that the CRDs exist:
 kubectl get crd clusters.postgresql.cnpg.io ingressroutes.traefik.io middlewares.traefik.io
 ```
 
-### 4.3 Create the secret
+### 4.3 Create the secrets
 
 Two values are required. Generate them once and store them somewhere safe:
 
@@ -186,11 +199,25 @@ kubectl -n yggdrasil create secret generic yggdrasil-secrets \
 ```
 
 - `ONEBOT_ACCESS_TOKEN` authenticates SnowLuma's connection to the bot. `snowluma.yaml` copies it into
-  SnowLuma's config on every start.
-- `YGG_SECRET_KEY` encrypts provider API keys in the database. **Back it up.** If it is lost or changed, every
-  stored API key becomes unreadable and has to be entered again.
+  SnowLuma's config on every start. Set it with Yogurt too: the OneBot endpoint stays registered.
+- `YGG_SECRET_KEY` encrypts provider API keys and the Milky access token in the database. **Back it up.** If it
+  is lost or changed, every stored API key becomes unreadable and has to be entered again.
 - Add `SEARXNG_SECRET` for `searxng.yaml` and `YGG_SANDBOX_TOKEN` for the sandbox
   ([`secret.example.yaml`](example/secret.example.yaml) lists them).
+
+With Yogurt, also create `yogurt-secrets`, which only Yogurt reads (its config is rewritten from it on every
+start):
+
+```sh
+kubectl -n yggdrasil create secret generic yogurt-secrets \
+  --from-literal=MILKY_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  --from-literal=SIGN_API_URL=https://sign.example.com/api/sign \
+  --from-literal=SIGN_TOKEN=change-me
+```
+
+- `MILKY_ACCESS_TOKEN` is the bearer token of Yogurt's Milky API. The bot doesn't read it from the cluster:
+  you paste it into the dashboard ([§4.5](#45-log-in-to-qq)).
+- `SIGN_API_URL` and `SIGN_TOKEN` are the signing API Yogurt logs in and sends through, and its credential.
 
 With Sealed Secrets: fill in `secret.example.yaml`, pipe it through `kubeseal`, and commit the sealed result
 instead.
@@ -234,7 +261,25 @@ Jobs are immutable: before applying a new image tag, delete the finished Job
 
 ### 4.5 Log in to QQ
 
-SnowLuma shows the QQ login screen over noVNC. Nothing in the cluster can reach it; use a port-forward:
+**Yogurt.** Yogurt prints the login QR code to its log and writes `qrcode.png` to its data directory. Scan
+it with the bot account's phone (Yogurt exits if another account scans):
+
+```sh
+kubectl -n yggdrasil logs -f yogurt-0
+# or copy the image out:
+kubectl -n yggdrasil cp yogurt-0:/app/data/qrcode.png qrcode.png
+```
+
+The session is kept in `session-store.json` on the volume, so restarts log in by themselves. Then open the
+dashboard ([§4.6](#46-open-the-dashboard)) and set **设置 → QQ 连接**: address `http://yogurt:3000`, access token
+= `MILKY_ACCESS_TOKEN`. The bot connects out at once (WebSocket `/event`, HTTP `/api`); the card shows the
+account it reached or why it can't. The token is stored encrypted with `YGG_SECRET_KEY`; changing the setting
+reconnects, clearing it disconnects. Only one bot process holds the Milky link at a time (a Redis lease), so a
+rolling update never answers twice. `config.json` is rewritten from `yogurt.yaml` and `yogurt-secrets` on every
+start; edits made inside the pod don't survive a restart.
+
+**SnowLuma.** SnowLuma shows the QQ login screen over noVNC. Nothing in the cluster can reach it; use a
+port-forward:
 
 ```sh
 kubectl -n yggdrasil port-forward pod/snowluma-0 6081
@@ -288,8 +333,8 @@ Everything that changes at runtime lives in the database and takes effect immedi
    rate limits, memory thresholds, enabled tools. Unset keys inherit the global settings.
 5. **Triggers.** The defaults: @mention, reply to the bot, or the bot's name starts a chat; `tldr` / `太长不看`
    / `总结一下` (as a reply) starts a summary; `不要记我` / `记得我` / `忘记我` with an @mention handle privacy;
-   superusers' private messages go to the ops agent. The trigger tester shows which rule a sample message
-   matches.
+   `@bot ops <指令>` in a group or `ops <指令>` in private starts the ops agent (superusers only). The trigger
+   tester shows which rule a sample message matches.
 6. **Try it.** @-mention the bot in the group. The Invocations page shows each run with its tool calls, token
    usage, latency and (with telemetry) a link to the trace.
 
@@ -302,8 +347,8 @@ Environment variables (`yggdrasil/config.py` has the authoritative list):
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | local `ygg` | database; the example reads them from the CNPG secret |
 | `POSTGRES_POOL_SIZE` | `10` | connections per process |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis |
-| `YGG_SECRET_KEY` | required | Fernet key encrypting provider API keys |
-| `ONEBOT_ACCESS_TOKEN` | empty | shared with the OneBot endpoint |
+| `YGG_SECRET_KEY` | required | Fernet key encrypting provider API keys and the Milky access token |
+| `ONEBOT_ACCESS_TOKEN` | empty | shared with the OneBot endpoint (SnowLuma); the Milky address and token are set in the dashboard (设置 → QQ 连接) |
 | `YGG_SUPERUSERS` | `[]` | JSON list of QQ numbers with admin rights (bootstrap; more in the dashboard) |
 | `YGG_ADMIN_EMAILS` | `[]` | JSON list of dashboard admins (bootstrap; more in the dashboard) |
 | `YGG_AUTH_EMAIL_HEADER` | `X-Auth-Request-Email` | header the SSO proxy sets with the user's email |
@@ -327,23 +372,23 @@ Processes (one image, `ghcr.io/<you>/yggdrasil-bot`):
 
 | Role | Command | Replicas |
 |---|---|---|
-| bot (default) | `python -m yggdrasil` | exactly 1: it owns the OneBot connection |
+| bot (default) | `python -m yggdrasil` | exactly 1: it owns the QQ connection |
 | worker | `taskiq worker yggdrasil.worker.broker:broker yggdrasil.worker.tasks` | 1 or more; each scheduled job locks per group |
 | scheduler | `taskiq scheduler yggdrasil.worker.broker:scheduler yggdrasil.worker.tasks` | exactly 1 |
 | migration | `alembic upgrade head` | Job |
 
-Bot endpoints on port 8080: `/onebot/v11/ws` (OneBot; never expose it), `/` (dashboard), `/api`, `/healthz`
-(liveness), `/readyz` (Postgres reachable), `/drainz?max_wait=N` (preStop: holds the pod until in-flight
-replies are sent).
+Bot endpoints on port 8080: `/onebot/v11/ws` (SnowLuma's reverse WebSocket; never expose it), `/` (dashboard),
+`/api`, `/healthz` (liveness), `/readyz` (Postgres reachable), `/drainz?max_wait=N` (preStop: holds the pod until
+in-flight replies are sent).
 
 ## 7. Operations
 
 ### 7.1 Upgrades
 
 Change the tag in `kustomization.yaml` (or let a tool do it) and sync. With Argo CD the migration hook runs
-first; the bot rolls without dropping replies: the new pod becomes ready without the OneBot connection, the old
-one drains in `preStop`, SnowLuma reconnects to the new pod within seconds, and the new pod backfills the
-messages of that gap.
+first; the bot rolls without dropping replies: the new pod becomes ready without the QQ connection, the old one
+drains in `preStop`, then SnowLuma reconnects to the new pod within seconds, or the new pod takes the Milky link
+once the old one releases its Redis lease at shutdown, and the new pod backfills the messages of that gap.
 
 To follow releases automatically, [argocd-image-updater](https://argocd-image-updater.readthedocs.io) can track
 each image's newest `vX.Y.Z`:
@@ -384,9 +429,10 @@ After a **sandbox image** update, also recycle the workspaces ([§9](#9-sandbox-
 - **Health:** the probes in the manifests cover startup, liveness and readiness. A cold start waits for
   Postgres and Redis for up to 5 minutes before failing.
 - **Telemetry:** set `OTEL_EXPORTER_OTLP_ENDPOINT` in `config.yaml` to export traces (agent runs, model calls,
-  tool calls, OneBot API calls), metrics (`ygg.*`: invocations, tool calls and latency, token usage, memory lag,
-  review queue, sandbox workspaces) and logs. With `YGG_GRAFANA_URL`, the dashboard links every invocation to
-  its trace.
+  tool calls, QQ API calls), metrics (`ygg.*`: invocations, tool calls and latency, token usage, memory lag,
+  review queue, sandbox workspaces, and the QQ link: `ygg.qq.connected`, `ygg.qq.logged_in` with attribute
+  `protocol`, `ygg.qq.heartbeat_age` for OneBot only, `ygg.qq.api`, `ygg.qq.api.duration`) and logs. With
+  `YGG_GRAFANA_URL`, the dashboard links every invocation to its trace.
 - **Logs:** `LOG_JSON=true` writes structured JSON to stdout for Loki or similar.
 
 ### 7.4 Backups
@@ -435,8 +481,8 @@ Back up two things:
        name: barman-cloud.cloudnative-pg.io
    ```
 
-Redis holds queues, counters and workspace state; losing it costs in-flight jobs, not data. SnowLuma's volumes
-are not worth backing up: losing them means a new QR login.
+Redis holds queues, counters and workspace state; losing it costs in-flight jobs, not data. The QQ endpoint's
+volumes (SnowLuma's or Yogurt's) are not worth backing up: losing them means a new QR login.
 
 ## 8. Security model
 
@@ -450,12 +496,15 @@ are not worth backing up: losing them means a new QR login.
 - **SnowLuma is privileged.** It injects its hook into QQ with ptrace and adjusts the pod's identity with
   bind mounts. Keep it isolated: no inbound traffic (NetworkPolicy), its WebUI on loopback only, access by
   port-forward.
+- **Yogurt is unprivileged** and admits only the bot on its Milky port (3000); the Milky API also requires
+  `MILKY_ACCESS_TOKEN`, which the bot keeps encrypted with `YGG_SECRET_KEY`.
 - **Untrusted content.** Web pages, files and chat messages are treated as data: they are fenced in prompts,
   fetched through an SSRF guard, and pages that need a real browser are opened in the browser pod, which checks
   every request it makes and may only reach the public internet. Workspaces run under gVisor with their own egress
   policy and no cluster DNS.
 - **Who can do what.** Action tools (recalling messages, admin operations) are only given to a run after the
-  code has checked the speaker's role. Moderation (optional) can hold replies for review.
+  code has checked the speaker's role. The ops agent's raw QQ API passthrough (`qq_api`) may only call the write
+  actions listed in the setting `ops.qq_write_actions`. Moderation (optional) can hold replies for review.
 
 ## 9. Sandbox workspaces (optional)
 
@@ -517,12 +566,12 @@ events and usage, and can cancel jobs or destroy workspaces.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| The bot never answers | group not enabled; OneBot not connected; token mismatch | dashboard Groups page; bot log for the OneBot connection; SnowLuma log for rejected WebSocket connections |
+| The bot never answers | group not enabled; QQ not connected; token mismatch | dashboard Groups page; Yogurt: the 设置 → QQ 连接 card, Yogurt's log; SnowLuma: bot log for the OneBot connection, SnowLuma log for rejected WebSocket connections |
 | Dashboard says 未登录 (401) | the SSO proxy doesn't forward the email header | `authResponseHeaders` in `ingress.yaml`; `YGG_AUTH_EMAIL_HEADER` |
 | Dashboard says … 不是管理员 (403) | the email is not an admin | `YGG_ADMIN_EMAILS`, or add the admin from an existing admin account |
 | Pods crash-loop right after install | Postgres not ready or migrations not applied yet | `kubectl -n yggdrasil get cluster,job`; migration Job logs |
 | Migration fails with `permission denied to create extension` | the database was created without `vector` / `pg_search` | `postInitApplicationSQL` in `postgres.yaml`, or create both extensions as a superuser |
-| QQ asks for a QR login after every restart | device identity or SnowLuma volumes changed | the identity values in `snowluma.yaml`; PVCs still bound |
+| QQ asks for a QR login after every restart | SnowLuma: device identity or volumes changed; Yogurt: volume lost | the identity values in `snowluma.yaml`; PVCs still bound (Yogurt keeps `session-store.json` there) |
 | `read_url` fails on JavaScript-heavy pages | browser service not configured or unhealthy | `YGG_BROWSER_URL`; browser pod logs |
 | History search finds nothing semantic | no active embedding space, or the worker is behind | dashboard Models page; worker logs; memory lag metric |
 | `delegate` is not offered to the model | `agent` route or `YGG_RELAY_URL` missing | dashboard Models page; bot config |

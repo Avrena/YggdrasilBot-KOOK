@@ -10,7 +10,7 @@ Linux workspace. All of it is configured live from a web dashboard.
 
 [![CI](https://github.com/FYWinds/YggdrasilBot/actions/workflows/ci.yaml/badge.svg)](https://github.com/FYWinds/YggdrasilBot/actions/workflows/ci.yaml)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)
-![NoneBot2](https://img.shields.io/badge/NoneBot2-OneBot%20v11-ea5252)
+![NoneBot2](https://img.shields.io/badge/NoneBot2-Milky%20%2B%20OneBot%20v11-ea5252)
 ![pydantic-ai](https://img.shields.io/badge/agents-pydantic--ai-E92063)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ParadeDB-4169E1?logo=postgresql&logoColor=white)
 ![Kubernetes](https://img.shields.io/badge/runs%20on-Kubernetes-326CE5?logo=kubernetes&logoColor=white)
@@ -35,7 +35,7 @@ Linux workspace. All of it is configured live from a web dashboard.
 | **Recalling the question stops it** | Recalling the message that asked the bot (or having an admin recall it) stops the run if the answer hasn't gone out yet, whether it is still queued or the model is mid-answer. Nothing is posted, and the same question can be asked again. |
 | **TL;DR** | Reply `tldr` / `太长不看` / `总结一下` to a message, link, file or forwarded chat log and get a summary of it. Asking again for the same target within a few minutes gets a reaction instead of a second summary. |
 | **Persona and prompts** | Name, voice, reply style, quoting and status reactions per group; every prompt is a Jinja template you can override. |
-| **Operations by chat** | Superusers can ask the ops agent in private chat to inspect or change configuration in natural language, and approve or reject held replies with `通过` / `拒绝` / `改`. |
+| **Operations by chat** | Superusers give the ops agent natural-language instructions to inspect or change configuration (`@bot ops <指令>` in a group, `ops <指令>` in private chat), and approve or reject held replies in private chat with `通过` / `拒绝` / `改`. |
 
 ### Understanding what people post
 
@@ -89,8 +89,10 @@ Chromium page pool, typically in well under a second.
 
 ```mermaid
 flowchart LR
-  qq([QQ]) <--> onebot["OneBot v11 endpoint<br/>SnowLuma / NapCat"]
-  onebot -- reverse WebSocket --> bot
+  qq([QQ]) <--> yogurt["<b>Yogurt</b><br/>Milky · recommended"]
+  qq <--> snowluma["<b>SnowLuma</b><br/>OneBot v11 · alternative"]
+  bot -- "WebSocket /event + HTTP /api" --> yogurt
+  snowluma -- reverse WebSocket --> bot
 
   subgraph cluster[Kubernetes namespace]
     bot["<b>bot</b><br/>NoneBot2 + FastAPI<br/>agents · dashboard · /api"]
@@ -117,7 +119,8 @@ flowchart LR
   admin([Admin browser]) -- SSO proxy --> bot
 ```
 
-One image serves the bot, worker, scheduler and migration roles. The bot owns the single OneBot connection;
+One image serves the bot, worker, scheduler and migration roles. The bot owns the single QQ connection
+(`yggdrasil/qq/`): it dials out to a Milky endpoint (Yogurt) or accepts a OneBot v11 reverse WebSocket (SnowLuma);
 heavy work runs in the worker, and anything the worker wants to say goes back through the bot.
 
 <details>
@@ -127,7 +130,7 @@ heavy work runs in the worker, and anything the worker wants to say goes back th
 sequenceDiagram
   autonumber
   participant U as Group member
-  participant O as OneBot endpoint
+  participant O as QQ endpoint
   participant B as Bot
   participant A as Chat agent
   participant T as Tools
@@ -167,7 +170,7 @@ sequenceDiagram
 
 | Layer | Choice |
 |---|---|
-| Runtime | Python 3.13, uv, NoneBot2 (FastAPI driver) + OneBot v11 adapter, Alconna |
+| Runtime | Python 3.13, uv, NoneBot2 (FastAPI driver) with the Milky and OneBot v11 adapters behind the bot's own QQ layer, Alconna |
 | Agents | pydantic-ai (OpenAI and Anthropic model classes), structured outputs, usage limits |
 | Storage | PostgreSQL 18 with ParadeDB (`pg_search` BM25 + jieba, `pgvector`), SQLAlchemy 2 async, Alembic |
 | Background | taskiq + Redis |
@@ -181,8 +184,9 @@ sequenceDiagram
 
 ## Quick start (local development)
 
-You need [uv](https://docs.astral.sh/uv/), Node 22+, Docker (or any OCI runtime) and a OneBot v11 endpoint
-logged in to a QQ account.
+You need [uv](https://docs.astral.sh/uv/), Node 22+, Docker (or any OCI runtime) and a QQ endpoint logged in to
+the bot's QQ account: [Yogurt](https://acidify.ntqqrev.org/docs/yogurt/start) (Milky, recommended) or SnowLuma
+(OneBot v11).
 
 ```sh
 # 1. Postgres with pg_search + pgvector, and Redis
@@ -191,7 +195,7 @@ docker run -d --name ygg-pg -p 5432:5432 \
 docker run -d --name ygg-redis -p 6379:6379 redis:8
 
 # 2. Configuration
-cp .env.example .env    # then set YGG_SECRET_KEY (command inside) and ONEBOT_ACCESS_TOKEN
+cp .env.example .env    # then set YGG_SECRET_KEY (command inside); ONEBOT_ACCESS_TOKEN only for SnowLuma
 
 # 3. Dependencies and schema
 uv sync
@@ -203,9 +207,25 @@ uv run taskiq worker yggdrasil.worker.broker:broker yggdrasil.worker.tasks
 uv run taskiq scheduler yggdrasil.worker.broker:scheduler yggdrasil.worker.tasks
 ```
 
-Point the OneBot endpoint's **reverse WebSocket client** at `ws://127.0.0.1:8192/onebot/v11/ws` with the same
-access token, array message format and self messages off (`.env.example` runs the bot on port 8192, where the
-dashboard's dev server expects the API).
+**Yogurt (Milky).** Install it with `npm install -g @acidify/yogurt` and run `yogurt` once in an empty directory;
+it writes `config.json` there. Stop it and set:
+
+- `protocol.uin` to the bot's QQ number, `protocol.os` to `Linux` and `protocol.version` to a fixed Linux QQ build
+  such as `46494` (current builds reject `fetched`);
+- `protocol.signApiUrl` and `protocol.pcLagrangeSignToken`: a PC signing API (Lagrange V2 style). Yogurt ships
+  none; bring your own;
+- `milky.http.accessToken` to a random token, and `milky.reportSelfMessage` to `false` (the bot records its own
+  messages).
+
+Start `yogurt` again and scan the QR code it prints with the bot account's phone; it exits if another account
+scans. The session is kept, so later starts log in by themselves. The bot connects out to Yogurt (WebSocket
+`/event`, HTTP `/api`) once its address and token are set in the dashboard (below), not in `.env`.
+
+**Alternative: SnowLuma (OneBot v11).** Point its **reverse WebSocket client** at
+`ws://127.0.0.1:8192/onebot/v11/ws` with `ONEBOT_ACCESS_TOKEN` as access token, array message format and self
+messages off. Both adapters are always registered; nothing else changes on the bot's side.
+
+`.env.example` runs the bot on port 8192, where the dashboard's dev server expects the API.
 
 Then open the dashboard. Either build it once (`cd web && npm ci && npm run build`; the bot serves `web/dist`
 at http://127.0.0.1:8192/), or run the dev server:
@@ -216,9 +236,12 @@ cd web && npm install && npm run dev    # Vite proxies /api to 127.0.0.1:8192
 
 With `YGG_ENV=dev` and `YGG_DEV_ADMIN_EMAIL` set, the dashboard needs no login. In it:
 
-1. **Providers**: add an LLM provider (OpenAI- or Anthropic-format base URL and key) and an embedding provider.
-2. **Models**: map the task routes (`chat`, `tldr`, `vision`, `memory_*`, ...) and activate an embedding space.
-3. **Groups**: enable a group. @-mention the bot there.
+1. **设置 → QQ 连接** (Yogurt): address `http://127.0.0.1:3000` and the Milky access token. The bot connects at
+   once and the card shows the account it reached or why it can't; the token is stored encrypted with
+   `YGG_SECRET_KEY`, changing it reconnects, clearing it disconnects.
+2. **Providers**: add an LLM provider (OpenAI- or Anthropic-format base URL and key) and an embedding provider.
+3. **Models**: map the task routes (`chat`, `tldr`, `vision`, `memory_*`, ...) and activate an embedding space.
+4. **Groups**: enable a group. @-mention the bot there.
 
 <details>
 <summary>Optional: render service and API-only mode</summary>
@@ -232,7 +255,7 @@ docker build -t ygg-browser -f browser/Dockerfile .
 docker run -d --name ygg-browser -p 8680:8080 --tmpfs /tmp --shm-size 1g ygg-browser
 # then set YGG_RENDER_URL=http://127.0.0.1:8580 and YGG_BROWSER_URL=http://127.0.0.1:8680 in .env
 
-# Instead of the bot: the dashboard API alone, without a OneBot connection
+# Instead of the bot: the dashboard API alone, without a QQ connection
 uv run uvicorn yggdrasil.admin.standalone:app --port 8192
 ```
 
@@ -242,7 +265,7 @@ uv run uvicorn yggdrasil.admin.standalone:app --port 8192
 
 Production runs on Kubernetes. [`deploy/README.md`](deploy/README.md) walks through a complete install, and
 [`deploy/example/`](deploy/example) contains the manifests: Postgres (CloudNativePG), Redis, the migration job,
-bot, worker, scheduler, SnowLuma, render, embeddings and moderation, network policies, an SSO-protected
+bot, worker, scheduler, Yogurt or SnowLuma, render, embeddings and moderation, network policies, an SSO-protected
 dashboard route, and an optional sandbox component.
 
 ## Development
@@ -275,6 +298,7 @@ uv run python -m yggdrasil.admin.dump_openapi > web/openapi.json && (cd web && n
 ```
 yggdrasil/
   bot/          NoneBot plugin: events, command routing
+  qq/           QQ protocol layer: Milky and OneBot v11 backends, message segments
   pipeline/     one triggered run: moderation, agent, delivery, bookkeeping
   agent/        chat / tldr agents, context building, tools
   memory/       topics, glossary, profiles, digests, hybrid search
@@ -312,7 +336,7 @@ YggdrasilBot is built on these open-source projects. Thanks to everyone who writ
 
 | Area | Projects |
 |---|---|
-| QQ access | [SnowLuma](https://github.com/SnowLuma/SnowLuma), [NapCat](https://github.com/NapNeko/NapCatQQ) (OneBot v11 endpoints) |
+| QQ access | [Yogurt](https://github.com/LagrangeDev/acidify) (Milky), [SnowLuma](https://github.com/SnowLuma/SnowLuma) (OneBot v11) |
 | Bot framework | [NoneBot2](https://github.com/nonebot/nonebot2), [nonebot-plugin-alconna](https://github.com/nonebot/plugin-alconna) |
 | Agents | [pydantic-ai](https://github.com/pydantic/pydantic-ai) |
 | Storage and search | [PostgreSQL](https://www.postgresql.org), [ParadeDB](https://github.com/paradedb/paradedb), [pgvector](https://github.com/pgvector/pgvector), [SQLAlchemy](https://github.com/sqlalchemy/sqlalchemy), [Alembic](https://github.com/sqlalchemy/alembic) |
