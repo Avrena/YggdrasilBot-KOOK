@@ -1,5 +1,5 @@
-"""Status reactions on the trigger message: QQ shows the requester a gray tip for each one, so a quick answer gets
-none, a slow one only "received", and a result reaction is added only when no message carries the outcome."""
+"""Status reactions on the trigger message: QQ shows the requester a gray tip for each one, so a request gets
+"received" right away, and a result reaction only when no message carries the outcome."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -26,12 +26,11 @@ TRIGGER = 7
 CHAT = Resolved("chat", 2, "", (), "quoted_or_self", 0, False)
 FORWARD = '{"mode": "forward", "sections": [{"content": "答案"}]}'
 SILENT = '{"mode": "silent", "silent_reason": "不是在问我"}'
-DELAY_S = 0.05
 
 
 class Run:
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, answer: str, *, after_s: float = 0.0) -> None:
-        self.answer, self.after_s = answer, after_s
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, answer: str) -> None:
+        self.answer = answer
         self.reactions: list[str] = []
         self.delivered: list[BotReply] = []
 
@@ -53,7 +52,6 @@ class Run:
         monkeypatch.setattr(invoke.ratelimit, "add_tokens", add_tokens)
 
     async def _stream(self, _messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[DeltaToolCalls]:
-        await asyncio.sleep(self.after_s)
         yield {0: DeltaToolCall(name=info.output_tools[0].name, json_args=self.answer)}
 
     def _never(self, _messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
@@ -62,7 +60,6 @@ class Run:
     async def go(self, monkeypatch: pytest.MonkeyPatch, *, fail: bool = False) -> str:
         m = incoming("问个问题", group_id=GROUP, user_id=ALICE, self_id=SELF, message_id=TRIGGER, to_me=True)
         settings = Settings()
-        settings.interaction.received_delay_s = DELAY_S
         qq = FakeQQ(self_id=SELF)
         inv = invoke.Invocator(qq, m, CHAT, "chat", "", settings, GROUP)
         model = FunctionModel(self._never, stream_function=self._stream)
@@ -72,7 +69,6 @@ class Run:
 
         async def _run(_inv: invoke.Invocator) -> str:
             if fail:
-                await asyncio.sleep(self.after_s)
                 raise RuntimeError("boom")
             return await inv._execute(agent, "问个问题", deps, resolved, "问个问题")  # pyright: ignore[reportPrivateUsage]
 
@@ -81,27 +77,19 @@ class Run:
             return await inv.run()
 
 
-async def test_a_quick_answer_adds_no_reaction(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_sent_answer_adds_only_received(monkeypatch: pytest.MonkeyPatch) -> None:
     run = Run(monkeypatch, FORWARD)
     assert await run.go(monkeypatch) == "ok"
     assert len(run.delivered) == 1
-    await asyncio.sleep(DELAY_S * 3)  # the pending "received" was dropped, not just late
-    assert run.reactions == []
-
-
-async def test_a_slow_answer_adds_only_received(monkeypatch: pytest.MonkeyPatch) -> None:
-    run = Run(monkeypatch, FORWARD, after_s=DELAY_S * 4)
-    assert await run.go(monkeypatch) == "ok"
-    assert run.reactions == [Settings().interaction.received_emoji]
+    assert run.reactions == [Settings().interaction.received_emoji]  # no "done" on top of the answer itself
 
 
 async def test_an_outcome_without_a_message_gets_its_reaction(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = Settings().interaction
-    quick = Run(monkeypatch, SILENT)
-    assert await quick.go(monkeypatch) == "silent"
-    await asyncio.sleep(DELAY_S * 3)
-    assert quick.reactions == [cfg.silent_emoji]
+    silent = Run(monkeypatch, SILENT)
+    assert await silent.go(monkeypatch) == "silent"
+    assert silent.reactions == [cfg.received_emoji, cfg.silent_emoji]
 
-    slow = Run(monkeypatch, "", after_s=DELAY_S * 4)
-    assert await slow.go(monkeypatch, fail=True) == "failed"
-    assert slow.reactions == [cfg.received_emoji, cfg.failure_emoji]
+    failed = Run(monkeypatch, "")
+    assert await failed.go(monkeypatch, fail=True) == "failed"
+    assert failed.reactions == [cfg.received_emoji, cfg.failure_emoji]

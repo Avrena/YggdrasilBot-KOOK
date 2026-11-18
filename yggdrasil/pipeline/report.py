@@ -204,7 +204,7 @@ class ReportInvocator(Invocator):
         # The relay tokens are billed with the report even when it never reached the model.
         return super()._billable_tokens() + (0 if self._relay_counted else _relay_tokens(self.job))
 
-    async def _react(self, emoji: str) -> bool:
+    async def _status(self, emoji: str) -> bool:
         # The trigger message already carries the original run's reactions; adding them again only looks
         # automated. The report's outcome is in the invocation record.
         return False

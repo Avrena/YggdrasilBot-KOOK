@@ -23,14 +23,9 @@ class PersonaSettings(BaseModel):
 
 class InteractionSettings(BaseModel):
     # Status reactions on the trigger message; added only, never removed (frequent removals look like
-    # automation to QQ's risk control). QQ shows the requester a gray tip for each one, so a request that gets
-    # its answer quickly gets none, and a sent answer is its own "done". Empty disables one.
-    received_emoji: str = Field(
-        default="424", description="请求进来 received_delay_s 秒后回答还没发出时贴的表情（告诉群友在处理了）"
-    )
-    received_delay_s: float = Field(
-        default=4, ge=0, le=60, description="这么多秒内回答已经发出（或已经有结果表情）就不贴 received_emoji"
-    )
+    # automation to QQ's risk control). QQ shows the requester a gray tip for each one, so a sent answer is its own
+    # "done": result reactions mark only outcomes without a message. Empty disables one.
+    received_emoji: str = Field(default="424", description="收到请求后立刻贴的表情")
     silent_emoji: str = Field(default="479", description="bot 决定不回复时贴的表情")
     review_emoji: str = Field(default="10068", description="输入被拦截、输出进入审核或被拦截时贴的表情（❔）")
     action_emoji: str = Field(default="478", description="按指令完成了操作（撤回、改配置等）且不需要回复时贴的表情")

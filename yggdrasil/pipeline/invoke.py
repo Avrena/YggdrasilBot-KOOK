@@ -151,7 +151,6 @@ class Invocator:
         self.meta = record.Meta()
         self.invocation_id: UUID | None = None
         self.ack_kind: str | None = None
-        self._receipt: asyncio.Task[None] | None = None  # the delayed received_emoji, until the run has an outcome
         self._finished = False
         self.deps: Deps | None = None  # the agent run's, once it ran: delivery sends the pictures it holds
         self.sandbox: Session | None = None  # set when this run gets the workspace suite
@@ -180,7 +179,8 @@ class Invocator:
             self.meta.trace_id = current_trace_id()
             status, error = "failed", None
             try:
-                self._receipt = asyncio.create_task(self._receive_later())
+                if await self._status(self.settings.interaction.received_emoji):
+                    self._mark_ack("react")
                 status = await self._run()
             except Exception as e:
                 error = f"{type(e).__name__}: {e}"[:1000]
@@ -189,7 +189,6 @@ class Invocator:
                 span.set_status(Status(StatusCode.ERROR, error[:200]))
                 await self._status(self.settings.interaction.failure_emoji)
             finally:
-                self._settle()
                 span.set_attribute("ygg.status", status)
                 self.meta.total_s = self.elapsed()
                 INVOCATIONS.add(1, {"handler": self.record_handler, "outcome": status})
@@ -468,7 +467,6 @@ class Invocator:
 
         if v_out.action == "pass":
             await self._keep_session(result.all_messages(), deps.handles)
-            self._settle()  # the answer is going out: it says "received" itself
             try:
                 await self.deliver(reply)
             except MessageDropped:
@@ -526,30 +524,13 @@ class Invocator:
             self.meta.ack_s = self.elapsed()
             INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.record_handler, "kind": kind})
 
-    async def _react(self, emoji: str) -> bool:
-        """Add a reaction to the trigger message (QQ has none in private chats). Reactions are never removed:
-        frequent add/remove pairs look automated to QQ's risk control."""
+    async def _status(self, emoji: str) -> bool:
+        """Add a status reaction to the trigger message (QQ has none in private chats). Reactions are never
+        removed: frequent add/remove pairs look automated to QQ's risk control."""
         if not emoji or self.group_id is None:
             return False
         await react(self.qq, self.group_id, self.trigger_message_id, emoji)
         return True
-
-    async def _status(self, emoji: str) -> bool:
-        """Mark the run's outcome on the trigger message, instead of a received_emoji not added yet."""
-        self._settle()
-        return await self._react(emoji)
-
-    async def _receive_later(self) -> None:
-        """``received_emoji`` once ``received_delay_s`` passed without an outcome: QQ shows the requester a gray tip
-        for every reaction, so a quick answer comes with none."""
-        await asyncio.sleep(self.settings.interaction.received_delay_s)
-        if await self._react(self.settings.interaction.received_emoji):
-            self._mark_ack("react")
-
-    def _settle(self) -> None:
-        """The run has its outcome (an answer going out, a result reaction, an error): no received_emoji any more."""
-        if self._receipt is not None and not self._receipt.done():
-            self._receipt.cancel()
 
     def _budget(self) -> ToolBudget:
         # Workspace sessions (write, run, read the error, fix) need far more steps than a plain reply.
