@@ -190,6 +190,7 @@ def test_the_other_milky_segments_keep_only_the_schema_fields() -> None:
 async def test_sends_carry_milky_segments_and_the_reply_timeout() -> None:
     qq, bot = _qq({"send_group_message": {"message_seq": 3500, "time": 1}, "send_private_message": {"message_seq": 7}})
     segments = [seg.reply(3416), seg.mention(OWNER), seg.text(" 好"), seg.image("base64://AAAA")]
+    segments.append(seg.image("base64://BBBB", sticker=True))
 
     assert await qq.send(group_id=GROUP, user_id=OWNER, segments=segments, reply_timeout=120) == 3500
     assert await qq.send(group_id=None, user_id=OWNER, segments=[seg.text("hi")]) == 7
@@ -203,6 +204,7 @@ async def test_sends_carry_milky_segments_and_the_reply_timeout() -> None:
                 {"type": "mention", "data": {"user_id": OWNER}},
                 {"type": "text", "data": {"text": " 好"}},
                 {"type": "image", "data": {"uri": "base64://AAAA", "sub_type": "normal"}},
+                {"type": "image", "data": {"uri": "base64://BBBB", "sub_type": "sticker"}},
             ],
         }
     ]

@@ -203,7 +203,8 @@ def _outgoing(seg: Segment) -> dict[str, Any]:
         case "reply":
             return {"type": "reply", "data": {"message_seq": int(d["message_id"])}}
         case "image":
-            return {"type": "image", "data": {"uri": d["uri"], "sub_type": "normal"}}
+            sub_type = "sticker" if d.get("sticker") else "normal"
+            return {"type": "image", "data": {"uri": d["uri"], "sub_type": sub_type}}
         case other:
             raise ValueError(f"cannot send a {other} segment")
 

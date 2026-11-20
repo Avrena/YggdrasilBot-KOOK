@@ -209,6 +209,7 @@ def main() -> None:
         from yggdrasil.sandbox import manager
         from yggdrasil.sandbox.jobs import runner
         from yggdrasil.seed import seed_defaults
+        from yggdrasil.stickers.drop import deliver_forever
 
         init_engine(statement_timeout_ms=DB_CONFIG.bot_statement_timeout_ms)
         await wait_for_dependencies()
@@ -226,6 +227,7 @@ def main() -> None:
                 ("ingest-writer", WRITER.run()),
                 ("review-expiry", expire_loop()),
                 ("gauges", _gauge_loop()),
+                ("sticker-drop", deliver_forever()),
             )
         )
         if manager().configured:

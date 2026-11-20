@@ -47,6 +47,7 @@ const TASK_LABELS: Record<string, string> = {
   memory_glossary: "黑话词典",
   memory_profile: "用户画像",
   memory_digest: "每日摘要",
+  sticker_pick: "挑表情包",
 };
 
 export function RoutesPage() {

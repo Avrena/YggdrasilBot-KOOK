@@ -59,6 +59,7 @@ The worker turns the raw message stream into memory the agent can search:
 - **Daily digests**: one summary of each day in a fixed plain-text format (overview, then numbered events with message counts and participants).
 - **Hybrid search**: BM25 with the jieba tokenizer (ParadeDB `pg_search`) plus pgvector embeddings, fused with RRF, over messages, topics, glossary and digests.
 - **Stickers**: custom stickers seen in chat are saved on first sight (QQ image links expire quickly), counted per group, and described, tagged and moderation-flagged by a vision model (`sticker` route). Flagged stickers stay enabled unless `moderation.disable_unsafe_stickers` is on.
+- **Sticker drops** (`sticker_drop`, off by default): after topic segmentation handles new messages, a decision model (`sticker_pick` route, e.g. `typesafe/jev-1.14` on OpenRouter's Decisions API) judges whether the live chat invites a sticker and picks one from a weighted sample of the collected stickers (log-compressed use counts, so rare ones get picked too; recent picks weigh less). A daily cap, a minimum gap, an activity window, a fit threshold and a final dice roll keep it occasional.
 - **Privacy**: members can say `不要记我` / `记得我` / `忘记我` (with an @mention) to opt out, opt back in, or delete what was stored about them.
 
 ### Doing real work: sandbox workspaces
@@ -309,7 +310,7 @@ yggdrasil/
   agent/        chat / tldr agents, context building, tools, on-demand skills
   memory/       topics, glossary, profiles, digests, hybrid search
   ingest/       message normalization and storage
-  stickers/     sticker collection and vision tagging
+  stickers/     sticker collection, vision tagging and sticker drops
   tools/        web reading and search, documents, rendering client
   sandbox/      workspace manager, background jobs, inner agent
   relay/        LLM relay for agents inside workspaces

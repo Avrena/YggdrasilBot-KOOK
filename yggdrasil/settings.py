@@ -345,6 +345,38 @@ class MemorySettings(BaseModel):
     backfill_messages: int = Field(default=3000, description="群加入白名单时回填的历史消息数")
 
 
+class StickerDropSettings(BaseModel):
+    """Now and then a sticker after topic segmentation: a decision model (route ``sticker_pick``) judges whether the
+    chat invites one and picks it from a weighted sample of the collected stickers."""
+
+    enabled: bool = Field(
+        default=False,
+        description="话题分段每处理完一批消息，有机会挑一张收集到的表情包发到群里（需要配置 sticker_pick 路由）",
+    )
+    daily_max: int = Field(default=16, ge=0, description="每个群每天最多发几张（Asia/Shanghai 零点重置）")
+    min_gap_minutes: int = Field(default=15, ge=0, description="两张之间至少间隔多少分钟")
+    active_within_minutes: int = Field(
+        default=5, ge=1, description="群里最后一条消息在这么多分钟以内才发（聊天已经冷了就不发）"
+    )
+    # Prod replay (2026-11-17..20, 14-18 windows a day at 2000-3000 messages): 0.4 let two thirds of the windows
+    # through; with 0.9 that made 9-12 a day, a 3000-message day ~11-14, under daily_max.
+    min_fit: float = Field(
+        default=0.4, ge=0, le=1, description="决策模型判断「最后几条适合用表情接话」的概率至少要这么高"
+    )
+    chance: float = Field(default=0.9, ge=0, le=1, description="通过以上条件后真正发出的概率")
+    candidates: int = Field(
+        default=50,
+        ge=2,
+        le=255,
+        description="每次加权抽多少张表情给模型挑：用得多的权重高（按对数压缩，冷门的也抽得到），bot 最近发过的权重低",
+    )
+    group_only: bool = Field(
+        default=False,
+        description="只从本群发过的表情里挑，按本群的使用次数加权；关闭时用所有群收集到的表情，按总使用次数加权",
+    )
+    context_messages: int = Field(default=30, ge=5, le=100, description="给模型看的最近消息条数")
+
+
 class PrivacySettings(BaseModel):
     log_message_content: bool = False
     capture_llm_content: bool = Field(
@@ -382,6 +414,7 @@ class Settings(BaseModel):
     privacy: PrivacySettings = Field(default_factory=PrivacySettings)
     ops: OpsSettings = Field(default_factory=OpsSettings)
     events: EventSettings = Field(default_factory=EventSettings)
+    sticker_drop: StickerDropSettings = Field(default_factory=StickerDropSettings)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

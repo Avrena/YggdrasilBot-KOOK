@@ -306,6 +306,7 @@ async def test_requests_are_answered_by_flag_and_only_when_onebot_recorded_them(
 async def test_sends_carry_onebot_segments_and_the_reply_timeout() -> None:
     qq, bot = _qq({"send_group_msg": {"message_id": -1234}, "send_private_msg": {"message_id": 777}})
     said = [seg.reply(-707651348), seg.mention(ALICE), seg.text(" 好"), seg.image("base64://iVBORw0K")]
+    said.append(seg.image("base64://R0lGOD", sticker=True))
     assert await qq.send(group_id=GROUP, user_id=ALICE, segments=said, reply_timeout=120.0) == -1234
     assert bot.called("send_group_msg") == [
         {
@@ -315,6 +316,7 @@ async def test_sends_carry_onebot_segments_and_the_reply_timeout() -> None:
                 {"type": "at", "data": {"qq": str(ALICE)}},
                 _text(" 好"),
                 {"type": "image", "data": {"file": "base64://iVBORw0K"}},
+                {"type": "image", "data": {"file": "base64://R0lGOD", "sub_type": 1, "summary": "[动画表情]"}},
             ],
             "_timeout": 120.0,
         }

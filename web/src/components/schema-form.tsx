@@ -37,6 +37,7 @@ export const SECTION_LABELS: Record<string, string> = {
   privacy: "隐私",
   ops: "管理助手",
   events: "事件处理",
+  sticker_drop: "随机表情包",
 };
 
 /** Inline $ref / single allOf, and unwrap Optional (anyOf with null). */

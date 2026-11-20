@@ -95,8 +95,10 @@ async def send_image(
     text: str,
     self_id: int,
     nickname: str,
+    sticker: bool = False,
 ) -> int | None:
-    """Images (with an optional line of text) as one plain message, replying to the trigger.
+    """Images (with an optional line of text) as one plain message, replying to the trigger; ``sticker`` sends them
+    as stickers.
 
     None: QQ didn't confirm (``Unconfirmed``, e.g. no answer within ``SEND_IMAGE_TIMEOUT_S``). The message almost
     always went out anyway (it did when the first drawing hit the default timeout), so callers must not send it again.
@@ -104,7 +106,7 @@ async def send_image(
     segments = [seg.reply(reply_to)] if reply_to else []
     if text:
         segments.append(seg.text(text))
-    segments += [seg.image("base64://" + base64.b64encode(png).decode()) for png in images]
+    segments += [seg.image("base64://" + base64.b64encode(png).decode(), sticker=sticker) for png in images]
     try:
         message_id = await qq.send(
             group_id=group_id, user_id=user_id, segments=segments, reply_timeout=SEND_IMAGE_TIMEOUT_S

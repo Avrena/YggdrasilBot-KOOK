@@ -211,6 +211,8 @@ def _to_onebot(segments: list[Segment]) -> list[dict[str, Any]]:
                 out.append({"type": "at", "data": {"qq": str(d["user_id"])}})
             case "reply":
                 out.append({"type": "reply", "data": {"id": str(d["message_id"])}})
+            case "image" if d.get("sticker"):
+                out.append({"type": "image", "data": {"file": d["uri"], "sub_type": 1, "summary": "[动画表情]"}})
             case "image":
                 out.append({"type": "image", "data": {"file": d["uri"]}})
             case other:

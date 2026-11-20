@@ -26,6 +26,7 @@ from yggdrasil.memory.glossary import define_group, mine_group
 from yggdrasil.memory.profiles import update_group
 from yggdrasil.memory.topics import consolidate_group
 from yggdrasil.runtime import snapshot
+from yggdrasil.stickers.drop import maybe_drop
 from yggdrasil.stickers.tagging import tag_pending
 from yggdrasil.worker.broker import TIMEZONE, broker
 
@@ -101,9 +102,22 @@ async def chunk_and_embed() -> dict[int, Any]:
     return await for_each_group("chunk_and_embed", _chunk_and_embed, lock_ttl=900)
 
 
+async def _consolidate(group_id: int) -> dict[str, Any]:
+    stats: dict[str, Any] = await consolidate_group(group_id)
+    if stats["windows"]:
+        # A side feature: its failure must not fail (and retry) the consolidation.
+        try:
+            drop = await maybe_drop(group_id)
+        except Exception:
+            LOGGER.exception("sticker drop for group {} failed", group_id)
+        else:
+            stats["sticker"] = drop.outcome if drop.fit is None else f"{drop.outcome} fit={drop.fit:.2f}"
+    return stats
+
+
 @broker.task(task_name="consolidate_topics", schedule=_cron("*/15 * * * *"))
 async def consolidate_topics() -> dict[int, Any]:
-    return await for_each_group("consolidate_topics", consolidate_group, lock_ttl=3600)
+    return await for_each_group("consolidate_topics", _consolidate, lock_ttl=3600)
 
 
 @broker.task(task_name="daily_digest", schedule=_cron("5 * * * *"))

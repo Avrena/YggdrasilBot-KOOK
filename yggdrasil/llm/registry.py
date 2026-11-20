@@ -1,4 +1,4 @@
-"""Task → model resolution against the runtime config, plus embedding/rerank/image clients.
+"""Task → model resolution against the runtime config, plus embedding/rerank/image/decision clients.
 
 Chat models use the provider's ``api_format``: OpenAI Chat Completions or the Anthropic
 Messages API (new-api serves both; its Claude channels only support tool calling via the
@@ -49,8 +49,11 @@ TASKS = (
     "memory_digest",
     # Image generation (yggdrasil.tools.image), a direct POST {base}/images in OpenRouter's shape.
     "image",
+    # Picks a sticker to drop into the chat (yggdrasil.stickers.drop): a decision model such as Jev on OpenRouter's
+    # Decisions API, not a chat model.
+    "sticker_pick",
 )
-CHAT_TASKS = tuple(t for t in TASKS if t not in ("agent", "moderation", "embedding", "rerank", "image"))
+CHAT_TASKS = tuple(t for t in TASKS if t not in ("agent", "moderation", "embedding", "rerank", "image", "sticker_pick"))
 # Capabilities a route's models must have; checked on save when the catalog knows the model.
 # Agents with tools or structured output (pydantic-ai output tools) need tool calling.
 TASK_NEEDS: dict[str, tuple[str, ...]] = {
@@ -398,4 +401,54 @@ async def generate_images(
     cost = usage.get("cost")
     return GeneratedImages(
         images, label, input_tokens, output_tokens, float(cost) if isinstance(cost, int | float) else None
+    )
+
+
+class DecisionError(Exception):
+    """The Decisions API refused or failed; the message is the provider's own explanation."""
+
+
+@dataclass(frozen=True, slots=True)
+class Decisions:
+    answers: dict[str, dict[str, Any]]  # question id -> typed answer (``type`` noul/choice/score/box/refusal)
+    model: str  # route label, provider/model
+    input_tokens: int
+    cost: float | None  # USD, when the provider reports it
+
+
+async def decide(
+    task: str, state: Any, questions: dict[str, dict[str, Any]], *, client: httpx.AsyncClient | None = None
+) -> Decisions:
+    """OpenRouter's Decisions API (``POST {origin}/api/alpha/decisions``: typed questions about ``state``, answered
+    with probabilities) for ``task``'s route. The route's ``params`` go into the request body as-is."""
+    snap = snapshot()
+    r = route(task, snap)
+    p = _provider(snap, r.provider_id, task)
+    body: dict[str, Any] = {**r.params, "model": r.model, "state": state, "questions": questions}
+    headers = {"User-Agent": APP_CONFIG.llm_user_agent, **p.headers}
+    if p.api_key:
+        headers["Authorization"] = f"Bearer {p.api_key}"
+    url = p.base_url.removesuffix("/").removesuffix("/v1") + "/alpha/decisions"
+    try:
+        if client is not None:
+            resp = await client.post(url, json=body, headers=headers)
+        else:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10)) as own:
+                resp = await own.post(url, json=body, headers=headers)
+    except httpx.HTTPError as e:
+        raise DecisionError(f"request failed: {type(e).__name__}") from e
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if resp.status_code >= 400 or not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
+        error = data.get("error") if isinstance(data, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        raise DecisionError(f"{resp.status_code} {message or resp.text[:300] or resp.reason_phrase}")
+    usage = data.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    record_usage(task, r.model, input_tokens=input_tokens, output_tokens=int(usage.get("output_tokens") or 0))
+    cost = usage.get("cost")
+    return Decisions(
+        data["answers"], f"{p.name}/{r.model}", input_tokens, float(cost) if isinstance(cost, int | float) else None
     )

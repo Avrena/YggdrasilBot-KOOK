@@ -135,6 +135,7 @@ def reply(message_id: int) -> Segment:
     return {"type": "reply", "data": {"message_id": message_id}}
 
 
-def image(uri: str) -> Segment:
-    """``uri``: ``base64://...``, ``http(s)://...`` or ``file://...``."""
-    return {"type": "image", "data": {"uri": uri}}
+def image(uri: str, *, sticker: bool = False) -> Segment:
+    """``uri``: ``base64://...``, ``http(s)://...`` or ``file://...``; ``sticker`` sends it as a sticker (QQ shows
+    it small, like a 表情)."""
+    return {"type": "image", "data": {"uri": uri, "sticker": sticker}}
