@@ -38,6 +38,8 @@ REPEAT_WINDOW = timedelta(days=7)
 REPEAT_PENALTY = 0.2
 # A pick older than this when the bot gets to it is stale: the chat has moved on.
 MAX_AGE_S = 120
+# How long one BRPOP blocks; redis-py's connections time out reads after 5 s by default.
+POLL_S = 2
 # Short lines and criteria keep the request under ~32 KB of text, past which Jev switches to a slower, less accurate
 # long-context mode (UTF-8 Chinese is 3 bytes a character).
 LINE_MAX_CHARS = 80
@@ -203,7 +205,7 @@ async def deliver_forever() -> None:
             await asyncio.sleep(2)
             continue
         try:
-            item = await redis_client().brpop([OUTBOX], timeout=5)
+            item = await redis_client().brpop([OUTBOX], timeout=POLL_S)
             if item is not None:
                 await _deliver(json.loads(item[1]))
         except asyncio.CancelledError:
