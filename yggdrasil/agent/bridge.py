@@ -358,10 +358,10 @@ async def call_tool(grant: Grant, name: str, args: object) -> str:
     are text, as the model sees them; refusals raise ``Refused``."""
     scope = _scope(grant)
     tool = _registry().get(name)
-    if tool is None:
-        raise Refused(404, f"没有这个工具：{name}")
-    if name not in scope.tools:
-        raise Refused(403, f"这个令牌不能调用 {name}：本群没有开放它")
+    if tool is None or name not in scope.tools:
+        # The model guesses names (render_markdown, ...): tell the code what it can call, so one retry is enough.
+        why = "没有这个工具" if tool is None else "本群没有开放这个工具"
+        raise Refused(404 if tool is None else 403, f"{why}：{name}。代码里能调用的工具：{'、'.join(scope.tools)}")
     if not isinstance(args, dict):
         raise Refused(422, "参数要是一个 JSON 对象")
     try:

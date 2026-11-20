@@ -24,15 +24,17 @@ import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any
 
 from pydantic_ai import RunContext, Tool, ToolReturn
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AbstractCapability, PrefixTools
 from pydantic_ai.capabilities.abstract import ValidatedToolArgs, WrapToolExecuteHandler
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.toolsets import AbstractToolset, AgentToolset, ToolsetTool
+from pydantic_ai.toolsets.prefixed import PrefixedToolset
 from pydantic_ai.workspaces import WorkspaceError
 from pydantic_ai_harness import FileSystem
 
@@ -86,12 +88,34 @@ class _HarnessAccounting(AbstractCapability[Deps]):
             return await handler(args)
 
 
+@dataclass
+class _WsToolset(PrefixedToolset[Deps]):
+    """``PrefixedToolset`` that leaves a call's ``ctx.tool_name`` as the model wrote it. The harness file tools emit
+    capability events, which pydantic-ai attributes by looking that name up among the run's tools: under the
+    unprefixed name it finds the bot's own ``read_file`` (or nothing) and fails the run with a ``UserError``."""
+
+    async def call_tool(
+        self, name: str, tool_args: dict[str, Any], ctx: RunContext[Deps], tool: ToolsetTool[Deps]
+    ) -> Any:
+        original = name.removeprefix(f"{self.prefix}_")
+        tool = replace(tool, tool_def=replace(tool.tool_def, name=original))
+        return await self.wrapped.call_tool(original, tool_args, ctx, tool)
+
+
+@dataclass
+class _WsFiles(PrefixTools[Deps]):
+    """The harness file tools under the ``ws_`` prefix (``_WsToolset``)."""
+
+    def get_toolset(self) -> AgentToolset[Deps] | None:
+        toolset = self.wrapped.get_toolset()
+        assert isinstance(toolset, AbstractToolset)
+        return _WsToolset(toolset, prefix=self.prefix)
+
+
 def capabilities() -> list[AbstractCapability[Deps]]:
     """Accounting plus the harness file tools, limited to reading and exact edits (everything else is ``sh``)."""
-    return [
-        _HarnessAccounting(),
-        FileSystem[Deps](tools=_FS_TOOLS, max_read_chars=20_000).prefix_tools(WS_PREFIX),
-    ]
+    files = FileSystem[Deps](tools=_FS_TOOLS, max_read_chars=20_000)
+    return [_HarnessAccounting(), _WsFiles(wrapped=files, prefix=WS_PREFIX)]
 
 
 # --- helpers ----------------------------------------------------------------------

@@ -1,10 +1,14 @@
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
-from pydantic_ai import BinaryContent, RunContext, ToolReturn
+from pydantic_ai import Agent, BinaryContent, RunContext, ToolReturn
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.workspaces.local import LocalWorkspaceBackend
 
 from tests.support.agent import run_ctx
 from tests.support.files import png
@@ -12,7 +16,7 @@ from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.media import safe_name
 from yggdrasil.agent.schema import BotReply, Section
 from yggdrasil.agent.tools import sandbox as sandbox_tools
-from yggdrasil.agent.tools import suite_enabled, tool_names
+from yggdrasil.agent.tools import suite_enabled, tool_names, tools_for
 from yggdrasil.agent.tools.images import reply_images
 from yggdrasil.agent.tools.sandbox import format_py, format_sh, py, sandbox_put, sh
 from yggdrasil.moderation.image import parse_answer
@@ -348,3 +352,35 @@ async def test_py_without_vision_describes_images_and_forgets_a_dead_kernel(monk
     assert "一张红色方块" in result
     assert seen == [1]
     assert session.kernel == [None]
+
+
+# --- harness file tools -------------------------------------------------------------
+
+
+async def test_ws_file_tools_read_and_edit_next_to_the_bots_own_read_file(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("one\ntwo\n")
+    results: list[str] = []
+
+    def script(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        last = messages[-1]
+        results.extend(str(p.content) for p in last.parts if isinstance(p, ToolReturnPart))
+        steps = [
+            ToolCallPart("ws_read_file", {"path": "a.txt"}),
+            ToolCallPart("ws_edit_file", {"path": "a.txt", "old_text": "two", "new_text": "2"}),
+            TextPart("done"),
+        ]
+        return ModelResponse(parts=[steps[len(results)]])
+
+    agent = Agent(
+        FunctionModel(script),
+        deps_type=Deps,
+        tools=tools_for(["read_file"]),  # the QQ attachment reader the harness tool shares its bare name with
+        capabilities=sandbox_tools.capabilities(),
+    )
+    deps = run_ctx().deps
+    await agent.run("看一下", deps=deps, workspace=LocalWorkspaceBackend(tmp_path))
+
+    assert "1\tone" in results[0]
+    assert results[1].startswith("Edited a.txt")
+    assert (tmp_path / "a.txt").read_text() == "one\n2\n"
+    assert deps.tool_counts == {"ws_read_file": 1, "ws_edit_file": 1}

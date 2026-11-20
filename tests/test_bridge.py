@@ -82,7 +82,9 @@ async def test_refusals(client: httpx.AsyncClient) -> None:
     assert [t["name"] for t in listed] == ["read_url"]
     assert listed[0]["parameters"]["required"] == ["url_or_handle"]
     assert listed[0]["description"].startswith("读取网页正文")
-    assert (await client.post("/v1/tools/nope", headers=_auth(token), json={})).status_code == 404
+    unknown = await client.post("/v1/tools/render_markdown", headers=_auth(token), json={})
+    assert unknown.status_code == 404
+    assert unknown.json()["error"].endswith("代码里能调用的工具：read_url")
     assert (
         await client.post("/v1/tools/view_image", headers=_auth(token), json={"handle": "img#1"})
     ).status_code == 403
