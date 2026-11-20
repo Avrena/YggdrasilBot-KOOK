@@ -20,7 +20,7 @@ import logging
 import shutil
 import tempfile
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
 
 import httpx
@@ -204,7 +204,10 @@ async def _wait_ready_state(tab: Any, states: tuple[str, ...]) -> None:
         await asyncio.sleep(0.25)
 
 
-def create_app(engines: dict[str, Engine]) -> Starlette:
+def create_app(engines: dict[str, Engine], *, healthy: Callable[[], bool] = lambda: True) -> Starlette:
+    """``healthy``: whether the engines can still run (Xvfb is up); ``/healthz`` fails otherwise, so the pod
+    restarts instead of answering every render with a 502."""
+
     async def render(request: Request) -> JSONResponse:
         try:
             body = await request.json()
@@ -226,6 +229,8 @@ def create_app(engines: dict[str, Engine]) -> Starlette:
         return JSONResponse({"final_url": final_url, "html": html})
 
     async def healthz(_: Request) -> PlainTextResponse:
+        if not healthy():
+            return PlainTextResponse("display server exited", status_code=503)
         return PlainTextResponse("ok")
 
     @contextlib.asynccontextmanager

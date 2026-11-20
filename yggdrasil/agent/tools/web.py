@@ -12,8 +12,10 @@ from yggdrasil.transcript.schema import Hit, HitsDisplay, PageDisplay
 
 
 @chat_tool("read_url")
-async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> str:
-    """读取网页正文（支持分页）。参数可以是 URL、url#N / card#N 句柄，或聊天记录里的消息编号 #N（那条消息里的链接）。"""
+async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1, browser: bool = False) -> str:
+    """读取网页正文（支持分页）。参数可以是 URL、url#N / card#N 句柄，或聊天记录里的消息编号 #N（那条消息里的链接）。
+    普通读取遇到验证页会自动换浏览器；读到的仍是验证页、空壳或缺了要靠 JavaScript 加载的内容时，用 browser=true
+    直接让真浏览器打开（会跑 JavaScript，慢几秒）。"""
     from yggdrasil.runtime import snapshot
     from yggdrasil.tools.remote_fetch import remote_fetcher
     from yggdrasil.tools.web import read_url as _read
@@ -33,6 +35,7 @@ async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> 
             page=page,
             browser_url=APP_CONFIG.browser_url if cfg.browser_fallback else None,
             remote=remote_fetcher(snapshot().search_providers) if cfg.remote_fetch else None,
+            browser=browser,
         )
     except ImageLink as e:
         key = ctx.deps.handles.add("image", {"url": e.url, "source": "web"})

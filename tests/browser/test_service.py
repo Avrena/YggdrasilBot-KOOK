@@ -56,6 +56,15 @@ async def test_engine_failure_is_a_502() -> None:
     assert resp.status_code == 502
 
 
+async def test_healthz_fails_once_the_display_server_exits() -> None:
+    alive = True
+    app = service.create_app({"patchright": _Engine(("x", "y"))}, healthy=lambda: alive)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://browser") as client:
+        assert (await client.get("/healthz")).status_code == 200
+        alive = False
+        assert (await client.get("/healthz")).status_code == 503
+
+
 async def test_verdicts_vet_origins_once_and_refuse_local_schemes(monkeypatch: pytest.MonkeyPatch) -> None:
     checked: list[str] = []
 

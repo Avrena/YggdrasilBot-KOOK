@@ -39,6 +39,9 @@ _WALL_KEYWORDS = (
     "attention required",
     "checking your browser",
     "enable javascript and cookies",
+    # Anubis (proof-of-work in JS; the page is localized from Accept-Language)
+    "making sure you're not a bot",
+    "正在确认你是不是机器人",
     *_CONSENT_KEYWORDS,
 )
 # Anti-bot block and error pages that answer with a normal-looking page (often HTTP 200). Same short-page rule as
@@ -56,7 +59,15 @@ _BLOCK_KEYWORDS = (
 )
 # Walls that are JavaScript challenges rather than captchas or logins: a better browser may pass them, so they
 # escalate like block pages. Captcha / login walls never do (no captcha fighting; CN walls are IP reputation).
-JS_CHALLENGES = frozenset({"just a moment...", "checking your browser", "enable javascript and cookies"})
+JS_CHALLENGES = frozenset(
+    {
+        "just a moment...",
+        "checking your browser",
+        "enable javascript and cookies",
+        "making sure you're not a bot",
+        "正在确认你是不是机器人",
+    }
+)
 
 
 def detect_wall(title: str, text: str) -> str | None:

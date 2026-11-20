@@ -68,8 +68,8 @@ _DOC_EXTS = frozenset(".pdf .docx .pptx .xlsx .epub .zip .txt .md .csv .json .do
 _HTML_TYPES = frozenset({"", "text/html", "application/xhtml+xml", "application/octet-stream"})
 
 
-type _CacheKey = tuple[str, str, bool, bool]
-"""(url, fragment, browser tier on, remote tier on)."""
+type _CacheKey = tuple[str, str, bool, bool, bool]
+"""(url, fragment, browser tier on, remote tier on, browser forced)."""
 _cache: OrderedDict[_CacheKey, tuple[float, Extracted, Anchor | None]] = OrderedDict()
 
 
@@ -81,8 +81,12 @@ async def read_url(
     browser_url: str | None = None,
     remote: RemoteFetch | None = None,
     timeout: float = 20,  # noqa: ASYNC109 - per-request network timeout, not a cancel scope
+    browser: bool = False,
 ) -> PageResult:
     """Read ``url`` and return page ``page`` of its text split into ``max_chars`` pages.
+
+    ``browser``: go straight to the browser tier (the model asked for it: the page needs JavaScript, or the plain
+    read got a challenge or an incomplete page); site adapters and plain HTTP are skipped.
 
     A ``#fragment`` pointing into a text longer than a page starts the pages there; page 1 then opens with a note
     saying so (or why the fragment could not be followed)."""
@@ -90,14 +94,16 @@ async def read_url(
         raise ValueError("max_chars must be positive")
     if page < 1:
         raise ToolError("页码从 1 开始")
+    if browser and browser_url is None:
+        raise ToolError("浏览器渲染现在没有开启，只能普通读取")
     target = await check_url(url)
     # A text fragment (``#:~:text=...``, added by search engines) only highlights text; the page is read whole.
     fragment = unquote(url.partition("#")[2].partition(":~:")[0]).strip()
-    key = (target, fragment, browser_url is not None, remote is not None)
+    key = (target, fragment, browser_url is not None, remote is not None, browser)
     cached = _cache_get(key)
     with TRACER.start_as_current_span("tool.read_url") as span:
         if cached is None:
-            extracted = await _read(target, browser_url, remote, timeout)
+            extracted = await _read(target, browser_url, remote, timeout, browser=browser)
             anchor = await asyncio.to_thread(find_anchor, extracted, fragment) if fragment else None
             extracted.html = ""
             cached = extracted, anchor
@@ -121,10 +127,16 @@ async def read_url(
     )
 
 
-async def _read(url: str, browser_url: str | None, remote: RemoteFetch | None, timeout_s: float) -> Extracted:
-    """The local tiers, then ``remote`` when they could not read the page or only got a shell."""
+async def _read(
+    url: str, browser_url: str | None, remote: RemoteFetch | None, timeout_s: float, *, browser: bool
+) -> Extracted:
+    """The local tiers (or only the browser, when forced), then ``remote`` when they could not read the page or only
+    got a shell."""
     try:
-        local = await _fetch(url, browser_url, timeout_s)
+        if browser and browser_url is not None:
+            local = await _render_or_raise(url, browser_url, timeout_s, None)
+        else:
+            local = await _fetch(url, browser_url, timeout_s)
     except Unreadable:
         if remote is None or (fetched := await _remote(remote, url)) is None:
             raise

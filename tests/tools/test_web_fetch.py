@@ -290,10 +290,20 @@ async def test_a_404_stays_gone_unless_an_app_renders_it(web_page: Routes, page:
         await read_url("https://example.com/docs/content", browser_url=BROWSER)
 
 
+# Anubis' proof-of-work page, localized from Accept-Language: long enough to pass as an article.
+ANUBIS_PAGE = _page(
+    "LiberNT",
+    "<h1>正在确认你是不是机器人！</h1><p>加载中...</p><p>"
+    + "您会看到这个画面，是因为网站管理员启用了 Anubis 来保护服务器，避免 AI 公司大量爬取网站内容。" * 4
+    + "</p>",
+)
+
+
 @pytest.mark.parametrize(
     ("html", "renders"),
     [
         (_page("Just a moment...", "<p>Checking if the site connection is secure</p>"), True),
+        (ANUBIS_PAGE, True),
         (_page("安全验证", "<p>请完成下方验证码</p>"), False),
     ],
 )
@@ -309,6 +319,24 @@ async def test_plain_http_sends_js_challenges_but_not_captchas_to_the_browser(
         with pytest.raises(ToolError, match="验证"):
             await read_url("https://example.com/a", browser_url=BROWSER)
         assert _engines(web_page) == []
+
+
+async def test_a_forced_browser_read_skips_plain_http(web_page: Routes) -> None:
+    web_page.answers.update(
+        {
+            "example.com": httpx.Response(200, html=_page("plain", "<p>plain text</p>")),
+            "browser.example.com": _browser({"patchright": ARTICLE}),
+        }
+    )
+    result = await read_url("https://example.com/b", browser_url=BROWSER, browser=True)
+    assert (result.via, result.title) == ("browser", "测试文章")
+    assert [r.url.host for r in web_page.seen] == ["browser.example.com"]
+
+
+async def test_a_forced_browser_read_without_the_browser_tier_says_so(web_page: Routes) -> None:
+    with pytest.raises(ToolError, match="浏览器"):
+        await read_url("https://example.com/b", browser=True)
+    assert web_page.seen == []
 
 
 # --------------------------------------------------------------------------- remote fetcher
