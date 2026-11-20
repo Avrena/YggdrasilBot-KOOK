@@ -356,16 +356,7 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
             select(exists().where(Topic.group_id == group_id, Topic.status == "open", Topic.end_at < idle_before))
         )
         dirty = await session.scalar(select(exists().where(Topic.group_id == group_id, Topic.dirty.is_(True))))
-    stats = {
-        "windows": 0,
-        "messages": 0,
-        "new": 0,
-        "continued": 0,
-        "recomputed": 0,
-        "deleted": 0,
-        "closed": 0,
-        "archived": 0,
-    }
+    stats = {"messages": 0, "new": 0, "continued": 0, "recomputed": 0, "deleted": 0, "closed": 0, "archived": 0}
     if not (pending or 0) >= mem.topic_min_new_messages and not idle and not dirty:
         return stats
     if not llm.available(TASK):
@@ -388,7 +379,6 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
                 break
             windows += 1
             force = False
-            stats["windows"] = windows
             stats["messages"] += done[0]
             stats["new"] += done[1]
             stats["continued"] += done[2]

@@ -11,13 +11,13 @@ from typing import Any
 
 import fakeredis
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from tests.support.db import insert_message, purge_groups
 from tests.support.files import png
 from tests.support.groups import fresh_group
 from tests.support.qq import FakeQQ
-from yggdrasil.db.models import Sticker, StickerBlob, StickerUsage
+from yggdrasil.db.models import Message, Sticker, StickerBlob, StickerUsage
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.llm import registry
@@ -44,7 +44,15 @@ def test_the_sample_favours_used_stickers_but_reaches_rare_ones_and_skips_repeat
 
 
 GROUP = fresh_group()
-ON = {"enabled": True, "chance": 1.0, "min_fit": 0.5, "daily_max": 2, "min_gap_minutes": 15, "group_only": True}
+ON = {
+    "enabled": True,
+    "chance": 1.0,
+    "min_fit": 0.5,
+    "daily_max": 2,
+    "min_gap_minutes": 15,
+    "min_new_messages": 1,
+    "group_only": True,
+}
 
 
 @pytest.fixture
@@ -125,12 +133,34 @@ async def test_a_fitting_moment_queues_a_pick_within_the_gap_and_the_daily_cap(
     assert "哈哈哈笑死" in request["state"]["群聊最近的消息"]
 
     assert (await drop.maybe_drop(GROUP, now=NOW + timedelta(minutes=10))).outcome == "gap"
+    await insert_message(GROUP, "绷不住了", sent_at=NOW + timedelta(minutes=19))
     assert (await drop.maybe_drop(GROUP, now=NOW + timedelta(minutes=20))).outcome == "sent"
     assert (await drop.maybe_drop(GROUP, now=NOW + timedelta(minutes=40))).outcome == "capped"
     assert [(q["group_id"], q["sticker_id"]) for q in reversed(await _queued(fake_redis))] == [
         (GROUP, stickers[0]),
         (GROUP, stickers[1]),
     ]
+
+
+@pytest.mark.db
+async def test_a_decision_waits_for_enough_new_messages_from_members(
+    stickers: list[int],
+    decisions: Decisions,
+    snapshot: Callable[..., Snapshot],
+) -> None:
+    _install(snapshot, min_new_messages=2, chance=0.0, active_within_minutes=60)
+    await insert_message(GROUP, "一", sent_at=NOW - timedelta(minutes=3))
+    await insert_message(GROUP, "[bot 的回答]", user_id=10000, sent_at=NOW - timedelta(minutes=2))
+    async with get_session() as session:  # the bot's own message doesn't count
+        bot_message = (Message.group_id == GROUP) & (Message.user_id == 10000)
+        await session.execute(update(Message).where(bot_message).values(is_self=True))
+    assert (await drop.maybe_drop(GROUP, now=NOW)).outcome == "quiet"
+
+    await insert_message(GROUP, "二", sent_at=NOW - timedelta(minutes=1))
+    decisions.answers.append(_answers(0.9, f"s{stickers[0]}"))
+    assert (await drop.maybe_drop(GROUP, now=NOW)).outcome == "dice"  # decided (chance 0): no send, no gap
+    assert (await drop.maybe_drop(GROUP, now=NOW + timedelta(minutes=5))).outcome == "quiet"
+    assert len(decisions.requests) == 1
 
 
 @pytest.mark.db

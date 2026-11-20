@@ -346,24 +346,29 @@ class MemorySettings(BaseModel):
 
 
 class StickerDropSettings(BaseModel):
-    """Now and then a sticker after topic segmentation: a decision model (route ``sticker_pick``) judges whether the
-    chat invites one and picks it from a weighted sample of the collected stickers."""
+    """Now and then a sticker: every few minutes, once enough new messages came in, a decision model (route
+    ``sticker_pick``) judges whether the chat invites one and picks it from a weighted sample of the collected
+    stickers."""
 
     enabled: bool = Field(
         default=False,
-        description="话题分段每处理完一批消息，有机会挑一张收集到的表情包发到群里（需要配置 sticker_pick 路由）",
+        description="群里聊得够多时，有机会挑一张收集到的表情包发到群里（需要配置 sticker_pick 路由）",
     )
-    daily_max: int = Field(default=16, ge=0, description="每个群每天最多发几张（Asia/Shanghai 零点重置）")
+    min_new_messages: int = Field(
+        default=60, ge=1, description="上次判断之后群里新增这么多条消息（不算 bot 的）才再判断一次；每 5 分钟检查一次"
+    )
+    daily_max: int = Field(default=20, ge=0, description="每个群每天最多发几张（Asia/Shanghai 零点重置）")
     min_gap_minutes: int = Field(default=15, ge=0, description="两张之间至少间隔多少分钟")
     active_within_minutes: int = Field(
         default=5, ge=1, description="群里最后一条消息在这么多分钟以内才发（聊天已经冷了就不发）"
     )
-    # Prod replay (2026-11-17..20, 14-18 windows a day at 2000-3000 messages): 0.4 let two thirds of the windows
-    # through; with 0.9 that made 9-12 a day, a 3000-message day ~11-14, under daily_max.
+    # Prod replay (main group, 2026-11-14..19, 1800-2800 messages a day): 27-40 checks a day passed
+    # min_new_messages, the model put 84 % of them at 0.4 or more; with 0.7 that makes ~17 a day (15-19), a fifth of
+    # the days reaching daily_max.
     min_fit: float = Field(
         default=0.4, ge=0, le=1, description="决策模型判断「最后几条适合用表情接话」的概率至少要这么高"
     )
-    chance: float = Field(default=0.9, ge=0, le=1, description="通过以上条件后真正发出的概率")
+    chance: float = Field(default=0.7, ge=0, le=1, description="通过以上条件后真正发出的概率")
     candidates: int = Field(
         default=50,
         ge=2,

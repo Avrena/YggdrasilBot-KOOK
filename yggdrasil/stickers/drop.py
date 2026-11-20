@@ -1,10 +1,11 @@
-"""Now and then a sticker in the chat (``Settings.sticker_drop``), after topic segmentation has handled new messages.
+"""Now and then a sticker in the chat (``Settings.sticker_drop``), checked by the worker every five minutes.
 
-The worker decides: cheap gates first (daily cap, gap since the last one, the chat still active), then one call to a
-decision model (route ``sticker_pick``, e.g. Jev on OpenRouter's Decisions API) with the recent chat and a weighted
-sample of the collected stickers. It answers whether a sticker fits now (a probability, held against ``min_fit``) and
-which one; a final dice roll (``chance``) keeps the bot from replying to every lively stretch. The pick goes to a
-Redis list that the bot process sends from (the worker has no QQ connection).
+A check goes on once ``min_new_messages`` messages from members came in since the last decision. Cheap gates first
+(daily cap, gap since the last one, the chat still active), then one call to a decision model (route
+``sticker_pick``, e.g. Jev on OpenRouter's Decisions API) with the recent chat and a weighted sample of the collected
+stickers. It answers whether a sticker fits now (a probability, held against ``min_fit``) and which one; a final dice
+roll (``chance``) keeps the bot from replying to every lively stretch. The pick goes to a Redis list that the bot
+process sends from (the worker has no QQ connection).
 
 Sample weights: ``1 + ln(1 + uses)``, so a sticker sent 200 times weighs about 4x one sent once, and each send by the
 bot in the past week multiplies it by ``REPEAT_PENALTY``. Uses are counted across all groups, or only in the group
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Message, Sticker, StickerBlob, StickerUsage
@@ -50,6 +51,11 @@ def sent_key(group_id: int) -> str:
     return f"ygg:sticker_drop:sent:{group_id}"
 
 
+def mark_key(group_id: int) -> str:
+    """The newest message id the last decision saw; messages after it count towards ``min_new_messages``."""
+    return f"ygg:sticker_drop:mark:{group_id}"
+
+
 @dataclass(frozen=True, slots=True)
 class Candidate:
     id: int
@@ -70,7 +76,7 @@ class Candidate:
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
-    outcome: str  # off | no_route | capped | gap | idle | no_stickers | refused | unfit | dice | sent | error
+    outcome: str  # off | no_route | capped | gap | quiet | idle | no_stickers | refused | unfit | dice | sent
     fit: float | None = None
     sticker_id: int | None = None
 
@@ -98,6 +104,22 @@ async def _recent_messages(group_id: int, limit: int) -> list[MessageView]:
             .limit(limit)
         )
         return [MessageView(*r) for r in reversed(rows.all())]
+
+
+async def _new_messages(group_id: int, after_id: int, limit: int) -> int:
+    """Members' messages after ``after_id``, counted up to ``limit``."""
+    async with get_session() as session:
+        ids = (
+            select(Message.id)
+            .where(
+                Message.group_id == group_id,
+                Message.recalled.is_(False),
+                Message.is_self.is_(False),
+                Message.id > after_id,
+            )
+            .limit(limit)
+        )
+        return await session.scalar(select(func.count()).select_from(ids.subquery())) or 0
 
 
 async def _candidates(group_id: int, *, group_only: bool) -> list[Candidate]:
@@ -160,6 +182,9 @@ async def maybe_drop(group_id: int, *, now: datetime | None = None, rng: random.
         return Outcome("capped")
     if sent and now.timestamp() - max(at for _, at in sent) < cfg.min_gap_minutes * 60:
         return Outcome("gap")
+    mark = int(await r.get(mark_key(group_id)) or 0)
+    if await _new_messages(group_id, mark, cfg.min_new_messages) < cfg.min_new_messages:
+        return Outcome("quiet")
     recent = await _recent_messages(group_id, cfg.context_messages)
     if not recent or now - recent[-1].sent_at > timedelta(minutes=cfg.active_within_minutes):
         return Outcome("idle")
@@ -178,6 +203,7 @@ async def maybe_drop(group_id: int, *, now: datetime | None = None, rng: random.
         "发表情的人": f"{bot_name}（群里的 bot，消息里标着「(你)」）",
     }
     result = await registry.decide(TASK, state, questions(picks))
+    await r.set(mark_key(group_id), recent[-1].id)
     fit_answer, pick_answer = result.answers.get("fit") or {}, result.answers.get("pick") or {}
     if fit_answer.get("type") != "noul" or pick_answer.get("type") != "choice":
         LOGGER.info("sticker drop in {}: the model refused ({}, {})", group_id, fit_answer, pick_answer)

@@ -102,22 +102,43 @@ async def chunk_and_embed() -> dict[int, Any]:
     return await for_each_group("chunk_and_embed", _chunk_and_embed, lock_ttl=900)
 
 
-async def _consolidate(group_id: int) -> dict[str, Any]:
-    stats: dict[str, Any] = await consolidate_group(group_id)
-    if stats["windows"]:
-        # A side feature: its failure must not fail (and retry) the consolidation.
-        try:
-            drop = await maybe_drop(group_id)
-        except Exception:
-            LOGGER.exception("sticker drop for group {} failed", group_id)
-        else:
-            stats["sticker"] = drop.outcome if drop.fit is None else f"{drop.outcome} fit={drop.fit:.2f}"
-    return stats
-
-
 @broker.task(task_name="consolidate_topics", schedule=_cron("*/15 * * * *"))
 async def consolidate_topics() -> dict[int, Any]:
-    return await for_each_group("consolidate_topics", _consolidate, lock_ttl=3600)
+    return await for_each_group("consolidate_topics", consolidate_group, lock_ttl=3600)
+
+
+# A minute after the other */5 jobs.
+@broker.task(task_name="drop_stickers", schedule=_cron("1-59/5 * * * *"))
+async def drop_stickers() -> dict[int, str]:
+    """Maybe a sticker in each enabled group with ``sticker_drop.enabled`` (``stickers.drop``)."""
+    lock = redis_client().lock("ygg:job:drop_stickers", timeout=240, blocking=False)
+    if not await lock.acquire():
+        LOGGER.info("drop_stickers: previous run still going; skipped")
+        return {}
+    snap = snapshot()
+    results: dict[int, str] = {}
+    failed: list[int] = []
+    try:
+        for group_id in sorted(snap.groups):
+            if not (snap.group_enabled(group_id) and snap.settings(group_id).sticker_drop.enabled):
+                continue
+            try:
+                drop = await maybe_drop(group_id)
+            except Exception:
+                failed.append(group_id)
+                LOGGER.exception("drop_stickers: group {} failed", group_id)
+                continue
+            results[group_id] = drop.outcome if drop.fit is None else f"{drop.outcome} fit={drop.fit:.2f}"
+    finally:
+        try:
+            await lock.release()
+        except LockError:
+            LOGGER.warning("drop_stickers: lock expired before release")
+    if any(outcome != "quiet" for outcome in results.values()):
+        LOGGER.info("drop_stickers: {}", results)
+    if failed:
+        raise GroupFailures("drop_stickers", failed)
+    return results
 
 
 @broker.task(task_name="daily_digest", schedule=_cron("5 * * * *"))
