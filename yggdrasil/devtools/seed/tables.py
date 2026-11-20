@@ -1,4 +1,4 @@
-"""Rows for the other tables: groups and members, stickers, memory, bot events and review items."""
+"""Rows for the other tables: groups and members, stickers and sticker drops, memory, bot events and review items."""
 
 import io
 from datetime import timedelta
@@ -22,6 +22,7 @@ from yggdrasil.db.models import (
     ReviewItem,
     Sticker,
     StickerBlob,
+    StickerDrop,
     StickerUsage,
     TaskRoute,
     Topic,
@@ -134,6 +135,49 @@ async def add_stickers() -> None:
         s.add_all([broken, happy])
         await s.flush()
         s.add(StickerUsage(sticker_id=happy.id, group_id=TECH, count=5, last_seen=NOW))
+
+
+async def add_sticker_drops(chats: dict[int, Chat]) -> None:
+    """One decision of each outcome in the tech group, all picking the doge sticker but the refusal."""
+    last = max(m.id for m in chats[TECH].keys.values())
+    async with get_session() as s:
+        doge = await s.scalar(select(Sticker.id).where(Sticker.ref == MEDIA["doge"].sha1))
+        common = {"group_id": TECH, "last_message_id": last, "model": f"{PROVIDER}/decide-1", "input_tokens": 7400}
+        s.add_all(
+            [
+                StickerDrop(at=NOW - timedelta(hours=3), outcome="refused", **common, candidates=[doge]),
+                StickerDrop(
+                    at=NOW - timedelta(hours=2),
+                    outcome="unfit",
+                    fit=0.21,
+                    sticker_id=doge,
+                    confidence=0.12,
+                    candidates=[doge],
+                    cost=0.00031,
+                    **common,
+                ),
+                StickerDrop(
+                    at=NOW - timedelta(hours=1),
+                    outcome="dice",
+                    fit=0.66,
+                    sticker_id=doge,
+                    confidence=0.18,
+                    candidates=[doge],
+                    cost=0.00031,
+                    **common,
+                ),
+                StickerDrop(
+                    at=NOW - timedelta(minutes=20),
+                    outcome="sent",
+                    fit=0.84,
+                    sticker_id=doge,
+                    confidence=0.35,
+                    candidates=[doge],
+                    cost=0.00032,
+                    **common,
+                ),
+            ]
+        )
 
 
 async def add_memory(chats: dict[int, Chat]) -> None:

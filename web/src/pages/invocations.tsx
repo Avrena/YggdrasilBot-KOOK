@@ -19,7 +19,9 @@ import { fmtMs } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fmtTime } from "@/lib/format";
+import { StickerDrops } from "@/pages/sticker-drops";
 
 const STATUSES = [
   "running",
@@ -47,6 +49,29 @@ export function statusVariant(status: string): "default" | "destructive" | "outl
 }
 
 export function InvocationsPage() {
+  return (
+    <div>
+      <PageHeader
+        title="调用记录"
+        description="每次触发的完整记录：点开看完整对话，trace 链接打开 Grafana Tempo。表情包页签是每次挑表情包的判断。"
+      />
+      <Tabs defaultValue="runs">
+        <TabsList>
+          <TabsTrigger value="runs">对话与指令</TabsTrigger>
+          <TabsTrigger value="stickers">表情包</TabsTrigger>
+        </TabsList>
+        <TabsContent value="runs">
+          <Runs />
+        </TabsContent>
+        <TabsContent value="stickers">
+          <StickerDrops />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function Runs() {
   const [q, setQ] = useState("");
   const query = useDebounced(q);
   const [groupId, setGroupId] = useState<number | null>(null);
@@ -67,7 +92,6 @@ export function InvocationsPage() {
     };
   return (
     <div>
-      <PageHeader title="调用记录" description="每次触发的完整记录：点开看完整对话，trace 链接打开 Grafana Tempo。" />
       <FilterBar>
         <Input
           className="w-64"

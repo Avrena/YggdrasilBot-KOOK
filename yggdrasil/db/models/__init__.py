@@ -1,4 +1,4 @@
-from yggdrasil.db.models.chat import Message, Sticker, StickerBlob, StickerUsage, UserAlias
+from yggdrasil.db.models.chat import Message, Sticker, StickerBlob, StickerDrop, StickerUsage, UserAlias
 from yggdrasil.db.models.config import (
     Admin,
     CommandTrigger,
@@ -61,6 +61,7 @@ __all__ = [
     "SettingsDoc",
     "Sticker",
     "StickerBlob",
+    "StickerDrop",
     "StickerUsage",
     "TaskRoute",
     "Topic",

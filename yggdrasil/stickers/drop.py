@@ -25,7 +25,7 @@ from typing import Any, cast
 from sqlalchemy import exists, func, select
 
 from yggdrasil.core.log import LOGGER
-from yggdrasil.db.models import Message, Sticker, StickerBlob, StickerUsage
+from yggdrasil.db.models import Message, Sticker, StickerBlob, StickerDrop, StickerUsage
 from yggdrasil.db.session import get_session
 from yggdrasil.kv import redis_client
 from yggdrasil.llm import registry
@@ -106,13 +106,14 @@ async def _recent_messages(group_id: int, limit: int) -> list[MessageView]:
         return [MessageView(*r) for r in reversed(rows.all())]
 
 
-async def _new_messages(group_id: int, after_id: int, limit: int) -> int:
-    """Members' messages after ``after_id``, counted up to ``limit``."""
+async def _new_messages(group_id: int, after_id: int, limit: int, since: datetime) -> int:
+    """Members' messages after ``after_id`` and ``since``, counted up to ``limit``."""
     async with get_session() as session:
         ids = (
             select(Message.id)
             .where(
                 Message.group_id == group_id,
+                Message.sent_at > since,  # bounds the scan to recent partitions and the (group, sent_at) index
                 Message.recalled.is_(False),
                 Message.is_self.is_(False),
                 Message.id > after_id,
@@ -183,7 +184,8 @@ async def maybe_drop(group_id: int, *, now: datetime | None = None, rng: random.
     if sent and now.timestamp() - max(at for _, at in sent) < cfg.min_gap_minutes * 60:
         return Outcome("gap")
     mark = int(await r.get(mark_key(group_id)) or 0)
-    if await _new_messages(group_id, mark, cfg.min_new_messages) < cfg.min_new_messages:
+    since = now - timedelta(days=1)
+    if await _new_messages(group_id, mark, cfg.min_new_messages, since) < cfg.min_new_messages:
         return Outcome("quiet")
     recent = await _recent_messages(group_id, cfg.context_messages)
     if not recent or now - recent[-1].sent_at > timedelta(minutes=cfg.active_within_minutes):
@@ -204,22 +206,54 @@ async def maybe_drop(group_id: int, *, now: datetime | None = None, rng: random.
     }
     result = await registry.decide(TASK, state, questions(picks))
     await r.set(mark_key(group_id), recent[-1].id)
-    fit_answer, pick_answer = result.answers.get("fit") or {}, result.answers.get("pick") or {}
+    pick = result.answers.get("pick") or {}
+    picked = {f"s{c.id}": c.id for c in picks}.get(str(pick.get("choice")))
+    outcome = _judge(group_id, result.answers, picked, cfg.min_fit, cfg.chance, rng)
+    confidence = pick.get("confidence")
+    async with get_session() as session:
+        session.add(
+            StickerDrop(
+                at=now,
+                group_id=group_id,
+                outcome=outcome.outcome,
+                fit=outcome.fit,
+                sticker_id=picked,
+                confidence=float(confidence) if isinstance(confidence, int | float) else None,
+                candidates=[c.id for c in picks],
+                last_message_id=recent[-1].id,
+                model=result.model,
+                input_tokens=result.input_tokens,
+                cost=result.cost,
+            )
+        )
+    if outcome.outcome == "sent" and outcome.sticker_id is not None:
+        sid = outcome.sticker_id
+        await r.zadd(key, {f"{sid}:{int(now.timestamp() * 1000)}": now.timestamp()})
+        await r.lpush(OUTBOX, json.dumps({"group_id": group_id, "sticker_id": sid, "at": now.timestamp()}))
+    return outcome
+
+
+def _judge(
+    group_id: int,
+    answers: dict[str, dict[str, Any]],
+    picked: int | None,
+    min_fit: float,
+    chance: float,
+    rng: random.Random,
+) -> Outcome:
+    fit_answer, pick_answer = answers.get("fit") or {}, answers.get("pick") or {}
     if fit_answer.get("type") != "noul" or pick_answer.get("type") != "choice":
         LOGGER.info("sticker drop in {}: the model refused ({}, {})", group_id, fit_answer, pick_answer)
         return Outcome("refused")
     fit = float(fit_answer["noul"])
-    if fit < cfg.min_fit:
+    if fit < min_fit:
         return Outcome("unfit", fit)
-    if rng.random() >= cfg.chance:
+    if rng.random() >= chance:
         return Outcome("dice", fit)
-    sticker_id = {f"s{c.id}": c.id for c in picks}.get(str(pick_answer.get("choice")))
-    if sticker_id is None:
+    if picked is None:
         LOGGER.warning("sticker drop in {}: the model picked {}, not a candidate", group_id, pick_answer.get("choice"))
         return Outcome("refused", fit)
-    await r.zadd(key, {f"{sticker_id}:{int(now.timestamp() * 1000)}": now.timestamp()})
-    await r.lpush(OUTBOX, json.dumps({"group_id": group_id, "sticker_id": sticker_id, "at": now.timestamp()}))
-    return Outcome("sent", fit, sticker_id)
+    return Outcome("sent", fit, picked)
 
 
 async def deliver_forever() -> None:

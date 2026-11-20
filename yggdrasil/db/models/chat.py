@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     ForeignKey,
     Identity,
     Index,
@@ -123,3 +124,23 @@ class StickerUsage(Base):
     group_id: Mapped[int]
     count: Mapped[int] = mapped_column(default=1)
     last_seen: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class StickerDrop(Base):
+    """One sticker-drop decision (``stickers.drop``): every call to the decision model, whether it sent or not."""
+
+    __tablename__ = "sticker_drops"
+    __table_args__ = (Index("ix_sticker_drops_group_at", "group_id", text("at DESC")),)
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    at: Mapped[datetime] = mapped_column(server_default=func.now())
+    group_id: Mapped[int]
+    outcome: Mapped[str] = mapped_column(Text)  # sent | dice | unfit | refused
+    fit: Mapped[float | None]  # the model's probability that a sticker fits now
+    sticker_id: Mapped[int | None] = mapped_column(ForeignKey("stickers.id", ondelete="SET NULL"))
+    confidence: Mapped[float | None]  # the model's confidence in its pick
+    candidates: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    last_message_id: Mapped[int]  # the newest message the model saw
+    model: Mapped[str] = mapped_column(Text)
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    cost: Mapped[float | None]  # USD, when the provider reports it

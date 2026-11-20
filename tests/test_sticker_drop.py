@@ -11,13 +11,13 @@ from typing import Any
 
 import fakeredis
 import pytest
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 
 from tests.support.db import insert_message, purge_groups
 from tests.support.files import png
 from tests.support.groups import fresh_group
 from tests.support.qq import FakeQQ
-from yggdrasil.db.models import Message, Sticker, StickerBlob, StickerUsage
+from yggdrasil.db.models import Message, Sticker, StickerBlob, StickerDrop, StickerUsage
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.llm import registry
@@ -115,6 +115,12 @@ async def _queued(r: fakeredis.FakeAsyncRedis) -> list[dict[str, Any]]:
     return [json.loads(x) for x in await r.lrange(drop.OUTBOX, 0, -1)]
 
 
+async def _drops() -> list[StickerDrop]:
+    async with get_session() as session:
+        query = select(StickerDrop).where(StickerDrop.group_id == GROUP).order_by(StickerDrop.id)
+        return list(await session.scalars(query))
+
+
 @pytest.mark.db
 async def test_a_fitting_moment_queues_a_pick_within_the_gap_and_the_daily_cap(
     stickers: list[int],
@@ -139,6 +145,10 @@ async def test_a_fitting_moment_queues_a_pick_within_the_gap_and_the_daily_cap(
     assert [(q["group_id"], q["sticker_id"]) for q in reversed(await _queued(fake_redis))] == [
         (GROUP, stickers[0]),
         (GROUP, stickers[1]),
+    ]
+    assert [(d.outcome, d.fit, d.sticker_id, sorted(d.candidates), d.cost) for d in await _drops()] == [
+        ("sent", 0.9, stickers[0], sorted(stickers[:2]), 0.00001),
+        ("sent", 0.9, stickers[1], sorted(stickers[:2]), 0.00001),
     ]
 
 
@@ -186,6 +196,8 @@ async def test_nothing_is_queued_when_the_model_says_no(
 
     assert (await drop.maybe_drop(GROUP, now=NOW)).outcome == outcome
     assert await _queued(fake_redis) == []
+    [recorded] = await _drops()  # a decision that sends nothing is still on record
+    assert (recorded.outcome, recorded.sticker_id) == (outcome, None)
 
 
 @pytest.mark.db
@@ -202,6 +214,7 @@ async def test_a_quiet_chat_or_a_disabled_feature_costs_no_model_call(
     assert (await drop.maybe_drop(GROUP, now=NOW)).outcome == "off"
     assert decisions.requests == []
     assert await _queued(fake_redis) == []
+    assert await _drops() == []
 
 
 @pytest.mark.db

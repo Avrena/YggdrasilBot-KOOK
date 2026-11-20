@@ -316,6 +316,8 @@ export type DigestOut = {
     topic_ids: Array<number>;
 };
 
+export type DropOutcome = 'sent' | 'dice' | 'unfit' | 'refused';
+
 /**
  * EmbedSpaceIn
  */
@@ -1610,6 +1612,20 @@ export type PageReviewOut = {
 };
 
 /**
+ * Page[StickerDropOut]
+ */
+export type PageStickerDropOut = {
+    /**
+     * Items
+     */
+    items: Array<StickerDropOut>;
+    /**
+     * Total
+     */
+    total: number;
+};
+
+/**
  * Page[StickerOut]
  */
 export type PageStickerOut = {
@@ -2663,6 +2679,65 @@ export type StickerDetail = {
      * Groups
      */
     groups: Array<StickerGroupUsage>;
+};
+
+/**
+ * StickerDropOut
+ */
+export type StickerDropOut = {
+    /**
+     * Id
+     */
+    id: number;
+    /**
+     * At
+     */
+    at: string;
+    /**
+     * Group Id
+     */
+    group_id: number;
+    outcome: DropOutcome;
+    /**
+     * Fit
+     */
+    fit: number | null;
+    /**
+     * Confidence
+     */
+    confidence: number | null;
+    /**
+     * Sticker Id
+     */
+    sticker_id: number | null;
+    /**
+     * Sticker Description
+     */
+    sticker_description: string;
+    /**
+     * Sticker Has Image
+     */
+    sticker_has_image: boolean;
+    /**
+     * Candidate Count
+     */
+    candidate_count: number;
+    /**
+     * Last Message Id
+     */
+    last_message_id: number;
+    /**
+     * Model
+     */
+    model: string;
+    /**
+     * Input Tokens
+     */
+    input_tokens: number;
+    /**
+     * Cost
+     */
+    cost: number | null;
 };
 
 /**
@@ -5441,6 +5516,48 @@ export type ListStickersResponses = {
 };
 
 export type ListStickersResponse = ListStickersResponses[keyof ListStickersResponses];
+
+export type ListStickerDropsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Group Id
+         */
+        group_id?: number | null;
+        /**
+         * Outcome
+         */
+        outcome?: DropOutcome | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+        /**
+         * Offset
+         */
+        offset?: number;
+    };
+    url: '/stickers/drops';
+};
+
+export type ListStickerDropsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ListStickerDropsError = ListStickerDropsErrors[keyof ListStickerDropsErrors];
+
+export type ListStickerDropsResponses = {
+    /**
+     * Successful Response
+     */
+    200: PageStickerDropOut;
+};
+
+export type ListStickerDropsResponse = ListStickerDropsResponses[keyof ListStickerDropsResponses];
 
 export type GetStickerData = {
     body?: never;

@@ -1,4 +1,4 @@
-"""Collected stickers: listing, details, the original image, and enable/disable."""
+"""Collected stickers: listing, details, the original image, enable/disable, and the sticker-drop decisions."""
 
 from datetime import datetime
 from typing import Literal
@@ -9,13 +9,14 @@ from sqlalchemy import ScalarSelect, func, or_, select
 
 from yggdrasil.admin.auth import Actor
 from yggdrasil.admin.common import Page, change, not_found
-from yggdrasil.db.models import Group, Sticker, StickerBlob, StickerUsage
+from yggdrasil.db.models import Group, Sticker, StickerBlob, StickerDrop, StickerUsage
 from yggdrasil.db.session import get_session
 
 router = APIRouter(prefix="/stickers", tags=["stickers"])
 
 type StickerKind = Literal["image", "mface"]
 type StickerStatus = Literal["fetching", "untagged", "ready", "failed"]
+type DropOutcome = Literal["sent", "dice", "unfit", "refused"]
 
 
 class StickerOut(BaseModel):
@@ -143,6 +144,68 @@ async def list_stickers(
         )
         items = [_out(st, n) for st, n in rows.all()]
     return Page[StickerOut](items=items, total=total)
+
+
+class StickerDropOut(BaseModel):
+    id: int
+    at: datetime
+    group_id: int
+    outcome: DropOutcome
+    fit: float | None
+    confidence: float | None
+    sticker_id: int | None  # the model's pick (sent or not); None when it picked nothing usable
+    sticker_description: str
+    sticker_has_image: bool
+    candidate_count: int
+    last_message_id: int
+    model: str
+    input_tokens: int
+    cost: float | None
+
+
+@router.get("/drops")
+async def list_sticker_drops(
+    group_id: int | None = None,
+    outcome: DropOutcome | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> Page[StickerDropOut]:
+    """Sticker-drop decisions, newest first: every call to the decision model, sent or not."""
+    cond = []
+    if group_id is not None:
+        cond.append(StickerDrop.group_id == group_id)
+    if outcome is not None:
+        cond.append(StickerDrop.outcome == outcome)
+    async with get_session() as s:
+        total = await s.scalar(select(func.count()).select_from(StickerDrop).where(*cond)) or 0
+        rows = await s.execute(
+            select(StickerDrop, Sticker.description, Sticker.mime)
+            .outerjoin(Sticker, Sticker.id == StickerDrop.sticker_id)
+            .where(*cond)
+            .order_by(StickerDrop.at.desc(), StickerDrop.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = [
+            StickerDropOut(
+                id=d.id,
+                at=d.at,
+                group_id=d.group_id,
+                outcome=d.outcome,  # pyright: ignore[reportArgumentType]
+                fit=d.fit,
+                confidence=d.confidence,
+                sticker_id=d.sticker_id,
+                sticker_description=description or "",
+                sticker_has_image=bool(mime),
+                candidate_count=len(d.candidates),
+                last_message_id=d.last_message_id,
+                model=d.model,
+                input_tokens=d.input_tokens,
+                cost=d.cost,
+            )
+            for d, description, mime in rows.all()
+        ]
+    return Page[StickerDropOut](items=items, total=total)
 
 
 @router.get("/{sticker_id}")

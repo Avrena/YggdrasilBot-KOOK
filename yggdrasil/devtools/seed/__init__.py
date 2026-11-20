@@ -32,6 +32,7 @@ from yggdrasil.db.models import (
     ReviewItem,
     SandboxJob,
     Sticker,
+    StickerDrop,
     StickerUsage,
     TaskRoute,
     Topic,
@@ -58,7 +59,14 @@ from yggdrasil.devtools.seed.data import (
 from yggdrasil.devtools.seed.jobs import add_jobs
 from yggdrasil.devtools.seed.replay import invoke
 from yggdrasil.devtools.seed.scenarios import PRIVATE_OPS, RUNS
-from yggdrasil.devtools.seed.tables import add_base, add_events, add_memory, add_reviews, add_stickers
+from yggdrasil.devtools.seed.tables import (
+    add_base,
+    add_events,
+    add_memory,
+    add_reviews,
+    add_sticker_drops,
+    add_stickers,
+)
 from yggdrasil.kv import redis_client
 from yggdrasil.sandbox.job_model import ACTIVE_KEY, events_key, group_key, job_key, running_key
 from yggdrasil.transcript.notes import blob_id
@@ -84,6 +92,7 @@ async def reset() -> None:
         refs = [m.sha1 for m in MEDIA.values()] + [broken_ref(), f"230001:{mface_segment()['data']['emoji_id']}"]
         await s.execute(delete(Sticker).where(Sticker.ref.in_(refs)))  # blobs and usage cascade
         await s.execute(delete(StickerUsage).where(StickerUsage.group_id.in_(groups)))
+        await s.execute(delete(StickerDrop).where(StickerDrop.group_id.in_(groups)))
         shas = [blob_id(m.data) for m in MEDIA.values()]
         await s.execute(delete(TranscriptBlob).where(TranscriptBlob.sha256.in_(shas)))
         provider = await s.scalar(select(Provider.id).where(Provider.name == PROVIDER))
@@ -108,6 +117,7 @@ async def seed() -> None:
     await add_base()
     chats = {TECH: await insert_chat(TECH, TECH_CHAT, 5_000_000), GAME: await insert_chat(GAME, GAME_CHAT, 6_000_000)}
     await add_stickers()
+    await add_sticker_drops(chats)
     await add_memory(chats)
     await add_events()
     ids: dict[str, UUID] = {}

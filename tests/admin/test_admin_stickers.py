@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import delete
 
 from tests.support.groups import fresh_group
-from yggdrasil.db.models import Group, Sticker, StickerBlob, StickerUsage
+from yggdrasil.db.models import Group, Sticker, StickerBlob, StickerDrop, StickerUsage
 from yggdrasil.db.session import get_session
 
 pytestmark = pytest.mark.db
@@ -93,3 +93,30 @@ async def test_image_is_served_from_the_saved_original(client: httpx.AsyncClient
     r = await client.get(f"/api/stickers/{rows.eyeroll}/image")
     assert (r.status_code, r.headers["content-type"], r.content) == (200, "image/png", b"\x89PNG-bytes")
     assert (await client.get(f"/api/stickers/{rows.pending}/image")).status_code == 404
+
+
+async def test_drops_list_newest_first_with_the_pick_and_filter_by_outcome(
+    client: httpx.AsyncClient, rows: Rows
+) -> None:
+    group = fresh_group()
+    common = {"group_id": group, "candidates": [rows.eyeroll, rows.gore], "last_message_id": 1, "model": "or/jev"}
+    async with get_session() as session:
+        session.add(StickerDrop(outcome="unfit", fit=0.2, sticker_id=rows.gore, input_tokens=7000, **common))
+        await session.flush()
+        session.add(
+            StickerDrop(outcome="sent", fit=0.8, confidence=0.3, sticker_id=rows.eyeroll, cost=0.0003, **common)
+        )
+    try:
+        r = await client.get("/api/stickers/drops", params={"group_id": group})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 2
+        sent, unfit = body["items"]
+        assert (sent["outcome"], sent["sticker_description"], sent["sticker_has_image"]) == ("sent", "翻白眼", True)
+        assert (sent["candidate_count"], sent["cost"]) == (2, 0.0003)
+        assert (unfit["outcome"], unfit["fit"], unfit["sticker_has_image"]) == ("unfit", 0.2, False)
+        only = await client.get("/api/stickers/drops", params={"group_id": group, "outcome": "unfit"})
+        assert [i["outcome"] for i in only.json()["items"]] == ["unfit"]
+    finally:
+        async with get_session() as session:
+            await session.execute(delete(StickerDrop).where(StickerDrop.group_id == group))

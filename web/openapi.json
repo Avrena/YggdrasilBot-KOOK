@@ -3603,6 +3603,95 @@
         }
       }
     },
+    "/stickers/drops": {
+      "get": {
+        "tags": [
+          "stickers"
+        ],
+        "summary": "List Sticker Drops",
+        "description": "Sticker-drop decisions, newest first: every call to the decision model, sent or not.",
+        "operationId": "list_sticker_drops",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group Id"
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DropOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Outcome"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_StickerDropOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/stickers/{sticker_id}": {
       "get": {
         "tags": [
@@ -4683,6 +4772,15 @@
           "topic_ids"
         ],
         "title": "DigestOut"
+      },
+      "DropOutcome": {
+        "type": "string",
+        "enum": [
+          "sent",
+          "dice",
+          "unfit",
+          "refused"
+        ]
       },
       "EmbedSpaceIn": {
         "properties": {
@@ -6904,6 +7002,27 @@
         ],
         "title": "Page[ReviewOut]"
       },
+      "Page_StickerDropOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StickerDropOut"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "Page[StickerDropOut]"
+      },
       "Page_StickerOut_": {
         "properties": {
           "items": {
@@ -8607,6 +8726,112 @@
           "groups"
         ],
         "title": "StickerDetail"
+      },
+      "StickerDropOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "group_id": {
+            "type": "integer",
+            "title": "Group Id"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/DropOutcome"
+          },
+          "fit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fit"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "sticker_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sticker Id"
+          },
+          "sticker_description": {
+            "type": "string",
+            "title": "Sticker Description"
+          },
+          "sticker_has_image": {
+            "type": "boolean",
+            "title": "Sticker Has Image"
+          },
+          "candidate_count": {
+            "type": "integer",
+            "title": "Candidate Count"
+          },
+          "last_message_id": {
+            "type": "integer",
+            "title": "Last Message Id"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "group_id",
+          "outcome",
+          "fit",
+          "confidence",
+          "sticker_id",
+          "sticker_description",
+          "sticker_has_image",
+          "candidate_count",
+          "last_message_id",
+          "model",
+          "input_tokens",
+          "cost"
+        ],
+        "title": "StickerDropOut"
       },
       "StickerEnabledIn": {
         "properties": {
