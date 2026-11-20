@@ -3,7 +3,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { ArrowLeftIcon } from "lucide-react";
 import { getInvocationOptions, getInvocationTranscriptOptions } from "@/client/@tanstack/react-query.gen";
 import type { ModerationOut, VerdictOut } from "@/client/types.gen";
-import { ExternalLink, PageHeader, QueryState, SectionHeader, useGroupName } from "@/components/common";
+import { ExternalLink, Meta, PageHeader, QueryState, SectionHeader, useGroupName } from "@/components/common";
 import { ReplyView } from "@/components/qq";
 import { Code, ContextUsage, Facts, Transcript, fmtMs, fmtTokens } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
@@ -23,21 +23,16 @@ function Verdict({ v }: { v: VerdictOut | ModerationOut }) {
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-medium">{STAGES[v.stage] ?? v.stage}</span>
         <Badge variant={flagged ? "destructive" : "secondary"}>{v.verdict}</Badge>
-        <Badge variant="outline" className="tabular-nums">
-          {v.score.toFixed(2)}
-        </Badge>
         {v.action && <Badge variant={flagged ? "destructive" : "outline"}>{v.action}</Badge>}
-        {v.categories?.map((c) => (
-          <Badge key={c} variant="outline">
-            {c}
-          </Badge>
-        ))}
       </div>
-      {(v.model || v.latency_ms != null) && (
-        <div className="text-muted-foreground">
-          {[v.model, v.latency_ms != null ? `${v.latency_ms} ms` : null].filter(Boolean).join(" · ")}
-        </div>
-      )}
+      <Meta
+        items={[
+          <span className="tabular-nums">分数 {v.score.toFixed(2)}</span>,
+          !!v.categories?.length && `类别：${v.categories.join("、")}`,
+          v.model && <span className="font-mono">{v.model}</span>,
+          v.latency_ms != null && <span className="tabular-nums">{v.latency_ms} ms</span>,
+        ]}
+      />
     </div>
   );
 }
@@ -98,7 +93,17 @@ export function InvocationPage() {
                     ["耗时", d.duration_ms != null ? fmtMs(d.duration_ms) : "—"],
                     [
                       "快速响应",
-                      d.ack_kind ? `${d.ack_kind}${d.ack_latency_ms != null ? ` · ${d.ack_latency_ms} ms` : ""}` : "—",
+                      d.ack_kind ? (
+                        <Meta
+                          className="text-sm"
+                          items={[
+                            <span className="text-foreground">{d.ack_kind}</span>,
+                            d.ack_latency_ms != null && <span className="tabular-nums">{d.ack_latency_ms} ms</span>,
+                          ]}
+                        />
+                      ) : (
+                        "—"
+                      ),
                     ],
                     [
                       "模型",
@@ -114,7 +119,7 @@ export function InvocationPage() {
                     ],
                     [
                       "tokens",
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                         <ContextUsage
                           model={d.models[0]}
                           input={d.tokens_in}
@@ -122,22 +127,27 @@ export function InvocationPage() {
                           output={d.tokens_out}
                           transcript={t}
                         />
-                        <span className="text-xs text-muted-foreground tabular-nums">
-                          ↑{fmtTokens(d.tokens_in)}
-                          {!!d.tokens_cached && ` (${fmtTokens(d.tokens_cached)} 缓存)`} ↓{fmtTokens(d.tokens_out)}
-                        </span>
+                        <Meta
+                          className="tabular-nums"
+                          items={[
+                            `输入 ${fmtTokens(d.tokens_in)}`,
+                            !!d.tokens_cached && `缓存 ${fmtTokens(d.tokens_cached)}`,
+                            `输出 ${fmtTokens(d.tokens_out)}`,
+                          ]}
+                        />
                       </div>,
                     ],
                     [
                       "工具",
                       tools.length ? (
-                        <div className="flex flex-wrap gap-1">
+                        <ul className="grid gap-0.5 text-xs">
                           {tools.map(([name, n]) => (
-                            <Badge key={name} variant="outline" className="font-mono">
-                              {name} ×{n}
-                            </Badge>
+                            <li key={name} className="flex flex-wrap gap-x-2">
+                              <span className="font-mono">{name}</span>
+                              <span className="text-muted-foreground tabular-nums">{n} 次</span>
+                            </li>
                           ))}
-                        </div>
+                        </ul>
                       ) : (
                         "—"
                       ),

@@ -13,6 +13,7 @@ import {
   Field,
   FilterBar,
   GroupSelect,
+  Meta,
   OptionSelect,
   PageHeader,
   Pager,
@@ -44,7 +45,7 @@ const ERROR_LABELS: Record<string, string> = {
 const UNSAFE_LABELS: Record<string, string> = {
   sexual: "色情",
   gore: "血腥暴力",
-  extremism: "极端/政治",
+  extremism: "极端或政治",
   personal_data: "个人隐私",
 };
 
@@ -94,7 +95,7 @@ export function StickersPage() {
       <FilterBar>
         <Input
           className="w-64"
-          placeholder="搜索描述 / 文字 / 标签"
+          placeholder="搜索描述、文字、标签"
           aria-label="搜索表情包"
           value={q}
           onChange={(e) => filter(setQ)(e.target.value)}
@@ -186,11 +187,6 @@ function StickerBadges({ sticker: s }: { sticker: StickerOut }) {
         <Badge variant="destructive">审核：{UNSAFE_LABELS[s.unsafe_category] ?? s.unsafe_category}</Badge>
       )}
       {!!s.frames && s.frames > 1 && <Badge variant="outline">动图</Badge>}
-      {s.emotions.map((e) => (
-        <Badge key={e} variant="outline">
-          {e}
-        </Badge>
-      ))}
     </div>
   );
 }
@@ -235,15 +231,20 @@ function StickerCard({
       </div>
       <StickerBadges sticker={s} />
       {s.description && <p className="line-clamp-4">{s.description}</p>}
+      {!!s.emotions.length && <p className="text-xs text-muted-foreground">情绪：{s.emotions.join("、")}</p>}
       {s.usage && <p className="line-clamp-3 text-xs text-muted-foreground">适合：{s.usage}</p>}
       {s.ocr_text && <p className="line-clamp-2 text-xs text-muted-foreground">文字：{s.ocr_text}</p>}
       {s.error && (
         <p className="line-clamp-2 text-xs break-all text-destructive">{ERROR_LABELS[s.error] ?? s.error}</p>
       )}
-      <div className="mt-auto flex items-center justify-between gap-2 pt-1 text-xs text-muted-foreground">
-        <span>
-          {s.seen_count} 次 · {s.group_count} 个群 · {fmtTime(s.last_seen)}
-        </span>
+      <div className="mt-auto flex items-center justify-between gap-2 pt-1">
+        <Meta
+          items={[
+            `出现 ${s.seen_count} 次`,
+            `${s.group_count} 个群`,
+            <time dateTime={s.last_seen}>{fmtTime(s.last_seen)}</time>,
+          ]}
+        />
         <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
           <Switch
             checked={s.enabled}
@@ -268,12 +269,24 @@ function StickerDialog({ id, onClose, onToggle }: { id: number; onClose: () => v
   const facts: [string, ReactNode][] = d
     ? [
         ["类型", d.kind === "mface" ? "商城表情" : "自定义表情"],
-        [d.kind === "mface" ? "包 / 表情 id" : "md5", <span className="font-mono break-all select-all">{d.ref}</span>],
+        [d.kind === "mface" ? "表情包与表情 id" : "md5", <span className="font-mono break-all select-all">{d.ref}</span>],
         ["格式", d.mime || "—"],
         ["大小", size],
-        ["尺寸", d.width && d.height ? `${d.width} × ${d.height}` : "—"],
+        [
+          "尺寸",
+          d.width && d.height ? (
+            <span className="inline-flex gap-x-3">
+              <span>宽 {d.width}</span>
+              <span>高 {d.height}</span>
+            </span>
+          ) : (
+            "—"
+          ),
+        ],
         ["帧数", d.frames ?? "—"],
-        ["出现", `${d.seen_count} 次 · ${d.group_count} 个群`],
+        ["情绪", d.emotions.join("、") || "—"],
+        ["出现次数", d.seen_count],
+        ["出现群数", d.group_count],
         ["首次出现", fmtTime(d.first_seen)],
         ["最近出现", fmtTime(d.last_seen)],
         ["打标时间", fmtTime(d.tagged_at)],

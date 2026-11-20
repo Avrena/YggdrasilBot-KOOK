@@ -24,7 +24,7 @@ HANDLERS: dict[str, str] = {
     "privacy.optout": "不要记我",
     "privacy.optin": "记得我",
     "privacy.forget": "忘记我",
-    "admin.review": "私聊审核：通过 / 拒绝 / 修改",
+    "admin.review": "私聊审核：通过、拒绝或修改",
     "admin.status": "私聊状态查询",
     "admin.ops": "超级管理员用自然语言查询和修改配置（@bot ops <指令>）",
 }

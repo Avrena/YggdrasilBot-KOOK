@@ -118,14 +118,29 @@ function LinkStatus({ link }: { link: MilkyLinkOut }) {
     );
   }
   return (
-    <div className="grid gap-1 text-sm">
+    <div className="grid gap-2 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         {link.connected ? <Badge>已连接</Badge> : <Badge variant="destructive">未连上</Badge>}
-        <span className="font-mono">{link.url}</span>
-        {link.self_id != null && <span>QQ {link.self_id}</span>}
-        {link.since && <span className="text-muted-foreground">自 {fmtTime(link.since)}</span>}
+        {!link.connected && <span className="text-muted-foreground">{link.error ?? "正在连接…"}</span>}
       </div>
-      {!link.connected && <p className="text-muted-foreground">{link.error ?? "正在连接…"}</p>}
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+        <dt className="text-muted-foreground">地址</dt>
+        <dd className="font-mono break-all">{link.url}</dd>
+        {link.self_id != null && (
+          <>
+            <dt className="text-muted-foreground">QQ 号</dt>
+            <dd className="font-mono">{link.self_id}</dd>
+          </>
+        )}
+        {link.since && (
+          <>
+            <dt className="text-muted-foreground">状态变化于</dt>
+            <dd>
+              <time dateTime={link.since}>{fmtTime(link.since)}</time>
+            </dd>
+          </>
+        )}
+      </dl>
     </div>
   );
 }

@@ -13,7 +13,6 @@ import {
   PendingButton,
   QueryState,
 } from "@/components/common";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -92,7 +91,7 @@ export function AdminsPage() {
                 <TableCell className="text-xs">{fmtTime(a.created_at)}</TableCell>
                 <TableCell className="text-right">
                   {a.bootstrap ? (
-                    <Badge variant="outline">环境变量</Badge>
+                    <span className="text-xs text-muted-foreground">来自环境变量，不能在这里移除</span>
                   ) : (
                     <ConfirmButton
                       title={`移除 ${a.value}？`}

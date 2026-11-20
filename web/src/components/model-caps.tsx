@@ -1,8 +1,7 @@
 import { ChevronDownIcon, ChevronsUpDownIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ModelCaps, ProviderOut } from "@/client/types.gen";
-import { Hint } from "@/components/common";
-import { Badge } from "@/components/ui/badge";
+import { Hint, Meta } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import {
@@ -41,10 +40,11 @@ function fitsTask(task: string | undefined, caps: ModelCaps | undefined): boolea
 }
 
 /**
- * Capability badges from models.dev or the provider's own /models; "能力未知" if the model isn't matched. The source
- * is shown as a line (`showId`) or as a hover hint (default; `hint={false}` drops it, e.g. inside a menu).
+ * Capability summary from models.dev or the provider's own /models: the supported features, then context and output
+ * size; "能力未知" if the model isn't matched. The source is shown as a line (`showId`) or as a hover hint (default;
+ * `hint={false}` drops it, e.g. inside a menu).
  */
-export function CapBadges({
+export function CapSummary({
   caps,
   showId = false,
   hint = true,
@@ -54,26 +54,41 @@ export function CapBadges({
   hint?: boolean;
 }) {
   if (!caps) return <span className="text-xs text-muted-foreground">能力未知</span>;
-  const flags: [boolean, string][] = [
-    [caps.vision, "看图"],
-    [caps.pdf, "PDF"],
-    [caps.tools, "工具"],
-    [caps.reasoning, "推理"],
-  ];
-  const badges = (
-    <span className="inline-flex flex-wrap items-center gap-1">
-      {flags.map(([on, label]) => (
-        <Badge key={label} variant={on ? "secondary" : "outline"} className={on ? "" : "text-muted-foreground line-through"}>
-          {label}
-        </Badge>
-      ))}
-      {caps.image_output && <Badge variant="secondary">出图</Badge>}
-      {caps.context != null && <Badge variant="outline">{fmtTokens(caps.context)} 上下文</Badge>}
-      {caps.output != null && <Badge variant="outline">{fmtTokens(caps.output)} 输出</Badge>}
-      {showId && <span className="basis-full font-mono text-xs text-muted-foreground">{sourceLine(caps)}</span>}
-    </span>
+  const supported = (
+    [
+      [caps.vision, "看图"],
+      [caps.pdf, "PDF"],
+      [caps.tools, "工具"],
+      [caps.reasoning, "推理"],
+      [caps.image_output, "出图"],
+    ] as [boolean | null | undefined, string][]
+  )
+    .filter(([on]) => on)
+    .map(([, label]) => label);
+  const summary = (
+    <Meta
+      items={[
+        <span className="text-foreground">{supported.length ? supported.join("、") : "仅文本"}</span>,
+        caps.context != null && `上下文 ${fmtTokens(caps.context)}`,
+        caps.output != null && `输出 ${fmtTokens(caps.output)}`,
+      ]}
+    />
   );
-  return showId || !hint ? badges : <Hint content={sourceLine(caps)}>{badges}</Hint>;
+  if (showId) {
+    return (
+      <div className="grid gap-0.5">
+        {summary}
+        <span className="font-mono text-xs text-muted-foreground">{sourceLine(caps)}</span>
+      </div>
+    );
+  }
+  return hint ? (
+    <Hint content={sourceLine(caps)}>
+      <div className="w-fit">{summary}</div>
+    </Hint>
+  ) : (
+    summary
+  );
 }
 
 function sourceLine(caps: ModelCaps): string {
@@ -171,7 +186,7 @@ export function ModelSelector({
                       <CommandItem key={m} value={m} data-checked={m === typed} onSelect={() => pick(m)}>
                         <div className="grid min-w-0 gap-1">
                           <span className="truncate font-mono text-xs">{m}</span>
-                          <CapBadges caps={provider?.model_caps[m]} hint={false} />
+                          <CapSummary caps={provider?.model_caps[m]} hint={false} />
                         </div>
                       </CommandItem>
                     ))}
@@ -232,7 +247,7 @@ export function ModelSelector({
           </DropdownMenu>
         )}
       </div>
-      {typed && <CapBadges caps={caps} />}
+      {typed && <CapSummary caps={caps} />}
     </div>
   );
 }

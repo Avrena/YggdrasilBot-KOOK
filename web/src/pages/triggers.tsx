@@ -17,6 +17,7 @@ import {
   Field,
   FormDialog,
   GroupSelect,
+  Meta,
   MultiToggle,
   NumberInput,
   OptionSelect,
@@ -101,25 +102,31 @@ export function TriggersPage() {
                 </TableCell>
                 <TableCell>
                   <div>{MATCH_LABELS[t.match_type] ?? t.match_type}</div>
-                  <div className="flex flex-wrap gap-1">
-                    {t.patterns?.map((p) => (
-                      <Badge key={p} variant="secondary" className="font-mono">
-                        {p}
-                      </Badge>
-                    ))}
-                  </div>
-                  {t.arg_template && <div className="font-mono text-xs text-muted-foreground">→ {t.arg_template}</div>}
+                  {!!t.patterns?.length && (
+                    <ul className="flex flex-wrap gap-x-2 gap-y-1">
+                      {t.patterns.map((p) => (
+                        <li key={p}>
+                          <code className="rounded-sm bg-muted px-1 font-mono text-xs">{p}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {t.arg_template && (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      参数模板 <code className="font-mono">{t.arg_template}</code>
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
-                  {[
-                    t.require_mention && "需 @",
-                    t.cooldown_s ? `冷却 ${t.cooldown_s}s` : null,
-                    t.allowed_roles?.length ? `角色 ${t.allowed_roles.join("/")}` : null,
-                    TARGET_LABELS[t.target ?? ""] ?? t.target,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                  {t.note && <div>{t.note}</div>}
+                  <Meta
+                    items={[
+                      t.require_mention && "需 @",
+                      t.cooldown_s ? `冷却 ${t.cooldown_s}s` : null,
+                      t.allowed_roles?.length ? `角色 ${t.allowed_roles.join("、")}` : null,
+                      TARGET_LABELS[t.target ?? ""] ?? t.target,
+                    ]}
+                  />
+                  {t.note && <div className="mt-1">{t.note}</div>}
                 </TableCell>
                 <TableCell>{t.priority}</TableCell>
                 <TableCell>
@@ -197,11 +204,20 @@ function TriggerDialog({ trigger, meta, onClose }: { trigger: TriggerOut | null;
       className="sm:max-w-2xl"
     >
       <div className="grid grid-cols-2 gap-4">
-        <Field label="handler">
+        <Field label="handler" hint={meta.handlers.find((h) => h.name === form.handler)?.description}>
           <OptionSelect
             value={form.handler}
             onChange={(v) => v && setForm({ ...form, handler: v })}
-            options={meta.handlers.map((h) => ({ value: h.name, label: `${h.name} · ${h.description}` }))}
+            options={meta.handlers.map((h) => ({
+              value: h.name,
+              label: (
+                <span className="grid gap-0.5">
+                  <span className="font-mono">{h.name}</span>
+                  {/* The trigger shows the name only; the field hint carries the description. */}
+                  <span className="text-xs text-muted-foreground in-data-[slot=select-value]:hidden">{h.description}</span>
+                </span>
+              ),
+            }))}
           />
         </Field>
         <Field label="范围">
@@ -346,8 +362,9 @@ function TryMatch({ meta }: { meta: TriggerMeta }) {
               <Pre value={test.data.resolved} />
             </div>
           ) : (
-            <div className="text-sm text-muted-foreground">
-              <Badge variant="outline">未命中</Badge> 配置版本 v{test.data.snapshot_version}
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Badge variant="outline">未命中</Badge>
+              <span>配置版本 v{test.data.snapshot_version}</span>
             </div>
           ))}
       </CardContent>

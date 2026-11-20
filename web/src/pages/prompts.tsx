@@ -18,6 +18,7 @@ import {
   Field,
   Hint,
   JsonEditor,
+  Meta,
   PageHeader,
   PendingButton,
   QueryState,
@@ -64,7 +65,11 @@ export function PromptsPage() {
             {list.data.map((p) => (
               <ToggleGroupItem key={p.key} value={p.key} className="justify-between font-normal data-[state=on]:font-medium">
                 <span className="truncate font-mono">{p.key}</span>
-                {p.active_version_id ? <Badge>v{p.active_version_id}</Badge> : <Badge variant="outline">默认</Badge>}
+                {p.active_version_id ? (
+                  <span className="font-mono text-xs text-muted-foreground">v{p.active_version_id}</span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">默认</span>
+                )}
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
@@ -110,9 +115,10 @@ function DiffView({ from, to }: { from: string; to: string }) {
   return (
     <CodeBlock>
       <CodeBlockHeader>
-        <CodeBlockTitle>默认模板 → 编辑器</CodeBlockTitle>
-        <span className="ms-auto font-mono text-xs">
-          <span className="text-success">+{added}</span> <span className="text-destructive">−{removed}</span>
+        <CodeBlockTitle>默认模板与编辑器内容的差异</CodeBlockTitle>
+        <span className="ms-auto flex gap-x-3 text-xs">
+          <span className="text-success">新增 {added} 行</span>
+          <span className="text-destructive">删除 {removed} 行</span>
         </span>
       </CodeBlockHeader>
       <CodeBlockContent wrap className="max-h-[32rem]">
@@ -165,9 +171,17 @@ function PromptEditor({ promptKey }: { promptKey: string }) {
     <div className="grid gap-6">
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
+          <CardTitle className="flex flex-wrap items-baseline gap-x-3">
             <span className="font-mono">{promptKey}</span>
-            {d.active_version_id ? <Badge>生效 v{d.active_version_id}</Badge> : <Badge variant="outline">使用默认模板</Badge>}
+            <span className="text-sm font-normal text-muted-foreground">
+              {d.active_version_id ? (
+                <>
+                  生效版本 <span className="font-mono">v{d.active_version_id}</span>
+                </>
+              ) : (
+                "使用默认模板"
+              )}
+            </span>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -249,11 +263,17 @@ function PromptEditor({ promptKey }: { promptKey: string }) {
             <div key={v.id} className="grid gap-1 rounded-lg border px-3 py-2 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <span className="font-mono">v{v.id}</span>
-                  {v.id === d.active_version_id && <Badge className="ml-2">生效中</Badge>}
-                  <span className="ml-3 text-muted-foreground">
-                    {fmtTime(v.created_at)} · {v.created_by}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="font-mono">v{v.id}</span>
+                    {v.id === d.active_version_id && <Badge>生效中</Badge>}
+                    <Meta
+                      className="text-sm"
+                      items={[
+                        <time dateTime={v.created_at}>{fmtTime(v.created_at)}</time>,
+                        v.created_by && `创建人 ${v.created_by}`,
+                      ]}
+                    />
+                  </div>
                   {v.note && (
                     <Hint content={v.note}>
                       <div tabIndex={0} className="truncate rounded-sm text-muted-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50">

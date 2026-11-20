@@ -19,6 +19,7 @@ import {
   FormDialog,
   Hint,
   JsonEditor,
+  Meta,
   NumberInput,
   OptionSelect,
   PageHeader,
@@ -86,23 +87,21 @@ export function RoutesPage() {
                   </TableCell>
                   <TableCell>
                     {row.route ? (
-                      <>
-                        <div className="font-mono text-xs">{row.route.model}</div>
-                        <div className="text-xs text-muted-foreground">{providerName(row.route.provider_id)}</div>
-                        {thinking && (
-                          <Badge variant="outline" className="mt-1">
-                            思考 {thinking}
-                          </Badge>
-                        )}
-                      </>
+                      <ModelCell
+                        model={row.route.model}
+                        provider={providerName(row.route.provider_id)}
+                        thinking={thinking}
+                      />
                     ) : (
                       <Badge variant="outline">未配置</Badge>
                     )}
                   </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {row.route?.fallback_model
-                      ? `${providerName(row.route.fallback_provider_id)} / ${row.route.fallback_model}`
-                      : "—"}
+                  <TableCell>
+                    {row.route?.fallback_model ? (
+                      <ModelCell model={row.route.fallback_model} provider={providerName(row.route.fallback_provider_id)} />
+                    ) : (
+                      <span className="text-xs">—</span>
+                    )}
                   </TableCell>
                   <TableCell className="max-w-56 font-mono text-xs">
                     {params ? (
@@ -147,6 +146,16 @@ export function RoutesPage() {
       )}
       <EmbedSpaces providers={providers.data ?? []} />
     </div>
+  );
+}
+
+/** A model id with its provider (and thinking effort) under it. */
+function ModelCell({ model, provider, thinking }: { model: string; provider: string; thinking?: string | null }) {
+  return (
+    <>
+      <div className="font-mono text-xs">{model}</div>
+      <Meta items={[provider, thinking && `思考强度 ${thinking}`]} />
+    </>
   );
 }
 
@@ -327,8 +336,8 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
               {spaces.data.map((s) => (
                 <TableRow key={s.id}>
                   <TableCell>{s.id}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {s.provider_name ?? `#${s.provider_id}`} / {s.model}
+                  <TableCell>
+                    <ModelCell model={s.model} provider={s.provider_name ?? `#${s.provider_id}`} />
                   </TableCell>
                   <TableCell>{s.dim}</TableCell>
                   <TableCell>

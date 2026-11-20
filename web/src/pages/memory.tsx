@@ -31,6 +31,7 @@ import {
   FormDialog,
   GroupSelect,
   Hint,
+  Meta,
   NumberInput,
   OptionSelect,
   PageHeader,
@@ -179,36 +180,38 @@ function Topics({ groupId, group }: TabProps) {
           value={filters.user_id}
           onChange={(user_id) => set({ user_id })}
         />
-        <div className="flex items-center gap-1 text-sm text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          消息数
           <NumberInput
             aria-label="最少消息数"
-            className="w-24"
-            placeholder="消息数≥"
+            className="w-20"
+            placeholder="最少"
             value={filters.min_messages}
             onChange={(v) => set({ min_messages: v })}
           />
-          –
+          至
           <NumberInput
             aria-label="最多消息数"
-            className="w-24"
-            placeholder="消息数≤"
+            className="w-20"
+            placeholder="最多"
             value={filters.max_messages}
             onChange={(v) => set({ max_messages: v })}
           />
         </div>
-        <div className="flex items-center gap-1 text-sm text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          人数
           <NumberInput
             aria-label="最少人数"
             className="w-20"
-            placeholder="人数≥"
+            placeholder="最少"
             value={filters.min_participants}
             onChange={(v) => set({ min_participants: v })}
           />
-          –
+          至
           <NumberInput
             aria-label="最多人数"
             className="w-20"
-            placeholder="人数≤"
+            placeholder="最多"
             value={filters.max_participants}
             onChange={(v) => set({ max_participants: v })}
           />
@@ -228,7 +231,7 @@ function Topics({ groupId, group }: TabProps) {
                   variant="outline"
                   size="default"
                   title={`按当前阈值整理群 ${groupId} 的已结束话题？`}
-                  description="消息数和参与人数都低于阈值（设置 → memory.topic_archive_below_*），或整理任务算出的权重低于 memory.topic_archive_below_weight 的已结束话题会被归档，agent 搜不到，这里仍可查看。手动恢复过的话题也会再次归档。"
+                  description="消息数和参与人数都低于阈值（设置中的 memory.topic_archive_below_*），或整理任务算出的权重低于 memory.topic_archive_below_weight 的已结束话题会被归档，agent 搜不到，这里仍可查看。手动恢复过的话题也会再次归档。"
                   onConfirm={() => archiveSmall.mutate({ body: { group_id: groupId } })}
                 >
                   <ArchiveIcon data-icon="inline-start" /> 按阈值归档
@@ -250,36 +253,42 @@ function Topics({ groupId, group }: TabProps) {
               )}
             />
             <div className={cn("min-w-0 flex-1", t.status === "archived" && "text-muted-foreground")}>
-              <div className="text-xs text-muted-foreground">
-                {fmtTime(t.start_at)} — {fmtTime(t.end_at)}
-                {groupId === null && ` · ${groupName(t.group_id)}`} · {t.msg_count} 条 · {t.participants.length} 人
-                {t.importance !== null && (
-                  <Hint content={t.importance_reason}>
-                    <span>
-                      {" "}
-                      · 重要度 {t.importance} · 权重 {t.weight?.toFixed(1)}
-                    </span>
-                  </Hint>
-                )}
-              </div>
-              <div className="flex items-center gap-2 font-medium">
+              <Meta
+                items={[
+                  <>
+                    <time dateTime={t.start_at}>{fmtTime(t.start_at)}</time> 至{" "}
+                    <time dateTime={t.end_at}>{fmtTime(t.end_at)}</time>
+                  </>,
+                  groupId === null && groupName(t.group_id),
+                  `${t.msg_count} 条消息`,
+                  `${t.participants.length} 人参与`,
+                  t.importance !== null && (
+                    <Hint content={t.importance_reason}>
+                      <span className="inline-flex gap-x-3">
+                        <span>重要度 {t.importance}</span>
+                        <span>权重 {t.weight?.toFixed(1)}</span>
+                      </span>
+                    </Hint>
+                  ),
+                ]}
+              />
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
                 {t.title}
                 {t.status === "open" && <Badge variant="outline">进行中</Badge>}
                 {t.status === "archived" && (
-                  <Badge variant="outline" className="border-dashed text-muted-foreground">
-                    <ArchiveIcon /> 已归档 · agent 不可见
-                  </Badge>
+                  <>
+                    <Badge variant="outline" className="border-dashed text-muted-foreground">
+                      <ArchiveIcon /> 已归档
+                    </Badge>
+                    <span className="text-xs font-normal text-muted-foreground">agent 不可见</span>
+                  </>
                 )}
                 {t.dirty && <Badge variant="destructive">待重算</Badge>}
               </div>
               <p className="text-sm whitespace-pre-wrap">{t.summary}</p>
-              <div className="mt-1 flex flex-wrap gap-1">
-                {t.keywords.map((k) => (
-                  <Badge key={k} variant="secondary">
-                    {k}
-                  </Badge>
-                ))}
-              </div>
+              {!!t.keywords.length && (
+                <p className="mt-1 text-xs text-muted-foreground">关键词：{t.keywords.join("、")}</p>
+              )}
             </div>
             {t.status !== "open" && (
               <Button
@@ -621,23 +630,24 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
       onOpenChange={(o) => !o && onClose()}
       title={p?.display_name || String(user_id)}
       description={
-        <>
-          {groupName(group_id)} · <span className="font-mono">{user_id}</span>
-        </>
+        <span className="inline-flex flex-wrap gap-x-3">
+          <span>{groupName(group_id)}</span>
+          <span>
+            QQ <span className="font-mono">{user_id}</span>
+          </span>
+        </span>
       }
     >
       <QueryState isLoading={profile.isLoading} error={profile.error} />
       {p && (
         <div className="grid gap-3 text-sm">
           <p className="whitespace-pre-wrap">{p.summary || "（无摘要）"}</p>
-          <div>
-            <span className="text-muted-foreground">兴趣：</span>
-            {p.interests.join("、") || "—"}
-          </div>
-          <div>
-            <span className="text-muted-foreground">特点：</span>
-            {p.traits.join("、") || "—"}
-          </div>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            <dt className="text-muted-foreground">兴趣</dt>
+            <dd>{p.interests.join("、") || "—"}</dd>
+            <dt className="text-muted-foreground">特点</dt>
+            <dd>{p.traits.join("、") || "—"}</dd>
+          </dl>
           <SectionHeader
             level={3}
             title="事实"
@@ -664,24 +674,27 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
                   >
                     <div>
                       {f.fact}
-                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                        {fmtTime(f.created_at)}
-                        {f.importance !== null && (
-                          <span>
-                            · 重要度 {f.importance} · 权重 {f.weight?.toFixed(1)}
-                          </span>
-                        )}
-                        {f.archived_at !== null && (
-                          <Badge variant="outline" className="border-dashed text-muted-foreground">
-                            <ArchiveIcon /> 已归档 · {ARCHIVE_REASON[f.archive_reason ?? ""] ?? "其他"}
-                          </Badge>
-                        )}
-                        {f.locked && (
-                          <Badge variant="outline">
-                            <LockIcon /> 管理员恢复
-                          </Badge>
-                        )}
-                      </div>
+                      <Meta
+                        className="mt-0.5"
+                        items={[
+                          <time dateTime={f.created_at}>{fmtTime(f.created_at)}</time>,
+                          f.importance !== null && `重要度 ${f.importance}`,
+                          f.importance !== null && `权重 ${f.weight?.toFixed(1)}`,
+                          f.archived_at !== null && (
+                            <span className="inline-flex items-center gap-1.5">
+                              <Badge variant="outline" className="border-dashed text-muted-foreground">
+                                <ArchiveIcon /> 已归档
+                              </Badge>
+                              {ARCHIVE_REASON[f.archive_reason ?? ""] ?? "其他原因"}
+                            </span>
+                          ),
+                          f.locked && (
+                            <Badge variant="outline">
+                              <LockIcon /> 管理员恢复
+                            </Badge>
+                          ),
+                        ]}
+                      />
                     </div>
                     <div className="flex shrink-0 gap-1">
                       {f.archived_at !== null && (
@@ -740,7 +753,7 @@ function Pipelines() {
                 <TableCell className="font-mono">{p.pipeline}</TableCell>
                 <TableCell className="font-mono">{p.group_id}</TableCell>
                 <TableCell className="font-mono">{p.last_msg_id}</TableCell>
-                <TableCell>{p.backlog >= 10000 ? "≥10000" : p.backlog}</TableCell>
+                <TableCell>{p.backlog >= 10000 ? "10000 以上" : p.backlog}</TableCell>
                 <TableCell>
                   {Object.keys(p.state).length ? <Pre value={p.state} className="max-h-32" /> : "—"}
                 </TableCell>

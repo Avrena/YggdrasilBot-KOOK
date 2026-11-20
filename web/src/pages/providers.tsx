@@ -15,7 +15,7 @@ import {
 import { getProviderBalance } from "@/client/sdk.gen";
 import type { ProviderIn, ProviderOut, ProviderProbe } from "@/client/types.gen";
 import { BALANCE_QUERY, BalanceView, balanceResult } from "@/components/balance";
-import { CapBadges } from "@/components/model-caps";
+import { CapSummary } from "@/components/model-caps";
 import {
   ApiKeyField,
   ConfirmButton,
@@ -36,10 +36,9 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtTime, isPlainObject } from "@/lib/format";
 
-function probeText(p: ProviderProbe): string {
-  return p.ok
-    ? `连通 · ${p.latency_ms}ms · ${p.model_count ?? 0} 个模型`
-    : `失败${p.status_code ? ` (${p.status_code})` : ""} · ${p.error ?? ""}`;
+function probeToast(p: ProviderProbe) {
+  if (p.ok) toast.success("连通", { description: `耗时 ${p.latency_ms}ms，${p.model_count ?? 0} 个模型` });
+  else toast.error(p.status_code ? `连接失败（HTTP ${p.status_code}）` : "连接失败", { description: p.error ?? undefined });
 }
 
 export function ProvidersPage() {
@@ -47,12 +46,10 @@ export function ProvidersPage() {
   const [editing, setEditing] = useState<ProviderOut | "new" | null>(null);
   const [modelsOf, setModelsOf] = useState<number | null>(null);
   const modelsProvider = providers.data?.find((p) => p.id === modelsOf);
-  const test = useMutation({ ...testProviderMutation(),
-      onSuccess: (p) => (p.ok ? toast.success(probeText(p)) : toast.error(probeText(p))),
-    });
+  const test = useMutation({ ...testProviderMutation(), onSuccess: probeToast });
   const refresh = useMutation({ ...refreshProviderModelsMutation(),
       onSuccess: (r) => {
-        if (!r.probe.ok) return toast.error(probeText(r.probe));
+        if (!r.probe.ok) return probeToast(r.probe);
         const withCaps = Object.keys(r.provider.model_caps).length;
         toast.success(`已拉取 ${r.probe.model_count} 个模型，${withCaps} 个匹配到能力信息`);
         if (r.catalog_error) toast.warning(r.catalog_error);
@@ -304,7 +301,7 @@ function ModelsDialog({ provider, onClose }: { provider: ProviderOut; onClose: (
       open
       onOpenChange={(o) => !o && onClose()}
       title={`${provider.name} 的模型能力`}
-      description="能力信息来自 models.dev，模型名去掉网关前缀后自动匹配（cvp/claude-sonnet-5-5 → claude-sonnet-5-5）；OpenRouter 这类在 /models 里自带能力的 provider 直接用上游信息。匹配不上或匹配错了，就填别名（优先于两者），例如 anthropic/claude-sonnet-5-5。"
+      description="能力信息来自 models.dev，模型名去掉网关前缀后自动匹配（cvp/claude-sonnet-5-5 按 claude-sonnet-5-5 匹配）；OpenRouter 这类在 /models 里自带能力的 provider 直接用上游信息。匹配不上或匹配错了，就填别名（优先于两者），例如 anthropic/claude-sonnet-5-5。"
       onSubmit={() => save.mutate({ path: { provider_id: provider.id }, body: { aliases } })}
       pending={save.isPending}
       submitLabel="保存别名"
@@ -337,7 +334,7 @@ function ModelsDialog({ provider, onClose }: { provider: ProviderOut; onClose: (
               <TableRow key={m}>
                 <TableCell className="font-mono text-xs">{m}</TableCell>
                 <TableCell>
-                  <CapBadges caps={provider.model_caps[m]} showId />
+                  <CapSummary caps={provider.model_caps[m]} showId />
                 </TableCell>
                 <TableCell>
                   <Input

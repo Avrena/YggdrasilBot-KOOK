@@ -196,17 +196,18 @@ function plainText(segments: unknown, names: Names): string {
     .trim();
 }
 
-function Chip({ icon: Icon, children }: { icon?: LucideIcon; children: ReactNode }) {
+/** An inline placeholder for media we don't render (voice, video, file, unknown segments); its facts spaced apart. */
+function Chip({ icon: Icon, parts }: { icon?: LucideIcon; parts: string[] }) {
   return (
-    <Badge variant="outline" className="mx-0.5 max-w-full align-middle font-normal text-muted-foreground">
+    <span className="mx-0.5 inline-flex max-w-full items-center gap-1.5 rounded-md border px-1.5 py-0.5 align-middle text-xs text-muted-foreground [&>svg]:size-3 [&>svg]:shrink-0">
       {Icon && <Icon aria-hidden />}
-      <span className="truncate">{children}</span>
-    </Badge>
+      {parts.filter(Boolean).map((p, i) => (
+        <span key={i} className={cn("truncate", i > 0 && "shrink-0 tabular-nums")}>
+          {p}
+        </span>
+      ))}
+    </span>
   );
-}
-
-function MediaChip({ icon, parts }: { icon: LucideIcon; parts: string[] }) {
-  return <Chip icon={icon}>{parts.filter(Boolean).join(" · ")}</Chip>;
 }
 
 function Note({ children }: { children: ReactNode }) {
@@ -248,7 +249,7 @@ function ImageSegment({ data, sticker, alt }: { data: Record<string, unknown>; s
   const [broken, setBroken] = useState(false);
   const [open, setOpen] = useState(false);
   const src = str(data.src) || str(data.url);
-  if (!src || broken) return <Chip icon={ImageOffIcon}>{alt}</Chip>;
+  if (!src || broken) return <Chip icon={ImageOffIcon} parts={[alt]} />;
   if (sticker) {
     return (
       <img
@@ -374,11 +375,11 @@ function SegmentView({ segment, names, lookup }: { segment: Segment; names: Name
         />
       );
     case "record":
-      return <MediaChip icon={MicIcon} parts={["语音", duration(data.duration)]} />;
+      return <Chip icon={MicIcon} parts={["语音", duration(data.duration)]} />;
     case "video":
-      return <MediaChip icon={FilmIcon} parts={["视频", duration(data.duration)]} />;
+      return <Chip icon={FilmIcon} parts={["视频", duration(data.duration)]} />;
     case "file":
-      return <MediaChip icon={FileIcon} parts={[str(data.file_name) || "未命名文件", humanSize(data.file_size)]} />;
+      return <Chip icon={FileIcon} parts={[str(data.file_name) || "未命名文件", humanSize(data.file_size)]} />;
     case "forward": {
       const nodes = forwardNodes(data.nodes);
       if (!nodes) return <ForwardSummary data={data} />;
@@ -393,7 +394,7 @@ function SegmentView({ segment, names, lookup }: { segment: Segment; names: Name
     case "markdown":
       return <pre className="my-1 font-mono text-xs whitespace-pre-wrap">{str(data.content)}</pre>;
     default:
-      return <Chip>{segmentText(segment, names)}</Chip>;
+      return <Chip parts={[segmentText(segment, names)]} />;
   }
 }
 

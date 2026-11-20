@@ -17,6 +17,7 @@ import {
   FilterBar,
   GroupSelect,
   Hint,
+  Meta,
   OptionSelect,
   PageHeader,
   Pager,
@@ -214,7 +215,7 @@ function JobsSection({ groupName }: { groupName: (id: number) => string }) {
         <Input
           className="w-64"
           aria-label="搜索后台任务"
-          placeholder="搜索标题 / 任务 / 结果"
+          placeholder="搜索标题、任务或结果"
           value={q}
           onChange={(e) => filter(setQ)(e.target.value)}
         />
@@ -295,9 +296,17 @@ function JobsSection({ groupName }: { groupName: (id: number) => string }) {
                 <TableCell className="text-xs">{fmtTime(j.created_at)}</TableCell>
                 <TableCell className="text-xs">{fmtDuration(j)}</TableCell>
                 <TableCell className="text-xs">
-                  {j.usage
-                    ? `${j.usage.requests} 次 · ${fmtTokens(j.usage.input_tokens + j.usage.output_tokens)} tokens`
-                    : "—"}
+                  {j.usage ? (
+                    <Meta
+                      className="flex-nowrap whitespace-nowrap text-foreground tabular-nums"
+                      items={[
+                        `${j.usage.requests} 次请求`,
+                        `${fmtTokens(j.usage.input_tokens + j.usage.output_tokens)} tokens`,
+                      ]}
+                    />
+                  ) : (
+                    "—"
+                  )}
                 </TableCell>
               </TableRow>
             ))}

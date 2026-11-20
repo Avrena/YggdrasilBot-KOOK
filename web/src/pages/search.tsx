@@ -21,6 +21,7 @@ import {
   Field,
   FormDialog,
   JsonEditor,
+  Meta,
   NumberInput,
   OptionSelect,
   PageHeader,
@@ -47,6 +48,8 @@ import { isPlainObject } from "@/lib/format";
 const KINDS: {
   value: SearchKind;
   label: string;
+  /** What else uses this kind, beyond web_search. */
+  note?: string;
   url: string;
   params: Record<string, unknown>;
   limit: number | null;
@@ -60,7 +63,8 @@ const KINDS: {
   },
   {
     value: "deepseek",
-    label: "DeepSeek（也给 read_url 远程抓取用）",
+    label: "DeepSeek",
+    note: "也给 read_url 远程抓取用",
     url: "留空使用 https://api.deepseek.com",
     params: {},
     limit: null,
@@ -74,14 +78,16 @@ const KINDS: {
   },
   {
     value: "x",
-    label: "X API（给 read_x 用，也是 search_x 的备用，不参与 web_search）",
+    label: "X API",
+    note: "给 read_x 用，也是 search_x 的备用，不参与 web_search",
     url: "留空使用 https://api.x.com；key 填 App 的 Bearer Token",
     params: {},
     limit: 300,
   },
   {
     value: "grok",
-    label: "Grok（给 search_x 用的 X 搜索，不参与 web_search）",
+    label: "Grok",
+    note: "给 search_x 用的 X 搜索，不参与 web_search",
     url: "留空使用 https://api.x.ai；key 填 xAI 的 API key",
     params: { model: "grok-4.7", reasoning_effort: "low" },
     limit: 300,
@@ -134,17 +140,20 @@ export function SearchPage() {
             {providers.data.map((p) => (
               <TableRow key={p.id}>
                 <TableCell className="tabular-nums">{p.priority}</TableCell>
-                <TableCell className="font-medium">
-                  {p.name}
-                  <Badge variant="secondary" className="ml-2">
-                    {kindOf(p.kind).label}
-                  </Badge>
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{p.name}</span>
+                    <Badge variant="secondary">{kindOf(p.kind).label}</Badge>
+                  </div>
+                  {kindOf(p.kind).note && (
+                    <div className="max-w-64 text-xs whitespace-normal text-muted-foreground">{kindOf(p.kind).note}</div>
+                  )}
                 </TableCell>
                 <TableCell className="font-mono text-xs">{p.base_url}</TableCell>
                 <TableCell className="font-mono text-xs">{p.api_key_masked ?? "—"}</TableCell>
                 <TableCell className="tabular-nums">
                   {p.used_this_month}
-                  <span className="text-muted-foreground"> / {p.monthly_limit ?? "不限"}</span>
+                  <span className="text-muted-foreground">/{p.monthly_limit ?? "不限"}</span>
                 </TableCell>
                 <TableCell>
                   {p.kind === "deepseek" || p.kind === "x" ? (
@@ -238,8 +247,21 @@ function SearchProviderDialog({ provider, onClose }: { provider: SearchProviderO
       <Field label="名称">
         <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
       </Field>
-      <Field label="类型">
-        <OptionSelect value={form.kind} onChange={switchKind} options={KINDS} />
+      <Field label="类型" hint={kind.note}>
+        <OptionSelect
+          value={form.kind}
+          onChange={switchKind}
+          options={KINDS.map((k) => ({
+            value: k.value,
+            label: (
+              <span className="grid gap-0.5">
+                <span>{k.label}</span>
+                {/* The trigger shows the label only; the field hint carries the note. */}
+                {k.note && <span className="text-xs text-muted-foreground in-data-[slot=select-value]:hidden">{k.note}</span>}
+              </span>
+            ),
+          }))}
+        />
       </Field>
       <Field label="地址" hint={kind.url}>
         <Input value={form.base_url ?? ""} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
@@ -265,7 +287,7 @@ function SearchProviderDialog({ provider, onClose }: { provider: SearchProviderO
       </div>
       <Field
         label="参数"
-        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；Grok：{"model": "grok-4.7", "reasoning_effort": "low"}（思考强度 low / medium / high / xhigh，不填为 low；越高越慢）；DeepSeek、X API：不需要参数'
+        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；Grok：{"model": "grok-4.7", "reasoning_effort": "low"}（思考强度 low、medium、high、xhigh，不填为 low；越高越慢）；DeepSeek、X API：不需要参数'
       >
         <JsonEditor
           rows={3}
@@ -338,15 +360,16 @@ function TestDialog({ provider, onClose }: { provider: SearchProviderOut; onClos
       </Field>
       {result && !result.ok && (
         <Alert variant="destructive">
-          <AlertTitle>搜索失败 · {result.latency_ms}ms</AlertTitle>
-          <AlertDescription className="whitespace-pre-wrap">{result.error}</AlertDescription>
+          <AlertTitle>搜索失败</AlertTitle>
+          <AlertDescription className="grid gap-1">
+            <span className="whitespace-pre-wrap">{result.error}</span>
+            <span className="text-xs">耗时 {result.latency_ms}ms</span>
+          </AlertDescription>
         </Alert>
       )}
       {result?.ok && (
         <div className="grid gap-3">
-          <p className="text-sm text-muted-foreground">
-            {result.latency_ms}ms · {result.hits?.length ?? 0} 条结果
-          </p>
+          <Meta className="text-sm" items={[`${result.hits?.length ?? 0} 条结果`, `耗时 ${result.latency_ms}ms`]} />
           <Hits hits={result.hits ?? []} />
         </div>
       )}

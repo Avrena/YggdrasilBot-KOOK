@@ -130,7 +130,8 @@ function Runs() {
               <TableHead>handler</TableHead>
               <TableHead>状态</TableHead>
               <TableHead>请求</TableHead>
-              <TableHead>tokens</TableHead>
+              <TableHead className="text-right">输入 tokens</TableHead>
+              <TableHead className="text-right">输出 tokens</TableHead>
               <TableHead>耗时</TableHead>
               <TableHead>trace</TableHead>
             </TableRow>
@@ -162,14 +163,13 @@ function Runs() {
                 <TableCell>
                   <Badge variant={statusVariant(i.status)}>{i.status}</Badge>
                 </TableCell>
-                <TableCell className="max-w-sm text-sm">
+                <TableCell className="max-w-xs text-sm">
                   <Hint content={i.request_text}>
                     <div className="truncate">{i.request_text}</div>
                   </Hint>
                 </TableCell>
-                <TableCell className="text-xs whitespace-nowrap">
-                  {i.tokens_in} / {i.tokens_out}
-                </TableCell>
+                <TableCell className="text-right text-xs tabular-nums">{i.tokens_in}</TableCell>
+                <TableCell className="text-right text-xs tabular-nums">{i.tokens_out}</TableCell>
                 <TableCell className="text-xs">{i.duration_ms != null ? fmtMs(i.duration_ms) : "—"}</TableCell>
                 <TableCell className="text-xs">
                   {i.trace_url ? <ExternalLink href={i.trace_url}>打开</ExternalLink> : <span className="text-muted-foreground">—</span>}

@@ -28,7 +28,7 @@ import type {
   ToolCallPart,
   TranscriptOut,
 } from "@/client/types.gen";
-import { Disclosure, Empty, ExternalLink, Hint } from "@/components/common";
+import { Disclosure, Empty, ExternalLink, Hint, Meta } from "@/components/common";
 import { type Names, QQForwardCard, QQMessageList, QQMessageView, ReplyView, type Segment } from "@/components/qq";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -86,6 +86,8 @@ export function fmtMs(ms: number): string {
 
 type Ctx = {
   start: number;
+  /** Every entry's time (ms), ascending: the step before a row ends at the latest one earlier than it. */
+  times: number[];
   live: boolean;
   names: Names;
   messages: Record<string, QqMessage>;
@@ -119,14 +121,21 @@ function imagesOf(parts: Part[]): ImagePart[] {
   return parts.filter((p): p is ImagePart => p.type === "image");
 }
 
-/** Time since the run started; the full time on hover. */
+/** `<step>/<total>`: time since the previous entry (primary), and since the run started (secondary); the full time on hover. */
 function At({ at }: { at?: string | null }) {
-  const { start } = useTranscript();
+  const { start, times } = useTranscript();
   if (!at) return null;
+  const t = Date.parse(at);
+  let prev = start;
+  for (const x of times) {
+    if (x >= t) break;
+    prev = x;
+  }
   return (
-    <Hint content={fmtTime(at)}>
+    <Hint content={`${fmtTime(at)}\n本步用时/从开始算起`}>
       <time dateTime={at} className="shrink-0 text-xs leading-5 text-muted-foreground tabular-nums">
-        {fmtMs(Math.max(0, Date.parse(at) - start))}
+        {fmtMs(Math.max(0, t - prev))}
+        <span className="text-muted-foreground/60">/{fmtMs(Math.max(0, t - start))}</span>
       </time>
     </Hint>
   );
@@ -398,9 +407,7 @@ function Hits({ display }: { display: HitsDisplay }) {
   const hits = display.hits ?? [];
   return (
     <div className="grid gap-2">
-      <div className="text-xs text-muted-foreground">
-        搜索「{display.query}」· {hits.length} 条结果
-      </div>
+      <Meta items={[`搜索「${display.query}」`, `${hits.length} 条结果`]} />
       {hits.map((h, i) => (
         <div key={i} className="grid gap-0.5">
           <a href={h.url} target="_blank" rel="noreferrer noopener" className="w-fit max-w-full">
@@ -439,15 +446,13 @@ function PageCard({ display: d }: { display: PageDisplay }) {
       ) : (
         <span className="font-mono text-xs">{href}</span>
       )}
-      <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-        {d.via && <Badge variant="outline">{d.via}</Badge>}
-        {(d.pages ?? 1) > 1 && (
-          <Badge variant="outline">
-            第 {d.page ?? 1}/{d.pages} 页
-          </Badge>
-        )}
-        {d.final_url && d.final_url !== d.url && <span className="break-all">请求：{d.url}</span>}
-      </div>
+      <Meta
+        items={[
+          d.via && `经由 ${d.via}`,
+          (d.pages ?? 1) > 1 && `第 ${d.page ?? 1}/${d.pages} 页`,
+          d.final_url && d.final_url !== d.url && <span className="break-all">请求：{d.url}</span>,
+        ]}
+      />
     </div>
   );
 }
@@ -546,13 +551,21 @@ function BridgeCards({ calls }: { calls: BridgeCall[] }) {
   );
 }
 
-/** `web_search×2、read_url×1 · 3.2s`, and how many failed. */
-function bridgeSummary(calls: BridgeCall[]): string {
+/** What code called through the tool bridge: each tool with its count, total time, and how many failed. */
+function BridgeSummary({ calls }: { calls: BridgeCall[] }) {
   const counts = new Map<string, number>();
   for (const c of calls) counts.set(c.name, (counts.get(c.name) ?? 0) + 1);
   const ms = calls.reduce((sum, c) => sum + (c.duration_ms ?? 0), 0);
   const errors = calls.filter((c) => c.outcome !== "ok").length;
-  return `${[...counts].map(([name, n]) => `${name}×${n}`).join("、")} · ${fmtMs(ms)}${errors ? ` · ${errors} 次出错` : ""}`;
+  return (
+    <Meta
+      items={[
+        [...counts].map(([name, n]) => `${name} ${n} 次`).join("、"),
+        <span className="tabular-nums">共 {fmtMs(ms)}</span>,
+        errors > 0 && <span className="text-destructive">{errors} 次出错</span>,
+      ]}
+    />
+  );
 }
 
 /** One tool call from arguments to result (AI Elements "Tool"; shell tools as "Terminal"). */
@@ -614,7 +627,10 @@ function ToolCard({ call, entry }: { call?: ToolCallPart; entry?: Entry }) {
       {entry && <ToolResult entry={entry} terminal={terminal} />}
       {!!entry?.bridge?.length && (
         <div className="grid gap-1.5">
-          <SubHeading>代码调用了 bot 的工具：{bridgeSummary(entry.bridge)}</SubHeading>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <SubHeading>代码调用了 bot 的工具</SubHeading>
+            <BridgeSummary calls={entry.bridge} />
+          </div>
           <BridgeCards calls={entry.bridge} />
         </div>
       )}
@@ -647,10 +663,11 @@ function FinalResult({ call, entry }: { call: ToolCallPart; entry?: Entry }) {
 
 function UsageText({ usage }: { usage: NonNullable<Entry["usage"]> }) {
   return (
-    <Hint content={`输入 ${usage.input ?? 0}（缓存 ${usage.cached ?? 0}）· 输出 ${usage.output ?? 0} tokens`}>
-      <span className="tabular-nums">
-        ↑{fmtTokens(usage.input ?? 0)}
-        {!!usage.cached && ` (${fmtTokens(usage.cached)} 缓存)`} ↓{fmtTokens(usage.output ?? 0)}
+    <Hint content={`输入 ${usage.input ?? 0} tokens，其中缓存 ${usage.cached ?? 0}\n输出 ${usage.output ?? 0} tokens`}>
+      <span className="inline-flex flex-wrap gap-x-2 tabular-nums">
+        <span>输入 {fmtTokens(usage.input ?? 0)}</span>
+        {!!usage.cached && <span>缓存 {fmtTokens(usage.cached)}</span>}
+        <span>输出 {fmtTokens(usage.output ?? 0)}</span>
       </span>
     </Hint>
   );
@@ -769,6 +786,7 @@ export function Transcript({ transcript: t, startedAt }: { transcript: Transcrip
     }
     return {
       start: Date.parse(startedAt),
+      times: t.entries.flatMap((e) => (e.at ? [Date.parse(e.at)] : [])).sort((a, b) => a - b),
       live: !!t.live,
       names: t.names ?? {},
       messages,
@@ -789,7 +807,8 @@ export function Transcript({ transcript: t, startedAt }: { transcript: Transcrip
   }, [t.entries]);
   return (
     <TranscriptContext value={ctx}>
-      <div className="flex flex-col gap-5">
+      {/* min-w-0: as a grid item it would otherwise grow to its widest unbreakable line (a long one-line command). */}
+      <div className="flex min-w-0 flex-col gap-5">
         {!t.available && (
           <Alert>
             <InfoIcon />
@@ -901,9 +920,13 @@ export function ContextUsage({
   return (
     <HoverCard openDelay={10} closeDelay={100}>
       <HoverCardTrigger asChild>
-        <Button variant="outline" size="xs" className="tabular-nums">
+        {/* A metric, not an action: plain text with a dotted underline that opens the breakdown on hover or focus. */}
+        <button
+          type="button"
+          className="cursor-help rounded-sm tabular-nums underline decoration-muted-foreground/60 decoration-dotted underline-offset-4 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        >
           {percent != null ? `${percent}% 上下文` : `${fmtTokens(input + output)} tokens`}
-        </Button>
+        </button>
       </HoverCardTrigger>
       <HoverCardContent className="flex w-64 flex-col gap-3">
         {limit ? (

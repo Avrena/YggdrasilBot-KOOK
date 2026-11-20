@@ -562,6 +562,18 @@ export function GroupSelect({
   );
 }
 
+/** Short facts on one line (time, group, counts), set apart by spacing, never joined with "·", "|" or "/".
+ * Falsy items are skipped. */
+export function Meta({ items, className }: { items: ReactNode[]; className?: string }) {
+  return (
+    <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground", className)}>
+      {items.filter((x) => x !== null && x !== undefined && x !== false && x !== "").map((x, i) => (
+        <span key={i}>{x}</span>
+      ))}
+    </div>
+  );
+}
+
 export function Pager({
   total,
   limit,
@@ -578,8 +590,9 @@ export function Pager({
   const pages = Math.max(1, Math.ceil(total / limit));
   return (
     <div className="mt-4 flex items-center justify-end gap-2 text-sm text-muted-foreground">
+      <span>共 {total} 条</span>
       <span>
-        共 {total} 条 · 第 {page}/{pages} 页
+        第 {page}/{pages} 页
       </span>
       <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => onChange(Math.max(0, offset - limit))}>
         上一页
@@ -721,7 +734,9 @@ export function DateRangePicker({
   className?: string;
 }) {
   const label = value?.from
-    ? `${format(value.from, "yyyy-MM-dd")} — ${value.to ? format(value.to, "yyyy-MM-dd") : "…"}`
+    ? value.to
+      ? `${format(value.from, "yyyy-MM-dd")} 至 ${format(value.to, "yyyy-MM-dd")}`
+      : `${format(value.from, "yyyy-MM-dd")} 起`
     : placeholder;
   return (
     <div className={cn("flex items-center gap-1", className)}>

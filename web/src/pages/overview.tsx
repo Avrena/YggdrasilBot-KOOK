@@ -22,17 +22,19 @@ export function OverviewPage() {
               <CardDescription>消息</CardDescription>
               <CardTitle className="text-3xl">{totalMessages}</CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-1 text-sm">
+            <CardContent className="text-sm">
               {s.messages_24h.length === 0 && <Empty>没有消息</Empty>}
-              {s.messages_24h.map((g) => (
-                <div key={g.group_id} className="flex justify-between gap-2">
-                  <span className="truncate">
-                    {g.name || g.group_id}
-                    {!g.enabled && <Badge variant="outline" className="ml-1">未启用</Badge>}
-                  </span>
-                  <span className="font-mono">{g.count}</span>
-                </div>
-              ))}
+              <dl className="grid grid-cols-[1fr_auto] gap-x-2 gap-y-1">
+                {s.messages_24h.map((g) => (
+                  <div key={g.group_id} className="contents">
+                    <dt className="flex min-w-0 items-center gap-1">
+                      <span className="truncate">{g.name || g.group_id}</span>
+                      {!g.enabled && <Badge variant="outline">未启用</Badge>}
+                    </dt>
+                    <dd className="font-mono tabular-nums">{g.count}</dd>
+                  </div>
+                ))}
+              </dl>
             </CardContent>
           </Card>
           <Card>
@@ -40,14 +42,16 @@ export function OverviewPage() {
               <CardDescription>调用</CardDescription>
               <CardTitle className="text-3xl">{totalInvocations}</CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-1 text-sm">
+            <CardContent className="text-sm">
               {s.invocations_24h.length === 0 && <Empty>没有调用</Empty>}
-              {s.invocations_24h.map((x) => (
-                <div key={x.status} className="flex justify-between">
-                  <span className="font-mono">{x.status}</span>
-                  <span className="font-mono">{x.count}</span>
-                </div>
-              ))}
+              <dl className="grid grid-cols-[1fr_auto] gap-x-2 gap-y-1">
+                {s.invocations_24h.map((x) => (
+                  <div key={x.status} className="contents">
+                    <dt className="font-mono">{x.status}</dt>
+                    <dd className="font-mono tabular-nums">{x.count}</dd>
+                  </div>
+                ))}
+              </dl>
             </CardContent>
           </Card>
           <Card>

@@ -77,7 +77,7 @@ class ModerationSettings(BaseModel):
         },
         description="按 Qwen3Guard 类别覆盖阈值和动作",
     )
-    input_action_on_hit: Literal["drop", "pass"] = Field(default="drop", description="输入超阈值时：不响应 / 放行")
+    input_action_on_hit: Literal["drop", "pass"] = Field(default="drop", description="输入超阈值时：不响应或放行")
     notify_admins_on_input_block: bool = False
     notify_group_on_review: bool = Field(default=True, description="进入审核时群里先回一句（模型生成）")
     review_expire_minutes: int = Field(default=120, ge=5)
@@ -195,15 +195,15 @@ class ToolSettings(BaseModel):
         default=True, description="工作区总开关（只看全局设置，群设置里改它无效）；关掉后所有群都没有工作区工具"
     )
     sandbox_command_timeout_s: int = Field(
-        default=60, ge=1, le=300, description="工作区 sh / py 单次调用的默认超时（秒）"
+        default=60, ge=1, le=300, description="工作区 sh、py 单次调用的默认超时（秒）"
     )
     sandbox_command_max_s: int = Field(
-        default=300, ge=1, le=1800, description="工作区 sh / py 单次调用最长允许的超时（秒），模型指定更长的会被截短"
+        default=300, ge=1, le=1800, description="工作区 sh、py 单次调用最长允许的超时（秒），模型指定更长的会被截短"
     )
     sandbox_invocation_s: int = Field(
-        default=600, ge=30, le=3600, description="一次请求里工作区 sh / py 累计最多运行多久（秒）"
+        default=600, ge=30, le=3600, description="一次请求里工作区 sh、py 累计最多运行多久（秒）"
     )
-    sandbox_max_commands: int = Field(default=40, ge=1, le=200, description="一次请求里最多调用多少次 sh / py")
+    sandbox_max_commands: int = Field(default=40, ge=1, le=200, description="一次请求里最多调用多少次 sh、py")
     sandbox_idle_min: int = Field(
         default=30, ge=5, le=1440, description="工作区闲置多久（分钟）后回收，回收后文件全部丢失"
     )
@@ -250,7 +250,7 @@ class ToolSettings(BaseModel):
         default=30,
         ge=0,
         le=500,
-        description="一次请求里，工作区代码（sh / py）通过 ygg 调用 bot 工具、取聊天里的图片和文件"
+        description="一次请求里，工作区代码（sh、py）通过 ygg 调用 bot 工具、取聊天里的图片和文件"
         "最多多少次（不占模型自己的工具调用次数；0 关闭）",
     )
     bridge_job_limit: int = Field(

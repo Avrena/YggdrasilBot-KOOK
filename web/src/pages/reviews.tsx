@@ -10,6 +10,7 @@ import {
   FilterBar,
   FormDialog,
   GroupSelect,
+  Meta,
   OptionSelect,
   PageHeader,
   Pager,
@@ -72,10 +73,6 @@ export function ReviewsPage() {
                 <Badge variant={r.status === "pending" ? "default" : "outline"}>
                   {STATUS_LABELS[r.status as Status] ?? r.status}
                 </Badge>
-                <span className="text-sm font-normal text-muted-foreground">
-                  {groupName(r.group_id)} · {r.user_id} · {fmtTime(r.created_at)}
-                  {r.status === "pending" ? ` · ${fmtTime(r.expires_at)} 过期` : r.decided_by ? ` · ${r.decided_by}` : ""}
-                </span>
                 {r.invocation_id != null && (
                   <Button variant="link" asChild className="ml-auto h-auto p-0 text-sm font-normal">
                     <Link to="/invocations/$id" params={{ id: String(r.invocation_id) }}>
@@ -84,6 +81,25 @@ export function ReviewsPage() {
                   </Button>
                 )}
               </CardTitle>
+              <Meta
+                className="text-sm"
+                items={[
+                  groupName(r.group_id),
+                  <>
+                    QQ <span className="font-mono">{r.user_id}</span>
+                  </>,
+                  <>
+                    提交于 <time dateTime={r.created_at}>{fmtTime(r.created_at)}</time>
+                  </>,
+                  r.status === "pending" ? (
+                    <>
+                      <time dateTime={r.expires_at}>{fmtTime(r.expires_at)}</time> 过期
+                    </>
+                  ) : (
+                    r.decided_by && `处理人 ${r.decided_by}`
+                  ),
+                ]}
+              />
             </CardHeader>
             <CardContent className="grid gap-3">
               {r.request_text && (
@@ -93,19 +109,28 @@ export function ReviewsPage() {
                 </div>
               )}
               <ReplyView reply={r.reply} defaultOpen />
-              <div className="flex flex-wrap items-center gap-1 text-sm">
-                <span className="text-muted-foreground">审核结果：</span>
-                <Badge variant="destructive">{r.verdict.verdict}</Badge>
-                <Badge variant="outline" className="font-mono">
-                  {r.verdict.score.toFixed(2)}
-                </Badge>
-                {(r.verdict.categories ?? []).map((c) => (
-                  <Badge key={c} variant="secondary">
-                    {c}
-                  </Badge>
-                ))}
-                <Badge variant="outline">{r.verdict.action}</Badge>
-              </div>
+              <dl className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+                <div className="flex items-center gap-1.5">
+                  <dt className="text-muted-foreground">审核结论</dt>
+                  <dd>
+                    <Badge variant="destructive">{r.verdict.verdict}</Badge>
+                  </dd>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <dt className="text-muted-foreground">分数</dt>
+                  <dd className="font-mono">{r.verdict.score.toFixed(2)}</dd>
+                </div>
+                {!!r.verdict.categories?.length && (
+                  <div className="flex items-center gap-1.5">
+                    <dt className="text-muted-foreground">类别</dt>
+                    <dd>{r.verdict.categories.join("、")}</dd>
+                  </div>
+                )}
+                <div className="flex items-center gap-1.5">
+                  <dt className="text-muted-foreground">处置</dt>
+                  <dd className="font-mono">{r.verdict.action}</dd>
+                </div>
+              </dl>
               {r.status === "pending" && (
                 <div className="flex gap-2">
                   <Button

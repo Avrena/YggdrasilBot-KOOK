@@ -64,12 +64,12 @@ export function JobPage() {
               <div className="grid gap-4 rounded-xl border p-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant={jobVariant(d.status)}>{JOB_STATUS[d.status] ?? d.status}</Badge>
-                  <Badge variant="outline">{JOB_KIND[d.kind] ?? d.kind}</Badge>
                   {d.cancel && running && <Badge variant="outline">取消中</Badge>}
                 </div>
                 {running && d.progress && <p className="text-sm text-muted-foreground">进度：{d.progress}</p>}
                 <Facts
                   items={[
+                    ["类型", JOB_KIND[d.kind] ?? d.kind],
                     ["群", groupName(d.group_id)],
                     ["请求者", <span className="font-mono">{d.user_id}</span>],
                     ["工作区", <span className="font-mono">{d.workspace}</span>],

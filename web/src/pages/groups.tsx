@@ -32,7 +32,6 @@ import {
   setAt,
   unsetAt,
 } from "@/components/schema-form";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -133,7 +132,7 @@ export function GroupsPage() {
                 </TableCell>
                 <TableCell>
                   {Object.keys(g.settings).length ? (
-                    <Badge variant="secondary">{Object.keys(g.settings).join("、")}</Badge>
+                    <span className="font-mono text-xs">{Object.keys(g.settings).join("、")}</span>
                   ) : (
                     <span className="text-xs text-muted-foreground">无</span>
                   )}
@@ -222,19 +221,19 @@ function GroupOverrideEditor({ groupId }: { groupId: number }) {
           <TabsContent value="form" className="grid gap-4">
             {present.length === 0 && <Empty>没有覆盖任何设置</Empty>}
             {present.map(({ path, schema }) => (
-              <div key={pathKey(path)} className="flex items-start gap-2 rounded-lg border p-3">
+              <div key={pathKey(path)} className="flex min-w-0 items-start gap-2 rounded-lg border p-3">
                 <Field
-                  className="flex-1"
+                  className="min-w-0 flex-1"
                   label={
-                    <span>
-                      <span className="text-muted-foreground">{SECTION_LABELS[path[0]] ?? path[0]} · </span>
+                    <span className="inline-flex flex-wrap items-baseline gap-x-2">
+                      <span className="text-muted-foreground">{SECTION_LABELS[path[0]] ?? path[0]}</span>
                       <span className="font-mono">{path.slice(1).join(".") || path[0]}</span>
                     </span>
                   }
                   hint={
                     <>
                       {schema.description && <span className="block">{schema.description}</span>}
-                      <span className="block">全局值：{JSON.stringify(getAt(inherited, path))}</span>
+                      <span className="block break-all">全局值：{JSON.stringify(getAt(inherited, path))}</span>
                     </>
                   }
                 >

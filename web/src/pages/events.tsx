@@ -9,6 +9,7 @@ import {
   Empty,
   FilterBar,
   Hint,
+  Meta,
   OptionSelect,
   PageHeader,
   Pager,
@@ -36,7 +37,7 @@ const KIND_FILTERS: Record<string, string> = {
   "notice.group_admin.self": "bot 管理员变动",
   "notice.bot_offline": "掉线",
   "notice.group_increase": "进群",
-  "notice.group_decrease": "退群 / 被踢",
+  "notice.group_decrease": "退群或被踢",
   "notice.group_ban": "禁言",
 };
 
@@ -72,13 +73,23 @@ const STATUS: Record<Status, { label: string; variant: "default" | "secondary" |
   failed: { label: "处理失败", variant: "destructive" },
 };
 
-function detail(e: EventOut): string {
+function EventDetail({ event: e }: { event: EventOut }) {
   const d = e.data as Record<string, unknown>;
-  const parts: string[] = [];
-  if (e.operator_id) parts.push(`操作人 ${e.operator_id}`);
-  if (typeof d.duration === "number" && d.duration > 0) parts.push(`${Math.round(d.duration / 60)} 分钟`);
-  if (typeof d.comment === "string" && d.comment) parts.push(`附言：${d.comment}`);
-  return parts.join(" · ");
+  const comment = typeof d.comment === "string" ? d.comment : "";
+  const items = [
+    !!e.operator_id && (
+      <>
+        操作人 <span className="font-mono">{e.operator_id}</span>
+      </>
+    ),
+    typeof d.duration === "number" && d.duration > 0 && `${Math.round(d.duration / 60)} 分钟`,
+    comment && (
+      <Hint content={comment}>
+        <span className="line-clamp-1 break-all">附言：{comment}</span>
+      </Hint>
+    ),
+  ];
+  return items.some(Boolean) ? <Meta items={items} className="text-foreground" /> : "—";
 }
 
 export function EventsPage() {
@@ -178,10 +189,8 @@ export function EventsPage() {
                   </TableCell>
                   <TableCell className="text-xs">{e.group_id != null ? groupName(e.group_id) : "—"}</TableCell>
                   <TableCell className="font-mono text-xs">{e.user_id ?? "—"}</TableCell>
-                  <TableCell className="max-w-72 text-xs">
-                    <Hint content={detail(e)}>
-                      <div className="truncate">{detail(e) || "—"}</div>
-                    </Hint>
+                  <TableCell className="max-w-72 text-xs whitespace-normal">
+                    <EventDetail event={e} />
                   </TableCell>
                   <TableCell>
                     {e.status ? (
