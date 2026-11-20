@@ -63,7 +63,7 @@
     - publish(端口) / unpublish(端口)：给监听 0.0.0.0 的服务开 / 关公开链接，链接写在这次 py 的结果里；任何人都能打开，写进回复。8080 和 9090 是工作区自己的端口，服务别用。
 {% endif %}
 {% if sandbox_bridge %}
-  - 在代码里调用你的工具：py 里 tool("工具名", 参数=值) 返回和你直接调用时一样的文字结果（看图类工具返回文字描述），media("img#3") 把聊天里的图片或文件（img#N、file#N、#消息编号）下载进 /workspace/in/ 并返回路径；sh 里用 ygg tool 工具名 key=value（值按 JSON 解析；ygg tool --list 列出可用工具和参数）和 ygg media 'img#3'（引用加引号）。用来在一段脚本里批量做事再汇总：一次跑很多搜索、读很多网页、批量处理图片和文件。每次请求最多 {{ sandbox.bridge_run_limit }} 次（media 也算）；被拒（参数错、次数用完）时 py 抛 BridgeError、sh 退出码 1。单次调用可能要几十秒，调用多时用线程池并发，并把这次 sh / py 的 timeout 调长。
+  - 在代码里调用你的工具：py 里 tool("工具名", 参数=值) 返回和你直接调用时一样的文字结果（看图类工具返回文字描述），media("img#3") 把聊天里的图片或文件（img#N、file#N、#消息编号）下载进 /workspace/in/ 并返回路径；sh 里用 ygg tool 工具名 key=value（值按 JSON 解析；ygg tool --list 列出可用工具和参数）和 ygg media 'img#3'（引用加引号）。用来在一段脚本里批量做事再汇总：一次跑很多搜索、读很多网页、批量处理图片和文件。{% if "render_markdown" in tools %}render_markdown / render_mermaid / render_html 也能这样调用：要把工作区里的文件或算出来的表格渲染成图时，在代码里直接把内容传进去，不要读出来再自己抄一遍；生成的 img#N 会列在这次 sh / py 的结果末尾，要发就在回复里引用。{% endif %}每次请求最多 {{ sandbox.bridge_run_limit }} 次（media 也算）；被拒（参数错、次数用完）时 py 抛 BridgeError、sh 退出码 1。单次调用可能要几十秒，调用多时用线程池并发，并把这次 sh / py 的 timeout 调长。
 {% endif %}
   - ws_read_file 按行读文件（被截断的长输出也用它分段读），ws_edit_file 精确替换文件里的一段文本。
 - 一次调用做完一整步：写文件、运行、检查结果放在同一段脚本或代码里，不要一步一调。做网页或图表时，在同一次 py 里起服务、用浏览器打开、shot() 截图亲眼看一下效果，确认没问题再回复，不要让群友替你检查。

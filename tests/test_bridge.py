@@ -16,8 +16,10 @@ from yggdrasil import relay
 from yggdrasil.agent import bridge
 from yggdrasil.agent import media as media_mod
 from yggdrasil.agent.deps import Handles
-from yggdrasil.agent.tools import attachments
+from yggdrasil.agent.schema import BotReply, Section
+from yggdrasil.agent.tools import attachments, images
 from yggdrasil.agent.tools.sandbox import sh
+from yggdrasil.config import APP_CONFIG
 from yggdrasil.qq import client as qq_client
 from yggdrasil.relay.grants import ToolScope
 from yggdrasil.relay.server import Relay
@@ -82,7 +84,7 @@ async def test_refusals(client: httpx.AsyncClient) -> None:
     assert [t["name"] for t in listed] == ["read_url"]
     assert listed[0]["parameters"]["required"] == ["url_or_handle"]
     assert listed[0]["description"].startswith("读取网页正文")
-    unknown = await client.post("/v1/tools/render_markdown", headers=_auth(token), json={})
+    unknown = await client.post("/v1/tools/send_message", headers=_auth(token), json={})
     assert unknown.status_code == 404
     assert unknown.json()["error"].endswith("代码里能调用的工具：read_url")
     assert (
@@ -111,8 +113,9 @@ async def test_tool_calls_and_media_fetches_share_the_limit(client: httpx.AsyncC
 class _Backend:
     """A workspace whose ``ygg sh run`` executes a script that calls the bridge with the step's bridge.json."""
 
-    def __init__(self, client: httpx.AsyncClient) -> None:
+    def __init__(self, client: httpx.AsyncClient, call: tuple[str, dict[str, Any]] | None = None) -> None:
         self.client = client
+        self.call = call or ("read_url", {"url_or_handle": PICTURE})
         self.files: dict[str, bytes] = {}
         self.answers: list[httpx.Response] = []
 
@@ -128,9 +131,8 @@ class _Backend:
     async def exec(self, argv: list[str], **_: Any) -> ExecResult:
         cfg = json.loads(self.files[f"{argv[3]}/bridge.json"])
         assert cfg["url"] == URL
-        self.answers.append(
-            await self.client.post("/v1/tools/read_url", headers=_auth(cfg["token"]), json={"url_or_handle": PICTURE})
-        )
+        name, args = self.call
+        self.answers.append(await self.client.post(f"/v1/tools/{name}", headers=_auth(cfg["token"]), json=args))
         result = {"exit": 0, "timed_out": False, "duration": 0.3, "output": "done\n", "truncated": False}
         return ExecResult(0, (json.dumps(result) + "\n").encode(), b"")
 
@@ -177,6 +179,39 @@ async def test_a_live_runs_call_lands_in_the_run_and_ends_with_it(
     token = json.loads(next(v for k, v in backend.files.items() if k.endswith("/bridge.json")))["token"]
     after = await client.post("/v1/tools/read_url", headers=_auth(token), json={"url_or_handle": PICTURE})
     assert after.status_code == 401
+
+
+async def test_code_of_a_live_run_renders_a_picture_the_reply_can_embed(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(relay, "relay_url", lambda: URL)
+    monkeypatch.setattr(APP_CONFIG, "render_url", "http://render.example.com/")
+    rendered: list[str] = []
+
+    async def render(_kind: str, source: str, **_: Any) -> tuple[list[bytes], list[str]]:
+        rendered.append(source)
+        return [png("red")], []
+
+    monkeypatch.setattr(images.renderer, "render", render)
+    backend = _Backend(client, ("render_markdown", {"markdown": "```python\nx = 1\n```", "caption": "peano.py"}))
+    ctx = run_ctx(group_id=GROUP, settings=Settings(), sandbox=cast(Any, _Session(backend)), tool_call_id="call-sh")
+
+    text = str(await sh(ctx, "python3 render.py"))  # the script doesn't print what the call returned
+
+    assert backend.answers[0].status_code == 200
+    assert rendered == ["```python\nx = 1\n```"]
+    assert text.splitlines()[-1].startswith("render_markdown：已生成 img#1（peano.py）")
+    reply = BotReply(mode="forward", sections=[Section(content="如图", images=["img#1"])])
+    assert await images.reply_images(ctx.deps, reply) == {"img#1": (png("red"), "peano.py")}
+
+    # Not for the jobs a run starts: they have no reply to embed the picture in.
+    assert "render_markdown" in bridge.allowed_tools(Settings(), GROUP, live=True)
+    assert "render_markdown" not in bridge.allowed_tools(Settings(), GROUP)
+    await bridge.close_run(ctx.deps)
+    detached = await _token(job_id="job-x", tools=("render_markdown",))
+    refused = await client.post("/v1/tools/render_markdown", headers=_auth(detached), json={"markdown": "x"})
+    assert refused.status_code == 409
+    assert len(rendered) == 1
 
 
 async def test_a_job_grant_resolves_the_requesting_runs_handles_as_text_and_bytes(

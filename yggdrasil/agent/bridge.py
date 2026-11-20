@@ -1,5 +1,6 @@
 """The tool bridge, bot side: code in a workspace (``sh`` / ``py`` of a chat run, background jobs) calls the bot's
-read-only tools and fetches chat attachments by reference over HTTP on the relay's port (:mod:`yggdrasil.relay.bridge`).
+read-only tools (a live chat run's code also its render tools) and fetches chat attachments by reference over HTTP on
+the relay's port (:mod:`yggdrasil.relay.bridge`).
 
 Credentials: a chat run gets one token at its first ``sh`` / ``py`` call (``bridge_file``: written as ``bridge.json``
 into the step or cell directory, which the in-sandbox helper turns into ``YGG_BRIDGE_URL`` / ``YGG_BRIDGE_TOKEN``)
@@ -72,6 +73,9 @@ TOOLS = (
 """Chat tools workspace code may call (when the group has them enabled for chat)."""
 QQ_TOOLS = ("member_info", "group_info", "group_files")
 """``qq`` skill tools workspace code may call (when the group has the skill)."""
+RENDER_TOOLS = ("render_mermaid", "render_markdown", "render_html")
+"""Chat tools only the code of a live chat run's ``sh`` / ``py`` may call: the picture becomes an ``img#N`` handle of
+that run, named in the ``sh`` / ``py`` result, for the reply to embed. A background job has no reply to embed it in."""
 MEDIA = "media"
 """The name a media fetch is counted and recorded under."""
 RUN_TTL_S = 3600
@@ -89,7 +93,7 @@ class Refused(Exception):
 
 @cache
 def _registry() -> dict[str, Tool[Deps]]:
-    fns = {name: ALL_TOOLS[name] for name in TOOLS} | {
+    fns = {name: ALL_TOOLS[name] for name in (*TOOLS, *RENDER_TOOLS)} | {
         "member_info": qq_skill.member_info,
         "group_info": qq_skill.group_info,
         "group_files": qq_skill.group_files,
@@ -97,11 +101,12 @@ def _registry() -> dict[str, Tool[Deps]]:
     return {name: Tool(fn, takes_ctx=True, name=name) for name, fn in fns.items()}
 
 
-def allowed_tools(settings: Settings, group_id: int | None) -> tuple[str, ...]:
+def allowed_tools(settings: Settings, group_id: int | None, *, live: bool = False) -> tuple[str, ...]:
     """The bridge tools of a chat run in this group: its enabled tools among ``TOOLS``, plus ``QQ_TOOLS`` when it has
-    the ``qq`` skill. Handler exclusions don't apply: chat leaves ``recent_chat`` out only because its prompt already
-    carries the recent chat, which workspace code doesn't see."""
-    names = [name for name in TOOLS if name in settings.tools.enabled]
+    the ``qq`` skill, plus ``RENDER_TOOLS`` for the run's own ``sh`` / ``py`` (``live``; not for the jobs it starts).
+    Handler exclusions don't apply: chat leaves ``recent_chat`` out only because its prompt already carries the
+    recent chat, which workspace code doesn't see."""
+    names = [name for name in (*TOOLS, *(RENDER_TOOLS if live else ())) if name in settings.tools.enabled]
     if qq_skill.ID in skill_names(settings, "chat", group_id):
         names += QQ_TOOLS
     return tuple(names)
@@ -133,6 +138,7 @@ class RunBridge:
     subject: str  # the grant's job id
     file: bytes | None = None  # bridge.json, once the token is issued
     ctx: RunContext[Deps] | None = None  # the sh / py call started last; bridge calls are recorded under it
+    made: dict[str, list[str]] = field(default_factory=dict)  # sh / py call id → what its code's render calls made
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -153,7 +159,8 @@ async def bridge_file(ctx: RunContext[Deps]) -> bytes | None:
         run = deps.bridge = RunBridge(f"run-{deps.invocation_id or secrets.token_hex(8)}")
     async with run.lock:  # parallel first calls share one token
         if run.file is None:
-            scope = ToolScope(allowed_tools(deps.settings, deps.group_id), deps.user_id, deps.invocation_id, limit)
+            tools = allowed_tools(deps.settings, deps.group_id, live=True)
+            scope = ToolScope(tools, deps.user_id, deps.invocation_id, limit)
             try:
                 token = await relay.issue_token(
                     group_id=deps.group_id,
@@ -186,7 +193,8 @@ async def close_run(deps: Deps) -> None:
 
 
 def summary(ctx: RunContext[Deps]) -> str | None:
-    """The line an ``sh`` / ``py`` result ends with when its code called the bot: which tools, how often, how long."""
+    """What an ``sh`` / ``py`` result ends with when its code called the bot: which tools, how often, how long, and
+    the ``img#N`` handles its render calls made (whether or not the code printed them)."""
     calls = ctx.deps.notes.bridge.get(ctx.tool_call_id or "")
     if not calls:
         return None
@@ -194,7 +202,9 @@ def summary(ctx: RunContext[Deps]) -> str | None:
     seconds = sum(c.duration_ms or 0 for c in calls) / 1000
     errors = sum(c.outcome != "ok" for c in calls)
     failed = f"，其中 {errors} 次出错" if errors else ""
-    return f"（代码里调用了 {used}，共 {seconds:.1f} 秒{failed}）"
+    run = ctx.deps.bridge
+    made = run.made.pop(ctx.tool_call_id or "", []) if run is not None else []
+    return "\n".join([f"（代码里调用了 {used}，共 {seconds:.1f} 秒{failed}）", *made])
 
 
 # --- the context a call runs in ---------------------------------------------------------------------------------------
@@ -275,8 +285,10 @@ async def _target(grant: Grant, scope: ToolScope) -> _Target:
     return _Target(grant, deps, None, job)
 
 
-async def _admit(grant: Grant, scope: ToolScope) -> _Target:
+async def _admit(grant: Grant, scope: ToolScope, *, live_only: bool = False) -> _Target:
     target = await _target(grant, scope)
+    if live_only and target.parent is None:
+        raise Refused(409, "这个工具只能在当前请求的 sh / py 里调用")
     if not await count_call(grant):
         raise Refused(429, f"调用次数用完了：这个令牌最多调用 {scope.limit} 次（工具和取文件合计）")
     return target
@@ -368,10 +380,13 @@ async def call_tool(grant: Grant, name: str, args: object) -> str:
         valid = tool.function_schema.validator.validate_python(args)
     except ValidationError as e:
         raise Refused(422, RetryPromptPart.from_error(e, tool_name=name).model_response()) from e
-    target = await _admit(grant, scope)
+    target = await _admit(grant, scope, live_only=name in RENDER_TOOLS)
 
     async def body(ctx: RunContext[Deps]) -> tuple[str, str]:
         text = _text(await tool.function_schema.call(valid, ctx))
+        run, parent, failed = ctx.deps.bridge, target.parent, ctx.tool_call_id in ctx.deps.notes.errors
+        if name in RENDER_TOOLS and run is not None and parent is not None and not failed:
+            run.made.setdefault(parent.tool_call_id or "", []).append(f"{name}：{text}")
         return text, text
 
     return await _run(target, name, args, body)
