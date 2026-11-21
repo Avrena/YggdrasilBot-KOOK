@@ -614,6 +614,7 @@ function Sources({ sources }: { sources: SourceRef[] }) {
 function isBotReply(reply: BotReply | OpsReply): reply is BotReply {
   return (
     reply.mode === "forward" ||
+    reply.mode === "plain" ||
     reply.mode === "silent" ||
     "sections" in reply ||
     "sources" in reply ||
@@ -643,6 +644,21 @@ export function ReplyView({
       return <Note>{reply.silent_reason ? `不回复：${reply.silent_reason}` : "不回复"}</Note>;
     }
     if (reply.mode === "done") return <Note>已完成操作，没有发消息</Note>;
+    if (reply.mode === "plain") {
+      // One ordinary message: the text, then the pictures (only their handles are kept).
+      const lines = (reply.sections ?? []).flatMap((s) => [
+        s.content,
+        ...(s.images ?? []).map((key) => `[图片 ${key}]`),
+      ]);
+      return (
+        <div className="grid gap-2">
+          <ChatRow userId={botId} name={botName}>
+            <span className="whitespace-pre-wrap">{lines.filter((l) => l.trim()).join("\n") || "[空消息]"}</span>
+          </ChatRow>
+          {reply.sources && reply.sources.length > 0 && <Sources sources={reply.sources} />}
+        </div>
+      );
+    }
     // The pictures a section embeds follow it as nodes; the reply keeps only their handles, not the images.
     const nodes = (reply.sections ?? []).flatMap((s) =>
       [s.content, ...(s.images ?? []).map((key) => `[图片 ${key}]`)].map((text) => ({

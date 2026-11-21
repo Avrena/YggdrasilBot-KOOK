@@ -28,6 +28,7 @@ from yggdrasil.agent.tools import tools_for
 from yggdrasil.agent.tools.attachments import view_image
 from yggdrasil.agent.tools.images import check_reply_images
 from yggdrasil.config import APP_CONFIG
+from yggdrasil.delivery import send
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.llm.registry import ResolvedModel
 from yggdrasil.moderation.guard import Verdict
@@ -209,6 +210,54 @@ async def test_unknown_handles_and_too_many_pictures_are_sent_back_to_the_model(
     assert "只能写工具结果或聊天记录里出现过的 img#N" in first
     assert "最多发 4 张图" in second
     assert run.nodes()[0] == "看图"
+
+
+def _plain(text: str, images: list[str] | None = None) -> Turn:
+    body = {"mode": "plain", "sections": [{"content": text, "images": images or []}]}
+    return lambda info: (info.output_tools[0].name, body)
+
+
+async def test_a_plain_answer_is_one_ordinary_message_with_its_pictures(
+    monkeypatch: pytest.MonkeyPatch, recorded: list[IncomingMessage]
+) -> None:
+    kept: list[dict[str, Any]] = []
+
+    async def store_blobs(blobs: dict[str, Any]) -> None:
+        kept.append(blobs)
+
+    monkeypatch.setattr(send, "store_blobs", store_blobs)
+    handles = Handles()
+    handles.add("image", {"url": CAT, "summary": "[图片]"})
+    run = Run([_plain("**就是**这只猫", ["img#1"])])
+    run.qq.answers["send"] = 42
+    run.settings = Settings.model_validate({"moderation": {"enabled": False}, "interaction": {"quote_reply": "always"}})
+    assert await run.chat(handles) == "ok"
+    assert run.qq.called("send_forward") == []
+    [sent] = run.qq.called("send")
+    segments = sent["segments"]
+    assert [s["type"] for s in segments] == ["reply", "text", "image"]  # quotes the request, no metadata
+    assert segments[0]["data"]["message_id"] == 7
+    assert segments[1]["data"]["text"] == "就是这只猫"
+    assert base64.b64decode(segments[2]["data"]["uri"].removeprefix("base64://")) == png("orange")
+    assert [r.qq_message_id for r in recorded] == [42]
+    assert len(kept) == 1  # the picture is kept for a later reply to this message
+
+
+async def test_a_long_plain_answer_goes_back_to_the_model() -> None:
+    run = Run([_plain("太长了。" * 40), _answer(("还是写成一篇", []))])
+    assert await run.chat() == "ok"
+    [retry] = run.retries()
+    assert "最多 120 字" in retry
+    assert run.nodes()[0] == "还是写成一篇"
+
+
+async def test_tldr_cannot_answer_plain() -> None:
+    run = Run([_plain("一句话"), _answer(("总结", []))])
+    m = incoming("tldr", group_id=GROUP, user_id=ALICE, self_id=SELF, message_id=7, to_me=True)
+    inv = invoke.Invocator(run.qq, m, CHAT, "tldr", "", run.settings, GROUP)
+    assert await run.execute(inv, run.deps()) == "ok"
+    assert run.retries() == ["这里不能用 mode=plain，用 forward"]
+    assert run.nodes()[0] == "总结"
 
 
 def test_only_images_each_once_may_be_named() -> None:

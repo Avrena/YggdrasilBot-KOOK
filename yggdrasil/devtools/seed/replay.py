@@ -297,8 +297,9 @@ async def invoke(run: Run, chats: dict[int, Chat], report_job: Job | None = None
     duration = int((end - start).total_seconds() * 1000) + (900 if ran else 0)
     reply_qq: int | None = None
     if chat is not None and isinstance(output, BotReply) and run.status == "ok":
+        sections = [s.content for s in output.sections]
         sent = await bot_message(
-            chat, start + timedelta(milliseconds=duration), output.title or "", [s.content for s in output.sections]
+            chat, start + timedelta(milliseconds=duration), output.title or "", sections, plain=output.mode == "plain"
         )
         reply_qq = sent.qq_message_id
     async with get_session() as s:

@@ -162,6 +162,7 @@ TECH_CHAT = [
     Line("fwd_remark", 33, 20002, [Ref("fwd"), text_segment("JIT 那段说得挺清楚")]),
     Line("ask_tldr", 28, 20001, [Ref("card"), text_segment("tldr")]),
     Line("ask_silent", 24, 20005, [_mention(SELF), text_segment(" 哈哈哈")]),
+    Line("ask_plain", 23, 20002, [_mention(SELF), text_segment(" 3.14 是哪天发布的？")]),
     Line("ask_recall", 22, 20001, [Ref("bot_old"), _mention(SELF), text_segment(" 撤回这条吧，发错地方了")]),
     Line("ask_review", 19, 20003, [_mention(SELF), text_segment(" 帮我查一下某个同事的手机号")]),
     Line("ask_reject", 17, 20005, [_mention(SELF), text_segment(" 写一段话阴阳一下老王")]),
@@ -240,9 +241,13 @@ async def insert_chat(group_id: int, lines: list[Line], base: int) -> Chat:
     return chat
 
 
-async def bot_message(chat: Chat, at: datetime, title: str, sections: list[str]) -> Message:
+async def bot_message(chat: Chat, at: datetime, title: str, sections: list[str], *, plain: bool = False) -> Message:
+    """The bot's answer in the chat: a forward, or (``plain``, BotReply mode=plain) one ordinary text message."""
     chat.next_qq += 1
-    segments = [_bot_forward(f"seed-reply-{chat.next_qq}", title or "回复", sections)]
+    if plain:
+        segments = [text_segment("\n\n".join(sections))]
+    else:
+        segments = [_bot_forward(f"seed-reply-{chat.next_qq}", title or "回复", sections)]
     msg = Message(
         sent_at=at,
         group_id=chat.group_id,

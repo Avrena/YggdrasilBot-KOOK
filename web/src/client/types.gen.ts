@@ -181,9 +181,9 @@ export type BotReply = {
     /**
      * Mode
      *
-     * forward：查证后用合并转发作答（不接或做不了的直接请求也用它简短说明）；silent：不回复（不是在跟你说话、没有实际内容）；done：已经用操作类工具完成了请求（比如撤回），不再发消息
+     * forward：查证后用合并转发作答（不接或做不了的直接请求也用它简短说明）；plain：一两句话就能答完（正文不超过 120 字），或者只发 1–2 张图，直接作为普通消息发到群里，不进合并转发、不带来源和元数据（只在普通答疑里可用）；silent：不回复（不是在跟你说话、没有实际内容）；done：已经用操作类工具完成了请求（比如撤回），不再发消息
      */
-    mode: 'forward' | 'silent' | 'done';
+    mode: 'forward' | 'plain' | 'silent' | 'done';
     /**
      * Title
      *
@@ -193,7 +193,7 @@ export type BotReply = {
     /**
      * Sections
      *
-     * mode=forward 时的各节
+     * mode=forward / plain 时的各节（plain 只写一节）
      */
     sections?: Array<Section>;
     /**

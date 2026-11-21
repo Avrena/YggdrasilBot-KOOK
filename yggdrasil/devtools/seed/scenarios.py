@@ -175,6 +175,25 @@ RUNS: list[Run] = [
         [Turn(output=BotReply(mode="silent", silent_reason="只是在笑，没有问题要回答"))],
     ),
     Run(
+        "ask_plain",
+        "chat",
+        "ok",
+        [
+            Turn(
+                output=BotReply(
+                    mode="plain",
+                    sections=[Section(content="Python 3.14.0 是 2025 年 10 月 7 日发布的。")],
+                    sources=[
+                        SourceRef(
+                            label="Python 3.14 release schedule (PEP 745)", url="https://peps.python.org/pep-0745/"
+                        )
+                    ],
+                )
+            )
+        ],
+        output_verdict=SAFE,
+    ),
+    Run(
         "ask_recall",
         "chat",
         "done",

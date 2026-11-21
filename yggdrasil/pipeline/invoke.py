@@ -9,7 +9,7 @@ from uuid import UUID
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic_ai import Agent, Tool
+from pydantic_ai import Agent, ModelRetry, RunContext, Tool
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
@@ -28,8 +28,8 @@ from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, INVOCATIONS
 from yggdrasil.core.telemetry import TRACER, current_trace_id
-from yggdrasil.delivery.forward import send_forward
-from yggdrasil.delivery.send import MessageDropped, react, send_text
+from yggdrasil.delivery.forward import send_forward, strip_markdown
+from yggdrasil.delivery.send import MessageDropped, react, send_plain, send_text
 from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
@@ -375,7 +375,18 @@ class Invocator:
             retries=2,
         )
         agent.output_validator(check_reply_images)
+        agent.output_validator(self._check_plain)
         return agent
+
+    def _check_plain(self, ctx: RunContext[Deps], reply: BotReply) -> BotReply:
+        """mode=plain is for short chat answers only (not tldr, not a job report)."""
+        if reply.mode != "plain":
+            return reply
+        if self.record_handler != "chat":
+            raise ModelRetry("这里不能用 mode=plain，用 forward")
+        if problem := reply.plain_problem(len(ctx.deps.images)):
+            raise ModelRetry(problem)
+        return reply
 
     async def _execute(
         self,
@@ -452,7 +463,7 @@ class Invocator:
             await self._status(self.settings.interaction.action_emoji)
             await self._finish("done", None, reply=reply.model_dump())
             return "done"
-        if reply.mode != "forward":  # silent, or "done" without having done anything
+        if reply.mode not in ("forward", "plain"):  # silent, or "done" without having done anything
             return await self._stay_silent(reply)
 
         v_out = await moderate("output", mod_text, reply.full_text(), group_id=self.group_id)
@@ -634,6 +645,25 @@ class Invocator:
         deps = self.deps
         images = await reply_images(deps, reply) if deps is not None else {}
         self.meta.total_s = self.elapsed()
+        if reply.mode == "plain":
+            text = strip_markdown(reply.full_text())
+            pictures = [images[k][0] for s in reply.sections for k in s.images if k in images]
+            pictures += [p for p, _ in (deps.images if deps is not None else ())]
+            if not text and not pictures:  # an image-only answer whose pictures were all refused or lost
+                LOGGER.warning("plain answer has nothing left to send")
+                return
+            quote = should_quote(self.group_id, self.trigger_message_id, cfg.quote_reply)
+            self.reply_qq_message_id = await send_plain(
+                self.qq,
+                group_id=self.group_id,
+                user_id=self.user_id,
+                reply_to=self.trigger_message_id if quote else None,
+                text=text,
+                images=pictures,
+                self_id=ident.self_id,
+                nickname=ident.nickname,
+            )
+            return
         meta_text = self.meta.render(list(cfg.metadata_fields)) if cfg.metadata_node else None
         self.reply_qq_message_id = await send_forward(
             self.qq,

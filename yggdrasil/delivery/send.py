@@ -127,6 +127,43 @@ async def send_image(
     return message_id
 
 
+async def send_plain(
+    qq: QQ,
+    *,
+    group_id: int | None,
+    user_id: int,
+    reply_to: int | None,
+    text: str,
+    images: list[bytes],
+    self_id: int,
+    nickname: str,
+) -> int | None:
+    """A short answer (``BotReply`` mode=plain) as one ordinary message: its text, then its pictures. Like
+    :func:`send_text`, raises :class:`MessageDropped` when QQ swallows it in a group; like :func:`send_image`, None
+    when QQ didn't confirm a message with pictures."""
+    if not images:
+        return await send_text(
+            qq, group_id=group_id, user_id=user_id, reply_to=reply_to, text=text, self_id=self_id, nickname=nickname
+        )
+    try:
+        return await send_image(
+            qq,
+            group_id=group_id,
+            user_id=user_id,
+            reply_to=reply_to,
+            images=images,
+            text=text,
+            self_id=self_id,
+            nickname=nickname,
+        )
+    except Dropped as e:
+        if group_id is None:
+            raise
+        LOGGER.warning("plain answer to {} was dropped by QQ: {}", group_id, e)
+        await notify_dropped(qq, group_id, self_id, nickname)
+        raise MessageDropped(str(e)) from e
+
+
 def _unseen_image() -> Segment:
     """A picture we sent but couldn't fetch back from QQ: no ref or url, only the kept copy (``_keep_pictures``)."""
     return {"type": "image", "data": {"ref": "", "url": "", "summary": "[图片]", "sticker": False, "sha1": ""}}

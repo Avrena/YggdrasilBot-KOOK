@@ -185,6 +185,7 @@ async def get_invocation(invocation_id: UUID) -> InvocationDetail:
 
 
 _STAGES = {"input": "输入", "output": "输出", "ack": "快速响应"}
+_ACTIONS = {"pass": "放行", "review": "送审核", "drop": "拦下"}
 _OUTCOMES: dict[str, tuple[Literal["info", "warn", "error"], str]] = {
     "ok": ("info", "已发出合并转发"),
     "silent": ("info", "选择不回复"),
@@ -210,13 +211,15 @@ def _events(i: Invocation, moderation: list[ModerationResult]) -> list[Entry]:
             level="info" if m.action == "pass" else "warn",
             text=f"{_STAGES.get(m.stage, m.stage)}审核：{m.verdict}（{m.score:.2f}）"
             + (f" {'、'.join(m.categories)}" if m.categories else "")
-            + f" → {m.action}",
+            + f"，{_ACTIONS.get(m.action, m.action)}",
         )
         for m in moderation
     ]
     if i.status in _OUTCOMES:
         level, text = _OUTCOMES[i.status]
         reply = _reply(i)
+        if i.status == "ok" and isinstance(reply, BotReply) and reply.mode == "plain":
+            text = "已直接发到群里（普通消息）"
         if i.status == "silent" and isinstance(reply, BotReply) and reply.silent_reason:
             text += f"：{reply.silent_reason}"
         if i.error:

@@ -140,7 +140,7 @@ async def render_html(ctx: RunContext[Deps], html: str, caption: str = "") -> st
 def check_reply_images(ctx: RunContext[Deps], reply: BotReply) -> BotReply:
     """Output validator of the chat / tldr agents: ``Section.images`` may only name image handles of this
     conversation, each once, and no more than the reply has room for next to any attached pictures."""
-    if reply.mode != "forward":
+    if reply.mode not in ("forward", "plain"):
         return reply
     deps = ctx.deps
     sections = [s.model_copy(update={"images": [k.strip() for k in s.images]}) for s in reply.sections]
@@ -172,7 +172,7 @@ async def reply_images(deps: Deps, reply: BotReply) -> dict[str, tuple[bytes, st
     (they never were image-moderated); every other picture is decoded, fitted and moderated like any image the bot
     sends. One that fails is left out (and logged); the reply still goes."""
     keys = list(dict.fromkeys(k.strip() for s in reply.sections for k in s.images))
-    if reply.mode != "forward" or not keys:
+    if reply.mode not in ("forward", "plain") or not keys:
         return {}
     results = await asyncio.gather(*(_reply_image(deps, key) for key in keys), return_exceptions=True)
     pictures: dict[str, tuple[bytes, str]] = {}
