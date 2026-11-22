@@ -162,6 +162,7 @@ class Invocator:
         self.notes = TraceNotes(full=settings.privacy.capture_llm_content)
         # Recalling the trigger message stops the run before it answers; a run without one is never recalled.
         self.watch = recalls.Watch()
+        self._slow: asyncio.Task[None] | None = None  # adds slow_emoji unless the run has its answer by then
 
     def elapsed(self) -> float:
         return time.perf_counter() - self.started
@@ -181,6 +182,7 @@ class Invocator:
             try:
                 if await self._status(self.settings.interaction.received_emoji):
                     self._mark_ack("react")
+                self._slow = asyncio.create_task(self._mark_slow())
                 status = await self._run()
             except Exception as e:
                 error = f"{type(e).__name__}: {e}"[:1000]
@@ -189,6 +191,7 @@ class Invocator:
                 span.set_status(Status(StatusCode.ERROR, error[:200]))
                 await self._status(self.settings.interaction.failure_emoji)
             finally:
+                self._stop_slow()
                 span.set_attribute("ygg.status", status)
                 self.meta.total_s = self.elapsed()
                 INVOCATIONS.add(1, {"handler": self.record_handler, "outcome": status})
@@ -438,6 +441,7 @@ class Invocator:
             for t in (agent_task, input_task):
                 if not t.done():
                     t.cancel()
+            self._stop_slow()  # the answer is in: moderation and sending are quick
             self._account(resolved_model.label, run_usage, deps, run_stats)
             # No sh / py runs any more: the code it started can't call the bot from here on.
             await bridge.close_run(deps)
@@ -542,6 +546,18 @@ class Invocator:
             return False
         await react(self.qq, self.group_id, self.trigger_message_id, emoji)
         return True
+
+    async def _mark_slow(self) -> None:
+        """``slow_emoji`` once the run has gone ``slow_after_s`` without its answer, so the requester knows it is
+        still working (long sandbox runs, slow pages)."""
+        await asyncio.sleep(self.settings.interaction.slow_after_s)
+        with contextlib.suppress(Exception):
+            await self._status(self.settings.interaction.slow_emoji)
+
+    def _stop_slow(self) -> None:
+        if self._slow is not None:
+            self._slow.cancel()
+            self._slow = None
 
     def _budget(self) -> ToolBudget:
         # Workspace sessions (write, run, read the error, fix) need far more steps than a plain reply.

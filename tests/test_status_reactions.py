@@ -29,8 +29,9 @@ SILENT = '{"mode": "silent", "silent_reason": "不是在问我"}'
 
 
 class Run:
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, answer: str) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, answer: str, *, think_s: float = 0) -> None:
         self.answer = answer
+        self.think_s = think_s
         self.reactions: list[str] = []
         self.delivered: list[BotReply] = []
 
@@ -52,14 +53,16 @@ class Run:
         monkeypatch.setattr(invoke.ratelimit, "add_tokens", add_tokens)
 
     async def _stream(self, _messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[DeltaToolCalls]:
+        await asyncio.sleep(self.think_s)
         yield {0: DeltaToolCall(name=info.output_tools[0].name, json_args=self.answer)}
 
     def _never(self, _messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
         raise AssertionError("agents stream")
 
-    async def go(self, monkeypatch: pytest.MonkeyPatch, *, fail: bool = False) -> str:
+    async def go(self, monkeypatch: pytest.MonkeyPatch, *, fail: bool = False, slow_after_s: float = 30) -> str:
         m = incoming("问个问题", group_id=GROUP, user_id=ALICE, self_id=SELF, message_id=TRIGGER, to_me=True)
         settings = Settings()
+        settings.interaction = settings.interaction.model_copy(update={"slow_after_s": slow_after_s})
         qq = FakeQQ(self_id=SELF)
         inv = invoke.Invocator(qq, m, CHAT, "chat", "", settings, GROUP)
         model = FunctionModel(self._never, stream_function=self._stream)
@@ -93,3 +96,15 @@ async def test_an_outcome_without_a_message_gets_its_reaction(monkeypatch: pytes
     failed = Run(monkeypatch, "")
     assert await failed.go(monkeypatch, fail=True) == "failed"
     assert failed.reactions == [cfg.received_emoji, cfg.failure_emoji]
+
+
+async def test_a_run_still_working_after_slow_after_s_says_so_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = Settings().interaction
+    slow = Run(monkeypatch, FORWARD, think_s=0.3)
+    assert await slow.go(monkeypatch, slow_after_s=0.05) == "ok"
+    assert slow.reactions == [cfg.received_emoji, cfg.slow_emoji]
+
+    quick = Run(monkeypatch, FORWARD)
+    assert await quick.go(monkeypatch, slow_after_s=0.05) == "ok"
+    await asyncio.sleep(0.1)  # the timer is cancelled once the answer is in, not left to fire after it went out
+    assert quick.reactions == [cfg.received_emoji]
