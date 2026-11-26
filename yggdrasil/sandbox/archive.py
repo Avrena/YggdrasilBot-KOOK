@@ -29,7 +29,8 @@ async def archive_job(job: Job, events: list[JobEvent]) -> None:
     """Store (or refresh) a finished job with its whole event log, ``events`` oldest first."""
     values: dict[str, Any] = {
         "id": job.id,
-        "group_id": job.group_id,
+        "channel_id": job.channel_id,
+        "guild_id": job.guild_id,
         "user_id": job.user_id,
         "kind": job.kind,
         "workspace": job.workspace,
@@ -70,7 +71,7 @@ def matches(job: Job, q: str) -> bool:
 
 async def search(
     *,
-    group_id: int | None = None,
+    channel_id: str | None = None,
     statuses: Collection[str] | None = None,
     kind: str | None = None,
     q: str | None = None,
@@ -80,8 +81,8 @@ async def search(
 ) -> tuple[list[Job], int]:
     """Archived jobs newest first, without their events; and how many match."""
     cond: list[ColumnElement[bool]] = []
-    if group_id is not None:
-        cond.append(SandboxJob.group_id == group_id)
+    if channel_id is not None:
+        cond.append(SandboxJob.channel_id == channel_id)
     if statuses is not None:
         cond.append(SandboxJob.status.in_(list(statuses)))
     if kind is not None:

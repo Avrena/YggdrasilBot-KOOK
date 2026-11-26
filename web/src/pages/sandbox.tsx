@@ -11,11 +11,11 @@ import {
 } from "@/client/@tanstack/react-query.gen";
 import type { JobOut, WorkspaceOut } from "@/client/types.gen";
 import {
+  ChannelSelect,
   ConfirmButton,
   Empty,
   ExternalLink,
   FilterBar,
-  GroupSelect,
   Hint,
   Meta,
   OptionSelect,
@@ -23,8 +23,8 @@ import {
   Pager,
   QueryState,
   SectionHeader,
+  useChannelName,
   useDebounced,
-  useGroupName,
 } from "@/components/common";
 import { fmtTokens } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
@@ -44,26 +44,25 @@ export function SandboxPage() {
     ...destroyAllWorkspacesMutation(),
     onSuccess: (r) => toast.success(`已销毁 ${r.destroyed} 个工作区`),
   });
-  const groupName = useGroupName();
-  // The API lists each group's workspaces together; one row per workspace, the group cell spanning them.
-  const byGroup: [number, WorkspaceOut[]][] = [];
+  const channelName = useChannelName();
+  const byChannel: [string, WorkspaceOut[]][] = [];
   for (const w of workspaces.data?.items ?? []) {
-    const last = byGroup[byGroup.length - 1];
-    if (last && last[0] === w.group_id) last[1].push(w);
-    else byGroup.push([w.group_id, [w]]);
+    const last = byChannel[byChannel.length - 1];
+    if (last && last[0] === w.channel_id) last[1].push(w);
+    else byChannel.push([w.channel_id, [w]]);
   }
   return (
     <div>
       <PageHeader
         title="工作区"
-        description="每个群可以有几个沙箱工作区，闲置或到期后自动回收，文件随之删除。"
+        description="每个频道可以有几个沙箱工作区，闲置或到期后自动回收，文件随之删除。"
         actions={
           !!workspaces.data?.items.length && (
             <ConfirmButton
               variant="destructive"
               size="default"
               title="销毁全部工作区？"
-              description="所有群的工作区、文件和公开链接都会被删除，正在进行的调用会失败。"
+              description="所有频道的工作区、文件和公开链接都会被删除，正在进行的调用会失败。"
               onConfirm={() => destroyAll.mutate({})}
             >
               <Trash2Icon data-icon="inline-start" /> 销毁全部
@@ -73,11 +72,11 @@ export function SandboxPage() {
       />
       <QueryState isLoading={workspaces.isLoading} error={workspaces.error} />
       {workspaces.data?.items.length === 0 && <Empty>当前没有工作区</Empty>}
-      {byGroup.length > 0 && (
+      {byChannel.length > 0 && (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>群</TableHead>
+              <TableHead>频道</TableHead>
               <TableHead>工作区</TableHead>
               <TableHead>最近使用</TableHead>
               <TableHead>到期</TableHead>
@@ -90,12 +89,12 @@ export function SandboxPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {byGroup.map(([groupId, items]) =>
+            {byChannel.map(([channelId, items]) =>
               items.map((w, i) => (
-                <TableRow key={`${groupId}/${w.name}`} className="align-top">
+                <TableRow key={`${channelId}/${w.name}`} className="align-top">
                   {i === 0 && (
                     <TableCell rowSpan={items.length} className="border-r">
-                      {groupName(groupId)}
+                      {channelName(channelId)}
                     </TableCell>
                   )}
                   <TableCell className="max-w-80 whitespace-normal">
@@ -131,7 +130,7 @@ export function SandboxPage() {
                     <ConfirmButton
                       title={`销毁工作区 ${w.name}？`}
                       description="文件和公开链接都会被删除；正在使用它的调用和后台任务会失败。"
-                      onConfirm={() => destroy.mutate({ path: { group_id: groupId, name: w.name } })}
+                      onConfirm={() => destroy.mutate({ path: { channel_id: channelId, name: w.name } })}
                     >
                       销毁
                     </ConfirmButton>
@@ -142,7 +141,7 @@ export function SandboxPage() {
           </TableBody>
         </Table>
       )}
-      <JobsSection groupName={groupName} />
+      <JobsSection channelName={channelName} />
     </div>
   );
 }
@@ -180,8 +179,8 @@ export function fmtDuration(j: Pick<JobOut, "created_at" | "ended_at">): string 
   return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分`;
 }
 
-function JobsSection({ groupName }: { groupName: (id: number) => string }) {
-  const [groupId, setGroupId] = useState<number | null>(null);
+function JobsSection({ channelName }: { channelName: (id: string) => string }) {
+  const [channelId, setChannelId] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [kind, setKind] = useState<string | null>(null);
   const [q, setQ] = useState("");
@@ -191,7 +190,7 @@ function JobsSection({ groupName }: { groupName: (id: number) => string }) {
   const jobs = useQuery({
     ...listJobsOptions({
       query: {
-        group_id: groupId,
+        channel_id: channelId,
         status: status as "running" | "succeeded" | "failed" | "timeout" | "cancelled" | null,
         kind: kind as "command" | "agent" | null,
         q: query || null,
@@ -201,7 +200,6 @@ function JobsSection({ groupName }: { groupName: (id: number) => string }) {
     }),
     refetchInterval: 10_000,
   });
-  // Every filter change starts from the first page.
   const filter =
     <T,>(set: (v: T) => void) =>
     (v: T) => {
@@ -219,7 +217,7 @@ function JobsSection({ groupName }: { groupName: (id: number) => string }) {
           value={q}
           onChange={(e) => filter(setQ)(e.target.value)}
         />
-        <GroupSelect className="w-56" value={groupId} onChange={filter(setGroupId)} />
+        <ChannelSelect className="w-64" value={channelId} onChange={filter(setChannelId)} />
         <OptionSelect
           className="w-28"
           aria-label="状态"
@@ -250,7 +248,7 @@ function JobsSection({ groupName }: { groupName: (id: number) => string }) {
           <TableHeader>
             <TableRow>
               <TableHead>任务</TableHead>
-              <TableHead>群</TableHead>
+              <TableHead>频道</TableHead>
               <TableHead>类型</TableHead>
               <TableHead>状态</TableHead>
               <TableHead>开始</TableHead>
@@ -280,7 +278,7 @@ function JobsSection({ groupName }: { groupName: (id: number) => string }) {
                     </Link>
                   </Hint>
                 </TableCell>
-                <TableCell>{groupName(j.group_id)}</TableCell>
+                <TableCell>{channelName(j.channel_id)}</TableCell>
                 <TableCell className="text-xs">{JOB_KIND[j.kind] ?? j.kind}</TableCell>
                 <TableCell className="max-w-72">
                   <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-"""Assemble the user prompt for chat / tldr runs from the incoming message and memory."""
+"""Assemble the user prompt for chat / tldr runs from the incoming KOOK message, channel context, and guild memory."""
 
 import secrets
 import time
@@ -15,11 +15,12 @@ from yggdrasil.db.models import Message
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.normalize import URL_RE, normalize
 from yggdrasil.ingest.writer import WRITER
+from yggdrasil.kook.model import Incoming
 from yggdrasil.people import People, resolve
 from yggdrasil.prompts import render
-from yggdrasil.qq.model import Incoming
+from yggdrasil.runtime import snapshot
 from yggdrasil.settings import Settings
-from yggdrasil.transcript.schema import QQContextDisplay, QQMessage
+from yggdrasil.transcript.schema import ChatContextDisplay, ChatMessage
 from yggdrasil.triggers.index import Resolved
 
 if TYPE_CHECKING:
@@ -30,17 +31,17 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class TargetMessage:
-    qq_message_id: int
-    user_id: int
+    kook_message_id: str
+    user_id: str
     sender_name: str
     text: str
     segments: list[dict[str, Any]]
     is_self: bool
     sent_at: datetime | None = None
 
-    def snapshot(self) -> QQMessage:
-        return QQMessage(
-            qq_message_id=self.qq_message_id,
+    def snapshot(self) -> ChatMessage:
+        return ChatMessage(
+            kook_message_id=self.kook_message_id,
             user_id=self.user_id,
             sender_name=self.sender_name,
             sent_at=self.sent_at,
@@ -56,13 +57,9 @@ class BuiltContext:
     trigger: TargetMessage
     handles: Handles
     request_text: str
-    mentioned: list[int] = field(default_factory=list)
-    # Random suffix of every data block's tag (<最近群聊-ab12cd>); the system prompt names it so
-    # a pasted "</最近群聊>" can't fake the end of a block.
+    mentioned: list[str] = field(default_factory=list)
     nonce: str = ""
-    display: QQContextDisplay | None = None  # what the prompt contained, for the console's transcript
-    # Handles of the messages the request is about (trigger, quoted message and what it replies to), in prompt
-    # order; their images are attached up front. Background chat registers handles too, but not here.
+    display: ChatContextDisplay | None = None
     focus: list[str] = field(default_factory=list)
 
 
@@ -86,9 +83,9 @@ def _ts(dt: datetime | None) -> str:
     return dt.astimezone().strftime("%m-%d %H:%M") if dt else ""
 
 
-def trigger_message(incoming: Incoming, self_id: int) -> TargetMessage:
+def trigger_message(incoming: Incoming, self_id: str) -> TargetMessage:
     return TargetMessage(
-        qq_message_id=incoming.message_id,
+        kook_message_id=incoming.message_id,
         user_id=incoming.user_id,
         sender_name=incoming.sender.name.strip(),
         text=normalize(incoming.segments).text,
@@ -98,32 +95,31 @@ def trigger_message(incoming: Incoming, self_id: int) -> TargetMessage:
     )
 
 
-async def _own_segments(group_id: int, qq_message_id: int) -> list[dict[str, Any]] | None:
-    """Segments we stored when sending (incl. forward node texts that QQ won't give back)."""
+async def _own_segments(channel_id: str, kook_message_id: str) -> list[dict[str, Any]] | None:
     async with get_session() as session:
         return await session.scalar(
             select(Message.segments)
             .where(
-                Message.group_id == group_id,
-                Message.qq_message_id == qq_message_id,
+                Message.channel_id == channel_id,
+                Message.kook_message_id == kook_message_id,
                 Message.is_self,
-                Message.sent_at > datetime.now(UTC) - timedelta(days=7),
+                Message.sent_at > datetime.now(UTC) - timedelta(days=30),
             )
             .order_by(Message.sent_at.desc())
             .limit(1)
         )
 
 
-async def target_message(incoming: Incoming, resolved: Resolved, self_id: int) -> TargetMessage:
+async def target_message(incoming: Incoming, resolved: Resolved, self_id: str) -> TargetMessage:
     if resolved.target in ("quoted_or_self", "quoted") and incoming.reply is not None:
         r = incoming.reply
         segs = r.segments
         is_self = r.sender.user_id == self_id
-        if is_self and incoming.group_id is not None:
+        if is_self and incoming.channel_id is not None:
             await WRITER.flush()
-            segs = await _own_segments(incoming.group_id, r.message_id) or segs
+            segs = await _own_segments(incoming.channel_id, r.message_id) or segs
         return TargetMessage(
-            qq_message_id=r.message_id,
+            kook_message_id=r.message_id,
             user_id=r.sender.user_id,
             sender_name=r.sender.name.strip(),
             text=normalize(segs).text,
@@ -134,18 +130,18 @@ async def target_message(incoming: Incoming, resolved: Resolved, self_id: int) -
     return trigger_message(incoming, self_id)
 
 
-# --- glossary matching -------------------------------------------------------
+# --- glossary matching (guild-shared) ---------------------------------------------------------------------------
 
-_automata: dict[int, tuple[float, Any]] = {}
+_automata: dict[str, tuple[float, Any]] = {}
 _GLOSSARY_TTL = 300
 
 
-async def _glossary_hits(group_id: int, texts: list[str]) -> list[Any]:
+async def _glossary_hits(guild_id: str, texts: list[str]) -> list[Any]:
     from yggdrasil.memory.search import glossary_terms
 
-    cached = _automata.get(group_id)
+    cached = _automata.get(guild_id)
     if cached is None or time.monotonic() - cached[0] > _GLOSSARY_TTL:
-        terms = await glossary_terms(group_id)
+        terms = await glossary_terms(guild_id)
         auto = ahocorasick.Automaton()
         for t in terms:
             for word in [t.term, *t.aliases]:
@@ -154,7 +150,7 @@ async def _glossary_hits(group_id: int, texts: list[str]) -> list[Any]:
         if len(auto):
             auto.make_automaton()
         cached = (time.monotonic(), auto)
-        _automata[group_id] = cached
+        _automata[guild_id] = cached
     auto = cached[1]
     if not len(auto):
         return []
@@ -165,23 +161,15 @@ async def _glossary_hits(group_id: int, texts: list[str]) -> list[Any]:
     return list(found.values())[:12]
 
 
-# --- assembly ----------------------------------------------------------------
+# --- assembly ---------------------------------------------------------------------------------------------------
 
-# The quoted message plus up to two messages up its own reply chain: "tldr" on a remark that replies to a forward
-# must see the forward.
 _QUOTE_LEVELS = 3
 
 
-def chat_line(m: "MessageView", people: People, handles: Handles, replies: "Mapping[int, MessageView]") -> str:
-    """A history message as the model sees it everywhere: ``[time] #id who 回复 #id who: text (fwd#1, img#2)``.
-
-    ``#id`` is the database id every history tool and ``#<id>`` ref takes; the handles make what the line shows
-    usable as is. ``replies`` (from :func:`reply_targets`) maps QQ ids to the messages replied to; a reply whose
-    message isn't in it reads as a reply to an older message.
-    """
+def chat_line(m: "MessageView", people: People, handles: Handles, replies: "Mapping[str, MessageView]") -> str:
     who = people.who(m.user_id, m.sender_name, is_self=m.is_self)
-    if m.reply_to_qq_id is not None:
-        target = replies.get(m.reply_to_qq_id)
+    if m.reply_to_msg_id is not None:
+        target = replies.get(m.reply_to_msg_id)
         if target is not None:
             who += f" 回复 #{target.id} {people.who(target.user_id, target.sender_name, is_self=target.is_self)}"
         else:
@@ -189,26 +177,22 @@ def chat_line(m: "MessageView", people: People, handles: Handles, replies: "Mapp
     return f"[{_ts(m.sent_at)}] #{m.id} {who}: {people.mentions(m.text)}{handles.register(m.segments or [])}"
 
 
-async def reply_targets(group_id: int | None, msgs: "Sequence[MessageView]") -> "dict[int, MessageView]":
-    """The messages ``msgs`` reply to, by QQ id: taken from ``msgs`` when there, the rest looked up (last 7 days)."""
+async def reply_targets(channel_id: str | None, msgs: "Sequence[MessageView]") -> "dict[str, MessageView]":
     from yggdrasil.memory import search
 
-    wanted = {m.reply_to_qq_id for m in msgs if m.reply_to_qq_id is not None}
-    if group_id is None or not wanted:
+    wanted = {m.reply_to_msg_id for m in msgs if m.reply_to_msg_id is not None}
+    if not channel_id or not wanted:
         return {}
-    found = {m.qq_message_id: m for m in msgs if m.qq_message_id in wanted}
+    found = {m.kook_message_id: m for m in msgs if m.kook_message_id in wanted}
     if missing := wanted - found.keys():
         try:
-            found = {**await search.find_by_qq_ids(group_id, missing), **found}
+            found = {**await search.find_by_msg_ids(channel_id, missing), **found}
         except Exception:
             LOGGER.exception("reply target lookup failed")
     return found
 
 
 def chat_tail(lines: "Sequence[str]", budget: int) -> tuple[int, str]:
-    """The newest whole ``lines`` (one per message) that fit in ``budget`` characters, and the index of the first
-    one kept: a cut never starts inside a multi-line message. The newest line always shows (cut short if it alone
-    is too long)."""
     first, size = len(lines) - 1, len(lines[-1])
     while first > 0 and size + 1 + len(lines[first - 1]) <= budget:
         first -= 1
@@ -216,33 +200,32 @@ def chat_tail(lines: "Sequence[str]", budget: int) -> tuple[int, str]:
     return first, "\n".join(lines[first:])[:budget]
 
 
-async def _quoted_row(group_id: int | None, target: "TargetMessage") -> "MessageView | None":
+async def _quoted_row(channel_id: str | None, target: TargetMessage) -> "MessageView | None":
     from yggdrasil.memory import search
 
-    if group_id is None:
+    if not channel_id:
         return None
     try:
-        return await search.find_by_qq_id(group_id, target.qq_message_id)
+        return await search.find_by_msg_id(channel_id, target.kook_message_id)
     except Exception:
         LOGGER.exception("quoted message lookup failed")
         return None
 
 
-async def _reply_chain(group_id: int, reply_to: int | None) -> list["MessageView"]:
-    """The messages a quoted message replies to, up its chain (oldest first), as far as the history has them."""
+async def _reply_chain(channel_id: str, reply_to: str | None) -> list["MessageView"]:
     from yggdrasil.memory import search
 
     chain: list[MessageView] = []
     while reply_to is not None and len(chain) < _QUOTE_LEVELS - 1:
         try:
-            m = await search.find_by_qq_id(group_id, reply_to)
+            m = await search.find_by_msg_id(channel_id, reply_to)
         except Exception:
             LOGGER.exception("reply chain lookup failed")
             break
         if m is None or any(c.id == m.id for c in chain):
             break
         chain.append(m)
-        reply_to = m.reply_to_qq_id
+        reply_to = m.reply_to_msg_id
     return chain[::-1]
 
 
@@ -251,31 +234,27 @@ async def build_context(
     resolved: Resolved,
     settings: Settings,
     *,
-    self_id: int,
+    self_id: str,
     bot_name: str,
     request_text: str,
     workspace: bool = False,
     recall: bool | None = None,
 ) -> BuiltContext:
-    """``workspace``: this run has the sandbox suite, so list the group's workspaces (the model picks one).
-    ``recall``: the request replies to one of the bot's messages, and whether the speaker may have it recalled."""
     from yggdrasil.memory import search
 
+    snap = snapshot()
     handles = Handles()
     trigger = trigger_message(incoming, self_id)
     target = await target_message(incoming, resolved, self_id)
-    group_id = incoming.group_id
+    channel_id = incoming.channel_id
+    guild_id = incoming.guild_id or (snap.guild_of(channel_id) if channel_id else None)
     cfg = settings.context
     blocks = _Blocks()
-    # tldr summarizes the target itself: no group chat, profiles or topics up front (they slant it toward
-    # the asker or the group's theme); it can pull recent chat with the recent_chat tool when needed.
     background = resolved.handler != "tldr"
 
-    quoted = target.qq_message_id != trigger.qq_message_id
+    quoted = target.kook_message_id != trigger.kook_message_id
     trigger_norm = normalize(trigger.segments)
     mentioned = trigger_norm.mentions
-    # A bare "tldr" (no quote, no words, nothing attached) means "what was just said": the recent chat is the
-    # target, so it goes in up front. Without it the model saw nothing and stayed silent.
     bare_tldr = (
         resolved.handler == "tldr"
         and not quoted
@@ -283,25 +262,23 @@ async def build_context(
         and not trigger_norm.attachments
         and not trigger_norm.urls
     )
-    if group_id is not None:
-        await WRITER.flush()  # also lets recent_chat / search tools see the latest messages
+    if channel_id is not None:
+        await WRITER.flush()
     recent: list[search.MessageView] = []
-    if group_id is not None and (background or bare_tldr):
+    if channel_id is not None and (background or bare_tldr):
         try:
-            # Looked up through the module: devtools.seed swaps search.recent_messages to replay past triggers.
-            recent = await search.recent_messages(group_id, limit=cfg.recent_messages, minutes=cfg.recent_minutes)
+            recent = await search.recent_messages(channel_id, limit=cfg.recent_messages, minutes=cfg.recent_minutes)
         except Exception:
             LOGGER.exception("recent_messages failed")
-    quoted_row = await _quoted_row(group_id, target) if quoted else None
+    quoted_row = await _quoted_row(channel_id, target) if quoted else None
     chain: list[search.MessageView] = []
-    if quoted and group_id is not None:
-        reply_to = quoted_row.reply_to_qq_id if quoted_row else normalize(target.segments).reply_to
-        chain = await _reply_chain(group_id, reply_to)
-    replies = await reply_targets(group_id, [*chain, *recent])
-    # One alias lookup for everyone this prompt names: senders, @mentions, quoted authors.
+    if quoted and channel_id is not None:
+        reply_to = quoted_row.reply_to_msg_id if quoted_row else normalize(target.segments).reply_to
+        chain = await _reply_chain(channel_id, reply_to)
+    replies = await reply_targets(channel_id, [*chain, *recent])
     try:
         people = await resolve(
-            group_id,
+            guild_id,
             {
                 trigger.user_id,
                 target.user_id,
@@ -317,12 +294,11 @@ async def build_context(
     except Exception:
         LOGGER.exception("name lookup failed")
         people = People(bot_name, self_ids=frozenset({self_id}))
-    # Model-facing texts: mentions as 名字(QQ), the bot as {bot_name}(你).
+
     trigger.text = normalize(trigger.segments, people.mention).text
     target.text = trigger.text if target is trigger else normalize(target.segments, people.mention).text
     request_text = people.mentions(request_text)
 
-    # The messages the request is about register first: their handles are focus (attached up front).
     chain_lines = [chat_line(m, people, handles, replies) for m in chain]
     target_suffix = handles.register(target.segments, urls=True) if quoted else ""
     trigger_suffix = handles.register(trigger.segments, urls=True)
@@ -333,7 +309,7 @@ async def build_context(
         lines = [chat_line(m, people, handles, replies) for m in recent]
         first, text = chat_tail(lines, cfg.max_context_chars)
         recent_ids = [m.id for m in recent[first:]]
-        blocks.add("最近群聊", text)
+        blocks.add("最近聊天", text)
 
     if chain_lines:
         blocks.add("被引用消息回复的消息", "\n".join(chain_lines))
@@ -346,39 +322,46 @@ async def build_context(
             f'时间="{_ts(target.sent_at)}"{number}',
         )
 
-    if group_id is not None:
+    if guild_id is not None:
         others = {trigger.user_id, target.user_id, *mentioned} - {self_id}
         if cfg.include_profiles and background and others:
             try:
-                profiles = list((await search.profiles(group_id, sorted(others))).values())
+                profiles = list((await search.profiles(guild_id, sorted(others))).values())
             except Exception:
                 LOGGER.exception("profiles lookup failed")
                 profiles = []
             if profiles:
                 lines = [f"- {people.who(p.user_id, p.display_name)}：{p.summary}" for p in profiles if p.summary]
                 if lines:
-                    blocks.add("相关群友画像", "\n".join(lines))
+                    blocks.add("相关成员画像", "\n".join(lines))
         if cfg.include_glossary:
             try:
-                hits = await _glossary_hits(group_id, [trigger.text, target.text, request_text])
+                hits = await _glossary_hits(guild_id, [trigger.text, target.text, request_text])
             except Exception:
                 LOGGER.exception("glossary lookup failed")
                 hits = []
             if hits:
-                blocks.add("群内黑话", "\n".join(f"- {t.term}：{t.definition}" for t in hits))
+                blocks.add("服务器黑话", "\n".join(f"- {t.term}：{t.definition}" for t in hits))
         if cfg.include_open_topics and background:
             try:
-                topics = await search.open_topics(group_id, limit=5)
+                topics = await search.open_topics(guild_id, channel_id=channel_id, limit=5)
             except Exception:
                 LOGGER.exception("open_topics failed")
                 topics = []
             if topics:
-                blocks.add("进行中的话题", "\n".join(f"- {t.title}：{t.summary}" for t in topics))
-        if workspace:
-            await _add_workspace_listing(blocks, group_id)
+                topic_lines = []
+                for t in topics:
+                    ch_tag = (
+                        f"[#{snap.channel_name(t.channel_id) or t.channel_id}] "
+                        if channel_id and t.channel_id != channel_id
+                        else ""
+                    )
+                    topic_lines.append(f"- {ch_tag}{t.title}：{t.summary}")
+                blocks.add("进行中的话题", "\n".join(topic_lines))
+    if channel_id is not None and workspace:
+        await _add_workspace_listing(blocks, channel_id)
 
     sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'
-    # "tldr <link> <words>" without a quote: the link is the target and the words say what to focus on.
     link_focus = ""
     if resolved.handler == "tldr" and not quoted and (links := URL_RE.findall(request_text)):
         rest = " ".join(URL_RE.sub(" ", request_text).split()).lstrip("，。！？、：；,.!?:; ")
@@ -388,7 +371,6 @@ async def build_context(
         blocks.add("请求", f"{' '.join(links)}{trigger_suffix}", sender)
         blocks.add("关注点", link_focus, sender)
     elif focused:
-        # "tldr <words>" on a quoted message: the words say what to focus on.
         blocks.add("关注点", f"{request_text}{trigger_suffix}", sender)
     else:
         blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
@@ -396,8 +378,8 @@ async def build_context(
         blocks.note(render("recall_note", allowed=recall))
     if bare_tldr and recent_ids:
         blocks.note(
-            "这条 tldr 没有引用消息：目标是「最近群聊」里请求之前的内容。请求前刚有人发了合并转发、链接、文件、"
-            "长消息或图片时就总结那一条；没有的话概括最近大家在聊什么。"
+            "这条 tldr 没有引用消息：目标是「最近聊天」里请求之前的内容。请求前刚有人发了链接、文件、"
+            "卡片、长消息或图片时就总结那一条；没有的话概括最近大家在聊什么。"
         )
     if resolved.handler == "tldr":
         ia = settings.interaction
@@ -406,15 +388,16 @@ async def build_context(
             if focused
             else f"篇幅：正文不超过 {ia.tldr_max_chars} 字，挑最重要的说，不要罗列所有细节。"
         )
-    display = QQContextDisplay(
+    display = ChatContextDisplay(
         recent=recent_ids,
         quoted=target.snapshot() if quoted else None,
         trigger=trigger.snapshot(),
         blocks=blocks.tags,
         chain=[
-            QQMessage(
+            ChatMessage(
                 id=m.id,
-                qq_message_id=m.qq_message_id,
+                kook_message_id=m.kook_message_id,
+                channel_id=m.channel_id,
                 user_id=m.user_id,
                 sender_name=m.sender_name,
                 sent_at=m.sent_at,
@@ -437,62 +420,55 @@ async def build_context(
     )
 
 
-async def _add_workspace_listing(blocks: _Blocks, group_id: int) -> None:
+async def _add_workspace_listing(blocks: _Blocks, channel_id: str) -> None:
     from yggdrasil.sandbox import manager
 
     try:
-        listing = await manager().listing(group_id)
+        listing = await manager().listing(channel_id)
     except Exception:
         LOGGER.exception("workspace listing failed")
         return
     if listing is not None:
-        blocks.add("工作区", listing or "本群还没有工作区。")
+        blocks.add("工作区", listing or "本频道还没有工作区。")
 
 
 async def build_followup_context(
     incoming: Incoming,
     settings: Settings,
     *,
-    self_id: int,
+    self_id: str,
     bot_name: str,
     request_text: str,
     handles: Handles,
     nonce: str,
-    answer_qq_id: int,
+    answer_msg_id: str,
     seen_message_id: int | None,
     since: datetime,
     now: str,
     recall: bool,
     workspace: bool = False,
 ) -> BuiltContext:
-    """The prompt of a reply that continues the conversation of the bot answer it replies to (``pipeline.session``):
-    what changed since that run (the time ``now``, what the group said after it), then the request. ``handles`` and
-    ``nonce`` are that run's, so the handles and block tags in its messages keep working; the chat is what came after
-    ``#seen_message_id`` (sent since ``since``). ``recall``: whether the speaker may have the answer recalled. Group
-    messages only.
-    """
     from yggdrasil.memory import search
 
-    group_id = incoming.group_id
-    if group_id is None:
-        raise ValueError("a follow-up continues an answer in a group")
+    channel_id = incoming.channel_id
+    if channel_id is None:
+        raise ValueError("a follow-up continues an answer in a channel")
+    guild_id = incoming.guild_id or snapshot().guild_of(channel_id)
     cfg = settings.context
     blocks = _Blocks(nonce)
     trigger = trigger_message(incoming, self_id)
     await WRITER.flush()
     try:
-        newer = await search.messages_after(group_id, seen_message_id, since)
+        newer = await search.messages_after(channel_id, seen_message_id, since)
     except Exception:
         LOGGER.exception("messages_after failed")
         newer = []
-    # The answer is the model's own last turn and the request comes on its own; what came after the request is not
-    # part of the conversation yet.
-    upto = next((i for i, m in enumerate(newer) if m.qq_message_id == trigger.qq_message_id), len(newer))
-    between = [m for m in newer[:upto] if not (m.is_self and m.qq_message_id == answer_qq_id)]
+    upto = next((i for i, m in enumerate(newer) if m.kook_message_id == trigger.kook_message_id), len(newer))
+    between = [m for m in newer[:upto] if not (m.is_self and m.kook_message_id == answer_msg_id)]
     mentioned = normalize(trigger.segments).mentions
     try:
         people = await resolve(
-            group_id,
+            guild_id,
             {trigger.user_id, *mentioned},
             bot_name=bot_name,
             self_id=self_id,
@@ -510,29 +486,29 @@ async def build_followup_context(
     blocks.note(
         f"现在是 {now}（北京时间），以这个时间为准。这条请求回复的是你上面的回答：直接接着上面的对话回应它，"
         "不必沿用上一次的任务格式，上面查过、说过的不用重来。"
-        + ("「中间的新增对话」是那之后群里说的话，只是背景。" if between else "")
+        + ("「中间的新增对话」是那之后本频道里说的话，只是背景。" if between else "")
     )
     shown: list[int] = []
     if between:
-        replies = await reply_targets(group_id, between)
+        replies = await reply_targets(channel_id, between)
         lines = [chat_line(m, people, handles, replies) for m in between]
         first, text = chat_tail(lines, cfg.max_context_chars)
         shown = [m.id for m in between[first:]]
         blocks.add("中间的新增对话", text)
-    if cfg.include_glossary:
+    if cfg.include_glossary and guild_id:
         try:
-            hits = await _glossary_hits(group_id, [trigger.text, request_text])
+            hits = await _glossary_hits(guild_id, [trigger.text, request_text])
         except Exception:
             LOGGER.exception("glossary lookup failed")
             hits = []
         if hits:
-            blocks.add("群内黑话", "\n".join(f"- {t.term}：{t.definition}" for t in hits))
+            blocks.add("服务器黑话", "\n".join(f"- {t.term}：{t.definition}" for t in hits))
     if workspace:
-        await _add_workspace_listing(blocks, group_id)
+        await _add_workspace_listing(blocks, channel_id)
     sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'
     blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
     blocks.note(render("recall_note", allowed=recall))
-    display = QQContextDisplay(recent=shown, trigger=trigger.snapshot(), blocks=blocks.tags)
+    display = ChatContextDisplay(recent=shown, trigger=trigger.snapshot(), blocks=blocks.tags)
     return BuiltContext(
         "\n\n".join(blocks.parts),
         trigger,

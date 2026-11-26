@@ -949,21 +949,35 @@
         }
       }
     },
-    "/settings/groups/{group_id}": {
+    "/settings/scopes/{scope}/{scope_id}": {
       "get": {
         "tags": [
           "settings"
         ],
-        "summary": "Get Group Settings",
-        "operationId": "get_group_settings",
+        "summary": "Get Scope Settings",
+        "operationId": "get_scope_settings",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "scope",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "enum": [
+                "guild",
+                "category",
+                "channel"
+              ],
+              "type": "string",
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
             }
           }
         ],
@@ -994,16 +1008,30 @@
         "tags": [
           "settings"
         ],
-        "summary": "Put Group Settings",
-        "operationId": "put_group_settings",
+        "summary": "Put Scope Settings",
+        "operationId": "put_scope_settings",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "scope",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "enum": [
+                "guild",
+                "category",
+                "channel"
+              ],
+              "type": "string",
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
             }
           }
         ],
@@ -1043,20 +1071,20 @@
         }
       }
     },
-    "/qq/milky": {
+    "/kook/connection": {
       "get": {
         "tags": [
-          "qq"
+          "kook"
         ],
-        "summary": "Get Qq Milky",
-        "operationId": "get_qq_milky",
+        "summary": "Get Kook Connection",
+        "operationId": "get_kook_connection",
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MilkyOut"
+                  "$ref": "#/components/schemas/KookConnectionOut"
                 }
               }
             }
@@ -1065,16 +1093,15 @@
       },
       "put": {
         "tags": [
-          "qq"
+          "kook"
         ],
-        "summary": "Put Qq Milky",
-        "description": "Set the URL and, when given, the token; the bot reconnects.",
-        "operationId": "put_qq_milky",
+        "summary": "Put Kook Connection",
+        "operationId": "put_kook_connection",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MilkyIn"
+                "$ref": "#/components/schemas/KookConnectionIn"
               }
             }
           },
@@ -1086,7 +1113,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MilkyOut"
+                  "$ref": "#/components/schemas/KookConnectionOut"
                 }
               }
             }
@@ -1105,18 +1132,17 @@
       },
       "delete": {
         "tags": [
-          "qq"
+          "kook"
         ],
-        "summary": "Delete Qq Milky",
-        "description": "Forget URL and token; the bot disconnects.",
-        "operationId": "delete_qq_milky",
+        "summary": "Delete Kook Connection",
+        "operationId": "delete_kook_connection",
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MilkyOut"
+                  "$ref": "#/components/schemas/Ok"
                 }
               }
             }
@@ -1124,35 +1150,13 @@
         }
       }
     },
-    "/qq/milky/token": {
-      "delete": {
-        "tags": [
-          "qq"
-        ],
-        "summary": "Delete Qq Milky Token",
-        "description": "Forget the token; the bot reconnects without one.",
-        "operationId": "delete_qq_milky_token",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MilkyOut"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/groups": {
+    "/kook/guilds": {
       "get": {
         "tags": [
-          "groups"
+          "kook"
         ],
-        "summary": "List Groups",
-        "operationId": "list_groups",
+        "summary": "List Kook Live Guilds",
+        "operationId": "list_kook_live_guilds",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1160,10 +1164,10 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/GroupOut"
+                    "$ref": "#/components/schemas/LiveGuildOut"
                   },
                   "type": "array",
-                  "title": "Response List Groups"
+                  "title": "Response List Kook Live Guilds"
                 }
               }
             }
@@ -1171,21 +1175,157 @@
         }
       }
     },
-    "/groups/{group_id}": {
-      "put": {
+    "/kook/sync": {
+      "post": {
         "tags": [
-          "groups"
+          "kook"
         ],
-        "summary": "Upsert Group",
-        "operationId": "upsert_group",
+        "summary": "Sync Kook Structure",
+        "description": "Pull Guild -> Category -> Text Channel structure from KOOK into DB without clobbering overrides.",
+        "operationId": "sync_kook_structure",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/channels/guilds": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "List Guilds",
+        "operationId": "list_guilds",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GuildOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Guilds"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/channels": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "List Channels",
+        "operationId": "list_channels",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Guild Id"
+            }
+          },
+          {
+            "name": "include_categories",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Categories"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelOut"
+                  },
+                  "title": "Response List Channels"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/channels/tree": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Get Channel Tree",
+        "description": "Collapsible 3-level tree: Guild -> Category -> Channel.",
+        "operationId": "get_channel_tree",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GuildTreeOut"
+                  },
+                  "type": "array",
+                  "title": "Response Get Channel Tree"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/channels/guilds/{guild_id}": {
+      "put": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Upsert Guild",
+        "operationId": "upsert_guild",
+        "parameters": [
+          {
+            "name": "guild_id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "type": "string",
+              "title": "Guild Id"
             }
           }
         ],
@@ -1194,7 +1334,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GroupIn"
+                "$ref": "#/components/schemas/GuildIn"
               }
             }
           }
@@ -1205,7 +1345,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GroupOut"
+                  "$ref": "#/components/schemas/GuildOut"
                 }
               }
             }
@@ -1224,18 +1364,18 @@
       },
       "delete": {
         "tags": [
-          "groups"
+          "channels"
         ],
-        "summary": "Delete Group",
-        "operationId": "delete_group",
+        "summary": "Delete Guild",
+        "operationId": "delete_guild",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "type": "string",
+              "title": "Guild Id"
             }
           }
         ],
@@ -1263,21 +1403,113 @@
         }
       }
     },
-    "/groups/{group_id}/backfill": {
-      "post": {
+    "/channels/{channel_id}": {
+      "put": {
         "tags": [
-          "groups"
+          "channels"
         ],
-        "summary": "Backfill Group",
-        "operationId": "backfill_group",
+        "summary": "Upsert Channel",
+        "operationId": "upsert_channel",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "channel_id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "type": "string",
+              "title": "Channel Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Delete Channel",
+        "operationId": "delete_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Channel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/channels/{channel_id}/backfill": {
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Backfill Channel",
+        "operationId": "backfill_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Channel Id"
             }
           }
         ],
@@ -1488,7 +1720,7 @@
           "triggers"
         ],
         "summary": "Test Trigger",
-        "description": "Run the exact runtime index against the currently loaded snapshot.",
+        "description": "Run the exact runtime 4-level index against the currently loaded snapshot.",
         "operationId": "test_trigger",
         "requestBody": {
           "content": {
@@ -1868,7 +2100,7 @@
             "required": true,
             "schema": {
               "enum": [
-                "qq",
+                "kook",
                 "email"
               ],
               "type": "string",
@@ -1940,19 +2172,35 @@
             }
           },
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel Id"
             }
           },
           {
@@ -2076,10 +2324,10 @@
                   "type": "null"
                 }
               ],
-              "description": "类型前缀，例如 request. 或 notice.group_ban",
+              "description": "类型前缀，例如 kook.added_channel 或 kook.self_",
               "title": "Kind"
             },
-            "description": "类型前缀，例如 request. 或 notice.group_ban"
+            "description": "类型前缀，例如 kook.added_channel 或 kook.self_"
           },
           {
             "name": "status",
@@ -2105,19 +2353,35 @@
             }
           },
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel Id"
             }
           },
           {
@@ -2168,58 +2432,6 @@
         }
       }
     },
-    "/events/{event_id}/decide": {
-      "post": {
-        "tags": [
-          "events"
-        ],
-        "summary": "Decide Event",
-        "operationId": "decide_event",
-        "parameters": [
-          {
-            "name": "event_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Event Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EventDecideIn"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EventOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/memory/topics": {
       "get": {
         "tags": [
@@ -2229,19 +2441,35 @@
         "operationId": "list_topics",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel Id"
             }
           },
           {
@@ -2322,7 +2550,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -2453,7 +2681,6 @@
           "memory"
         ],
         "summary": "Archive Topic",
-        "description": "Archive (hide from the agent) or restore one finished topic.",
         "operationId": "archive_topic",
         "parameters": [
           {
@@ -2506,7 +2733,6 @@
           "memory"
         ],
         "summary": "Archive Small Topics",
-        "description": "Apply the group's current archive thresholds (size and curation weight) to its finished topics.",
         "operationId": "archive_small_topics",
         "requestBody": {
           "content": {
@@ -2551,19 +2777,19 @@
         "operationId": "list_digests",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
             }
           },
           {
@@ -2623,19 +2849,19 @@
         "operationId": "list_glossary",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
             }
           },
           {
@@ -2894,19 +3120,19 @@
         "operationId": "list_profiles",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
             }
           },
           {
@@ -2973,7 +3199,7 @@
         }
       }
     },
-    "/memory/profiles/{group_id}/{user_id}": {
+    "/memory/profiles/{guild_id}/{user_id}": {
       "get": {
         "tags": [
           "memory"
@@ -2982,12 +3208,12 @@
         "operationId": "get_profile",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "type": "string",
+              "title": "Guild Id"
             }
           },
           {
@@ -2995,7 +3221,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
+              "type": "string",
               "title": "User Id"
             }
           }
@@ -3031,12 +3257,12 @@
         "operationId": "delete_profile",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "type": "string",
+              "title": "Guild Id"
             }
           },
           {
@@ -3044,7 +3270,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
+              "type": "string",
               "title": "User Id"
             }
           }
@@ -3073,7 +3299,7 @@
         }
       }
     },
-    "/memory/profiles/{group_id}/{user_id}/facts/{fact_id}": {
+    "/memory/profiles/{guild_id}/{user_id}/facts/{fact_id}": {
       "delete": {
         "tags": [
           "memory"
@@ -3082,12 +3308,12 @@
         "operationId": "delete_profile_fact",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "type": "string",
+              "title": "Guild Id"
             }
           },
           {
@@ -3095,7 +3321,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
+              "type": "string",
               "title": "User Id"
             }
           },
@@ -3133,22 +3359,21 @@
         }
       }
     },
-    "/memory/profiles/{group_id}/{user_id}/facts/{fact_id}/restore": {
+    "/memory/profiles/{guild_id}/{user_id}/facts/{fact_id}/restore": {
       "post": {
         "tags": [
           "memory"
         ],
         "summary": "Restore Profile Fact",
-        "description": "Bring an archived fact back; it is locked, so curation never archives it again.",
         "operationId": "restore_profile_fact",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "type": "string",
+              "title": "Guild Id"
             }
           },
           {
@@ -3156,7 +3381,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
+              "type": "string",
               "title": "User Id"
             }
           },
@@ -3244,19 +3469,35 @@
             }
           },
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel Id"
             }
           },
           {
@@ -3510,19 +3751,19 @@
             }
           },
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
             }
           },
           {
@@ -3609,23 +3850,38 @@
           "stickers"
         ],
         "summary": "List Sticker Drops",
-        "description": "Sticker-drop decisions, newest first: every call to the decision model, sent or not.",
         "operationId": "list_sticker_drops",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "guild_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Guild Id"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel Id"
             }
           },
           {
@@ -3830,7 +4086,6 @@
           "sandbox"
         ],
         "summary": "List Workspaces",
-        "description": "Every group's workspaces, grouped by group (most recently used group first), each group's most recently\nused first.",
         "operationId": "list_workspaces",
         "responses": {
           "200": {
@@ -3846,22 +4101,21 @@
         }
       }
     },
-    "/sandbox/workspaces/{group_id}/{name}": {
+    "/sandbox/workspaces/{channel_id}/{name}": {
       "delete": {
         "tags": [
           "sandbox"
         ],
         "summary": "Destroy Workspace",
-        "description": "Destroy one workspace now (its files, links and record), even while an invocation or job is using it.",
         "operationId": "destroy_workspace",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "channel_id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "title": "Group Id"
+              "type": "string",
+              "title": "Channel Id"
             }
           },
           {
@@ -3925,23 +4179,22 @@
           "sandbox"
         ],
         "summary": "List Jobs",
-        "description": "Background jobs of every group, newest first: those still running (or reporting) first, then the archive.",
         "operationId": "list_jobs",
         "parameters": [
           {
-            "name": "group_id",
+            "name": "channel_id",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Group Id"
+              "title": "Channel Id"
             }
           },
           {
@@ -4092,7 +4345,6 @@
           "sandbox"
         ],
         "summary": "Get Job Transcript",
-        "description": "The job as a conversation: omp's messages for agent jobs (live while it runs), the script, the bot tools its\ncode called and its output for command jobs.",
         "operationId": "get_job_transcript",
         "parameters": [
           {
@@ -4135,7 +4387,6 @@
           "sandbox"
         ],
         "summary": "Cancel Job",
-        "description": "Stop a running job; the poller ends it within seconds and the group still gets its report.",
         "operationId": "cancel_job",
         "parameters": [
           {
@@ -4231,7 +4482,7 @@
           "kind": {
             "type": "string",
             "enum": [
-              "qq",
+              "kook",
               "email"
             ],
             "title": "Kind"
@@ -4258,7 +4509,7 @@
           "kind": {
             "type": "string",
             "enum": [
-              "qq",
+              "kook",
               "email"
             ],
             "title": "Kind"
@@ -4359,14 +4610,14 @@
       },
       "ArchiveSmallIn": {
         "properties": {
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
           }
         },
         "type": "object",
         "required": [
-          "group_id"
+          "channel_id"
         ],
         "title": "ArchiveSmallIn"
       },
@@ -4479,7 +4730,7 @@
       "BotOut": {
         "properties": {
           "user_id": {
-            "type": "integer",
+            "type": "string",
             "title": "User Id"
           },
           "name": {
@@ -4499,13 +4750,23 @@
           "mode": {
             "type": "string",
             "enum": [
-              "forward",
-              "plain",
+              "reply",
               "silent",
               "done"
             ],
             "title": "Mode",
-            "description": "forward：查证后用合并转发作答（不接或做不了的直接请求也用它简短说明）；plain：一两句话就能答完（正文不超过 120 字），或者只发 1–2 张图，直接作为普通消息发到群里，不进合并转发、不带来源和元数据（只在普通答疑里可用）；silent：不回复（不是在跟你说话、没有实际内容）；done：已经用操作类工具完成了请求（比如撤回），不再发消息"
+            "description": "reply：发出回复（由发送层根据内容长度、分节、图片与来源自适应选择简洁文本或卡片消息）；silent：不回复（不是在跟你说话、没有实际内容）；done：已经用操作类工具完成了请求（比如撤回），不再发消息"
+          },
+          "style": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "text",
+              "card"
+            ],
+            "title": "Style",
+            "description": "可选排版提示：默认 auto 自动选择最易读的样式；简短闲聊可用 text，结构化报告可用 card",
+            "default": "auto"
           },
           "title": {
             "anyOf": [
@@ -4517,7 +4778,7 @@
               }
             ],
             "title": "Title",
-            "description": "mode=forward 时这次回复的主题（≤20 字）"
+            "description": "长回答或 TL;DR 的主题标题（≤30 字；简短一句回复可留空）"
           },
           "sections": {
             "items": {
@@ -4525,7 +4786,7 @@
             },
             "type": "array",
             "title": "Sections",
-            "description": "mode=forward / plain 时的各节（plain 只写一节）"
+            "description": "mode=reply 时的各节内容"
           },
           "sources": {
             "items": {
@@ -4553,7 +4814,7 @@
           "mode"
         ],
         "title": "BotReply",
-        "description": "The structured answer of the chat / tldr agents."
+        "description": "Structured answer of the chat / tldr agents.\n\nThe delivery renderer adaptively picks concise KMarkdown or structured CardMessage based on length,\nstructure, images, and sources so the model focuses on clear writing."
       },
       "BridgeCall": {
         "properties": {
@@ -4651,13 +4912,10 @@
               {
                 "oneOf": [
                   {
-                    "$ref": "#/components/schemas/QQContextDisplay"
+                    "$ref": "#/components/schemas/ChatContextDisplay"
                   },
                   {
-                    "$ref": "#/components/schemas/QQMessagesDisplay"
-                  },
-                  {
-                    "$ref": "#/components/schemas/QQForwardDisplay"
+                    "$ref": "#/components/schemas/ChatMessagesDisplay"
                   },
                   {
                     "$ref": "#/components/schemas/PageDisplay"
@@ -4672,12 +4930,11 @@
                 "discriminator": {
                   "propertyName": "kind",
                   "mapping": {
+                    "chat_context": "#/components/schemas/ChatContextDisplay",
+                    "chat_messages": "#/components/schemas/ChatMessagesDisplay",
                     "hits": "#/components/schemas/HitsDisplay",
                     "images": "#/components/schemas/ImagesDisplay",
-                    "page": "#/components/schemas/PageDisplay",
-                    "qq_context": "#/components/schemas/QQContextDisplay",
-                    "qq_forward": "#/components/schemas/QQForwardDisplay",
-                    "qq_messages": "#/components/schemas/QQMessagesDisplay"
+                    "page": "#/components/schemas/PageDisplay"
                   }
                 }
               },
@@ -4692,8 +4949,391 @@
         "required": [
           "name"
         ],
-        "title": "BridgeCall",
-        "description": "A bot tool (or ``media``, a fetch of an attachment's bytes) that code in a workspace called through the tool\nbridge. Kept on the ``sh`` / ``py`` tool entry whose code made it (a job's on an event entry); like entries, it\ncarries arguments and result text only in ``full`` mode."
+        "title": "BridgeCall"
+      },
+      "CategoryNode": {
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/ChannelOut"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelOut"
+            },
+            "type": "array",
+            "title": "Channels"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category",
+          "channels"
+        ],
+        "title": "CategoryNode"
+      },
+      "ChannelCount": {
+        "properties": {
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "guild_name": {
+            "type": "string",
+            "title": "Guild Name"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel_id",
+          "guild_id",
+          "name",
+          "guild_name",
+          "enabled",
+          "count"
+        ],
+        "title": "ChannelCount"
+      },
+      "ChannelIn": {
+        "properties": {
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic",
+            "default": ""
+          },
+          "position": {
+            "type": "integer",
+            "title": "Position",
+            "default": 0
+          },
+          "is_category": {
+            "type": "boolean",
+            "title": "Is Category",
+            "default": false
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled",
+            "description": "启用开关：true 启用 / false 停用 / null 继承所属分组（分组或无分组频道为 null 时视为停用）"
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settings",
+            "description": "省略则保留原有覆盖"
+          }
+        },
+        "type": "object",
+        "required": [
+          "guild_id"
+        ],
+        "title": "ChannelIn"
+      },
+      "ChannelOut": {
+        "properties": {
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          },
+          "is_category": {
+            "type": "boolean",
+            "title": "Is Category"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "effective_enabled": {
+            "type": "boolean",
+            "title": "Effective Enabled"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Settings"
+          },
+          "backfilled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backfilled At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel_id",
+          "guild_id",
+          "parent_id",
+          "name",
+          "topic",
+          "position",
+          "is_category",
+          "enabled",
+          "effective_enabled",
+          "settings",
+          "backfilled_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChannelOut"
+      },
+      "ChatContextDisplay": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "chat_context",
+            "title": "Kind",
+            "default": "chat_context"
+          },
+          "recent": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Recent",
+            "default": []
+          },
+          "quoted": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blocks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocks",
+            "default": []
+          },
+          "chain": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "type": "array",
+            "title": "Chain",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ChatContextDisplay"
+      },
+      "ChatMessage": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kook_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kook Message Id"
+          },
+          "channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Id"
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "sender_name": {
+            "type": "string",
+            "title": "Sender Name",
+            "default": ""
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          },
+          "segments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Segments",
+            "default": []
+          },
+          "is_self": {
+            "type": "boolean",
+            "title": "Is Self",
+            "default": false
+          },
+          "recalled": {
+            "type": "boolean",
+            "title": "Recalled",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id"
+        ],
+        "title": "ChatMessage",
+        "description": "A KOOK message snapshot as seen by a run."
+      },
+      "ChatMessagesDisplay": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "chat_messages",
+            "title": "Kind",
+            "default": "chat_messages"
+          },
+          "message_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Message Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ChatMessagesDisplay"
       },
       "DecideIn": {
         "properties": {
@@ -4743,9 +5383,9 @@
             "type": "integer",
             "title": "Id"
           },
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
           },
           "day": {
             "type": "string",
@@ -4767,7 +5407,7 @@
         "type": "object",
         "required": [
           "id",
-          "group_id",
+          "guild_id",
           "day",
           "summary",
           "topic_ids"
@@ -4928,13 +5568,10 @@
               {
                 "oneOf": [
                   {
-                    "$ref": "#/components/schemas/QQContextDisplay"
+                    "$ref": "#/components/schemas/ChatContextDisplay"
                   },
                   {
-                    "$ref": "#/components/schemas/QQMessagesDisplay"
-                  },
-                  {
-                    "$ref": "#/components/schemas/QQForwardDisplay"
+                    "$ref": "#/components/schemas/ChatMessagesDisplay"
                   },
                   {
                     "$ref": "#/components/schemas/PageDisplay"
@@ -4949,12 +5586,11 @@
                 "discriminator": {
                   "propertyName": "kind",
                   "mapping": {
+                    "chat_context": "#/components/schemas/ChatContextDisplay",
+                    "chat_messages": "#/components/schemas/ChatMessagesDisplay",
                     "hits": "#/components/schemas/HitsDisplay",
                     "images": "#/components/schemas/ImagesDisplay",
-                    "page": "#/components/schemas/PageDisplay",
-                    "qq_context": "#/components/schemas/QQContextDisplay",
-                    "qq_forward": "#/components/schemas/QQForwardDisplay",
-                    "qq_messages": "#/components/schemas/QQMessagesDisplay"
+                    "page": "#/components/schemas/PageDisplay"
                   }
                 }
               },
@@ -5103,32 +5739,7 @@
         "required": [
           "kind"
         ],
-        "title": "Entry",
-        "description": "One turn. Fields beyond ``kind``/``at``/``parts`` apply to some kinds only (noted per field)."
-      },
-      "EventDecideIn": {
-        "properties": {
-          "approve": {
-            "type": "boolean",
-            "title": "Approve"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          }
-        },
-        "type": "object",
-        "required": [
-          "approve"
-        ],
-        "title": "EventDecideIn"
+        "title": "Entry"
       },
       "EventOut": {
         "properties": {
@@ -5145,21 +5756,32 @@
             "type": "string",
             "title": "Kind"
           },
-          "group_id": {
+          "guild_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Group Id"
+            "title": "Guild Id"
+          },
+          "channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Id"
           },
           "user_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
@@ -5170,7 +5792,7 @@
           "operator_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
@@ -5223,7 +5845,8 @@
           "id",
           "at",
           "kind",
-          "group_id",
+          "guild_id",
+          "channel_id",
           "user_id",
           "operator_id",
           "data",
@@ -5264,8 +5887,7 @@
                 "type": "null"
               }
             ],
-            "title": "Importance",
-            "description": "重要度 1–5（画像更新或整理任务给的）；未评分为空"
+            "title": "Importance"
           },
           "weight": {
             "anyOf": [
@@ -5276,8 +5898,7 @@
                 "type": "null"
               }
             ],
-            "title": "Weight",
-            "description": "重要度，佐证消息多的略高；排序时还会按时间衰减"
+            "title": "Weight"
           },
           "archived_at": {
             "anyOf": [
@@ -5289,8 +5910,7 @@
                 "type": "null"
               }
             ],
-            "title": "Archived At",
-            "description": "归档时间；归档的事实 agent 和画像更新都看不到"
+            "title": "Archived At"
           },
           "archive_reason": {
             "anyOf": [
@@ -5301,13 +5921,11 @@
                 "type": "null"
               }
             ],
-            "title": "Archive Reason",
-            "description": "low 重要度低于阈值，duplicate 与另一条重复，cap 超出每人上限，outdated 被新消息推翻"
+            "title": "Archive Reason"
           },
           "locked": {
             "type": "boolean",
-            "title": "Locked",
-            "description": "管理员恢复过：整理任务不再归档它"
+            "title": "Locked"
           }
         },
         "type": "object",
@@ -5324,53 +5942,11 @@
         ],
         "title": "FactOut"
       },
-      "ForwardNode": {
-        "properties": {
-          "depth": {
-            "type": "integer",
-            "title": "Depth",
-            "default": 0
-          },
-          "user_id": {
-            "type": "integer",
-            "title": "User Id",
-            "default": 0
-          },
-          "sender_name": {
-            "type": "string",
-            "title": "Sender Name",
-            "default": ""
-          },
-          "sent_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sent At"
-          },
-          "segments": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Segments",
-            "default": []
-          }
-        },
-        "type": "object",
-        "title": "ForwardNode"
-      },
       "GlossaryIn": {
         "properties": {
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
           },
           "term": {
             "type": "string",
@@ -5392,7 +5968,7 @@
         },
         "type": "object",
         "required": [
-          "group_id",
+          "guild_id",
           "term",
           "definition"
         ],
@@ -5404,9 +5980,9 @@
             "type": "integer",
             "title": "Id"
           },
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
           },
           "term": {
             "type": "string",
@@ -5477,7 +6053,7 @@
         "type": "object",
         "required": [
           "id",
-          "group_id",
+          "guild_id",
           "term",
           "aliases",
           "definition",
@@ -5492,45 +6068,22 @@
         ],
         "title": "GlossaryOut"
       },
-      "GroupCount": {
-        "properties": {
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
-          },
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "enabled": {
-            "type": "boolean",
-            "title": "Enabled"
-          },
-          "count": {
-            "type": "integer",
-            "title": "Count"
-          }
-        },
-        "type": "object",
-        "required": [
-          "group_id",
-          "name",
-          "enabled",
-          "count"
-        ],
-        "title": "GroupCount"
-      },
-      "GroupIn": {
+      "GuildIn": {
         "properties": {
           "name": {
             "type": "string",
             "title": "Name",
             "default": ""
           },
+          "icon": {
+            "type": "string",
+            "title": "Icon",
+            "default": ""
+          },
           "enabled": {
             "type": "boolean",
             "title": "Enabled",
-            "default": false
+            "default": true
           },
           "settings": {
             "anyOf": [
@@ -5547,17 +6100,21 @@
           }
         },
         "type": "object",
-        "title": "GroupIn"
+        "title": "GuildIn"
       },
-      "GroupOut": {
+      "GuildOut": {
         "properties": {
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
           },
           "name": {
             "type": "string",
             "title": "Name"
+          },
+          "icon": {
+            "type": "string",
+            "title": "Icon"
           },
           "enabled": {
             "type": "boolean",
@@ -5567,18 +6124,6 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Settings"
-          },
-          "backfilled_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Backfilled At"
           },
           "created_at": {
             "type": "string",
@@ -5593,15 +6138,43 @@
         },
         "type": "object",
         "required": [
-          "group_id",
+          "guild_id",
           "name",
+          "icon",
           "enabled",
           "settings",
-          "backfilled_at",
           "created_at",
           "updated_at"
         ],
-        "title": "GroupOut"
+        "title": "GuildOut"
+      },
+      "GuildTreeOut": {
+        "properties": {
+          "guild": {
+            "$ref": "#/components/schemas/GuildOut"
+          },
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryNode"
+            },
+            "type": "array",
+            "title": "Categories"
+          },
+          "ungrouped": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelOut"
+            },
+            "type": "array",
+            "title": "Ungrouped"
+          }
+        },
+        "type": "object",
+        "required": [
+          "guild",
+          "categories",
+          "ungrouped"
+        ],
+        "title": "GuildTreeOut"
       },
       "HTTPValidationError": {
         "properties": {
@@ -5742,8 +6315,7 @@
           }
         },
         "type": "object",
-        "title": "ImagesDisplay",
-        "description": "Images a tool produced or posted (render_*, sandbox show) rather than returned to the model."
+        "title": "ImagesDisplay"
       },
       "InvocationDetail": {
         "properties": {
@@ -5757,19 +6329,30 @@
             "format": "date-time",
             "title": "Created At"
           },
-          "group_id": {
+          "channel_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Group Id"
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guild Id"
           },
           "user_id": {
-            "type": "integer",
+            "type": "string",
             "title": "User Id"
           },
           "user_name": {
@@ -5858,16 +6441,16 @@
             ],
             "title": "Error"
           },
-          "trigger_qq_message_id": {
+          "trigger_msg_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Trigger Qq Message Id"
+            "title": "Trigger Msg Id"
           },
           "tokens_cached": {
             "type": "integer",
@@ -5937,7 +6520,8 @@
         "required": [
           "id",
           "created_at",
-          "group_id",
+          "channel_id",
+          "guild_id",
           "user_id",
           "user_name",
           "handler",
@@ -5951,7 +6535,7 @@
           "trace_id",
           "trace_url",
           "error",
-          "trigger_qq_message_id",
+          "trigger_msg_id",
           "tokens_cached",
           "tool_calls",
           "ack_latency_ms",
@@ -5974,19 +6558,30 @@
             "format": "date-time",
             "title": "Created At"
           },
-          "group_id": {
+          "channel_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Group Id"
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guild Id"
           },
           "user_id": {
-            "type": "integer",
+            "type": "string",
             "title": "User Id"
           },
           "user_name": {
@@ -6080,7 +6675,8 @@
         "required": [
           "id",
           "created_at",
-          "group_id",
+          "channel_id",
+          "guild_id",
           "user_id",
           "user_name",
           "handler",
@@ -6107,16 +6703,27 @@
             "type": "string",
             "title": "Kind"
           },
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guild Id"
           },
           "workspace": {
             "type": "string",
             "title": "Workspace"
           },
           "user_id": {
-            "type": "integer",
+            "type": "string",
             "title": "User Id"
           },
           "title": {
@@ -6224,7 +6831,8 @@
         "required": [
           "id",
           "kind",
-          "group_id",
+          "channel_id",
+          "guild_id",
           "workspace",
           "user_id",
           "title",
@@ -6294,16 +6902,27 @@
             "type": "string",
             "title": "Kind"
           },
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guild Id"
           },
           "workspace": {
             "type": "string",
             "title": "Workspace"
           },
           "user_id": {
-            "type": "integer",
+            "type": "string",
             "title": "User Id"
           },
           "title": {
@@ -6378,7 +6997,8 @@
         "required": [
           "id",
           "kind",
-          "group_id",
+          "channel_id",
+          "guild_id",
           "workspace",
           "user_id",
           "title",
@@ -6434,6 +7054,114 @@
         ],
         "title": "JobUsageOut"
       },
+      "KookConnectionIn": {
+        "properties": {
+          "bot_token": {
+            "type": "string",
+            "minLength": 8,
+            "title": "Bot Token",
+            "description": "KOOK 开发者后台机器人的 Bot Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bot_token"
+        ],
+        "title": "KookConnectionIn"
+      },
+      "KookConnectionOut": {
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "db",
+              "env",
+              "none"
+            ],
+            "title": "Source"
+          },
+          "token_preview": {
+            "type": "string",
+            "title": "Token Preview"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "bot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bot Id"
+          },
+          "bot_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bot Name"
+          },
+          "connected_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "last_heartbeat": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat"
+          },
+          "guild_count": {
+            "type": "integer",
+            "title": "Guild Count"
+          },
+          "enabled_channels": {
+            "type": "integer",
+            "title": "Enabled Channels"
+          }
+        },
+        "type": "object",
+        "required": [
+          "configured",
+          "source",
+          "token_preview",
+          "connected",
+          "bot_id",
+          "bot_name",
+          "connected_at",
+          "last_heartbeat",
+          "guild_count",
+          "enabled_channels"
+        ],
+        "title": "KookConnectionOut"
+      },
       "LinkOut": {
         "properties": {
           "port": {
@@ -6475,6 +7203,87 @@
         ],
         "title": "LinkOut"
       },
+      "LiveChannelOut": {
+        "properties": {
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          },
+          "is_category": {
+            "type": "boolean",
+            "title": "Is Category"
+          },
+          "type": {
+            "type": "integer",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel_id",
+          "parent_id",
+          "name",
+          "topic",
+          "position",
+          "is_category",
+          "type"
+        ],
+        "title": "LiveChannelOut"
+      },
+      "LiveGuildOut": {
+        "properties": {
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "icon": {
+            "type": "string",
+            "title": "Icon"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/LiveChannelOut"
+            },
+            "type": "array",
+            "title": "Channels"
+          }
+        },
+        "type": "object",
+        "required": [
+          "guild_id",
+          "name",
+          "icon",
+          "channels"
+        ],
+        "title": "LiveGuildOut"
+      },
       "LockIn": {
         "properties": {
           "locked": {
@@ -6505,127 +7314,6 @@
           "environment"
         ],
         "title": "Me"
-      },
-      "MilkyIn": {
-        "properties": {
-          "url": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Url"
-          },
-          "token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Token"
-          }
-        },
-        "type": "object",
-        "required": [
-          "url"
-        ],
-        "title": "MilkyIn"
-      },
-      "MilkyLinkOut": {
-        "properties": {
-          "managed": {
-            "type": "boolean",
-            "title": "Managed"
-          },
-          "url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Url"
-          },
-          "connected": {
-            "type": "boolean",
-            "title": "Connected"
-          },
-          "self_id": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Self Id"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "since": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Since"
-          }
-        },
-        "type": "object",
-        "required": [
-          "managed",
-          "url",
-          "connected",
-          "self_id",
-          "error",
-          "since"
-        ],
-        "title": "MilkyLinkOut"
-      },
-      "MilkyOut": {
-        "properties": {
-          "url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Url"
-          },
-          "token_set": {
-            "type": "boolean",
-            "title": "Token Set"
-          },
-          "link": {
-            "$ref": "#/components/schemas/MilkyLinkOut"
-          }
-        },
-        "type": "object",
-        "required": [
-          "url",
-          "token_set",
-          "link"
-        ],
-        "title": "MilkyOut"
       },
       "ModelCaps": {
         "properties": {
@@ -6764,7 +7452,7 @@
               "reply"
             ],
             "title": "Mode",
-            "description": "done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）"
+            "description": "done：已用工具完成操作，不发消息；reply：回一段简短说明（查询结果、失败原因、需要澄清时）"
           },
           "text": {
             "anyOf": [
@@ -6776,7 +7464,7 @@
               }
             ],
             "title": "Text",
-            "description": "mode=reply 时发出的文字，纯文本，简短"
+            "description": "mode=reply 时发出的文字，简短清晰，可使用基础 Markdown"
           }
         },
         "type": "object",
@@ -6784,7 +7472,7 @@
           "mode"
         ],
         "title": "OpsReply",
-        "description": "The structured answer of the ops agent (``yggdrasil.ops.agent``)."
+        "description": "Structured answer of the ops agent (``yggdrasil.ops.agent``)."
       },
       "OutputPart": {
         "properties": {
@@ -6809,8 +7497,7 @@
         "required": [
           "value"
         ],
-        "title": "OutputPart",
-        "description": "The run's structured output when the model returned it as text (native or prompted output mode) instead of\ncalling ``final_result``. Not stored: the admin API sets it when it reads a transcript."
+        "title": "OutputPart"
       },
       "PageDisplay": {
         "properties": {
@@ -7093,9 +7780,9 @@
             "type": "string",
             "title": "Pipeline"
           },
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "scope_id": {
+            "type": "string",
+            "title": "Scope Id"
           },
           "last_msg_id": {
             "type": "integer",
@@ -7120,7 +7807,7 @@
         "type": "object",
         "required": [
           "pipeline",
-          "group_id",
+          "scope_id",
           "last_msg_id",
           "backlog",
           "state",
@@ -7166,12 +7853,12 @@
       },
       "ProfileDetail": {
         "properties": {
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
           },
           "user_id": {
-            "type": "integer",
+            "type": "string",
             "title": "User Id"
           },
           "display_name": {
@@ -7215,7 +7902,7 @@
         },
         "type": "object",
         "required": [
-          "group_id",
+          "guild_id",
           "user_id",
           "display_name",
           "summary",
@@ -7229,12 +7916,12 @@
       },
       "ProfileOut": {
         "properties": {
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
           },
           "user_id": {
-            "type": "integer",
+            "type": "string",
             "title": "User Id"
           },
           "display_name": {
@@ -7271,7 +7958,7 @@
         },
         "type": "object",
         "required": [
-          "group_id",
+          "guild_id",
           "user_id",
           "display_name",
           "summary",
@@ -7669,175 +8356,6 @@
         ],
         "title": "ProviderProbe"
       },
-      "QQContextDisplay": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "const": "qq_context",
-            "title": "Kind",
-            "default": "qq_context"
-          },
-          "recent": {
-            "items": {
-              "type": "integer"
-            },
-            "type": "array",
-            "title": "Recent",
-            "default": []
-          },
-          "quoted": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/QQMessage"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "trigger": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/QQMessage"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "blocks": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Blocks",
-            "default": []
-          },
-          "chain": {
-            "items": {
-              "$ref": "#/components/schemas/QQMessage"
-            },
-            "type": "array",
-            "title": "Chain",
-            "default": []
-          }
-        },
-        "type": "object",
-        "title": "QQContextDisplay",
-        "description": "The user turn of an invocation: the group chat the prompt included, the quoted message and the trigger."
-      },
-      "QQForwardDisplay": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "const": "qq_forward",
-            "title": "Kind",
-            "default": "qq_forward"
-          },
-          "nodes": {
-            "items": {
-              "$ref": "#/components/schemas/ForwardNode"
-            },
-            "type": "array",
-            "title": "Nodes",
-            "default": []
-          }
-        },
-        "type": "object",
-        "title": "QQForwardDisplay"
-      },
-      "QQMessage": {
-        "properties": {
-          "id": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Id"
-          },
-          "qq_message_id": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Qq Message Id"
-          },
-          "user_id": {
-            "type": "integer",
-            "title": "User Id"
-          },
-          "sender_name": {
-            "type": "string",
-            "title": "Sender Name",
-            "default": ""
-          },
-          "sent_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sent At"
-          },
-          "segments": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Segments",
-            "default": []
-          },
-          "is_self": {
-            "type": "boolean",
-            "title": "Is Self",
-            "default": false
-          },
-          "recalled": {
-            "type": "boolean",
-            "title": "Recalled",
-            "default": false
-          }
-        },
-        "type": "object",
-        "required": [
-          "user_id"
-        ],
-        "title": "QQMessage",
-        "description": "A QQ message as it was when the run used it. ``segments`` are ``qq.segments`` segments; the API adds ``src``\nto image and market face data when it can serve the picture, and ``name`` to faces."
-      },
-      "QQMessagesDisplay": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "const": "qq_messages",
-            "title": "Kind",
-            "default": "qq_messages"
-          },
-          "message_ids": {
-            "items": {
-              "type": "integer"
-            },
-            "type": "array",
-            "title": "Message Ids",
-            "default": []
-          }
-        },
-        "type": "object",
-        "title": "QQMessagesDisplay"
-      },
       "RefreshResult": {
         "properties": {
           "probe": {
@@ -7934,12 +8452,23 @@
             ],
             "title": "Invocation Id"
           },
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guild Id"
           },
           "user_id": {
-            "type": "integer",
+            "type": "string",
             "title": "User Id"
           },
           "request_text": {
@@ -7990,7 +8519,8 @@
           "id",
           "created_at",
           "invocation_id",
-          "group_id",
+          "channel_id",
+          "guild_id",
           "user_id",
           "request_text",
           "reply",
@@ -8388,10 +8918,22 @@
       },
       "Section": {
         "properties": {
+          "heading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading",
+            "description": "可选的小节标题（长回答分节时使用，简短回复留空）"
+          },
           "content": {
             "type": "string",
             "title": "Content",
-            "description": "正文，纯文本，不要 markdown，不要加小标题；按意思分段，段落之间空一行"
+            "description": "正文，支持标准 Markdown（加粗、列表、行内代码、代码块、链接）；按人类阅读习惯自然分段"
           },
           "images": {
             "items": {
@@ -8399,7 +8941,7 @@
             },
             "type": "array",
             "title": "Images",
-            "description": "紧跟在这一节正文后面发的图片句柄（img#N），按顺序；render_*、show() 生成的图和聊天、网页里的图都行。整条回复最多 4 张；没写进来的图不会发"
+            "description": "紧跟在这一节正文后面展示的图片句柄（img#N），按顺序；render_*、show() 生成的图和聊天、网页里的图都行。整条回复最多 4 张；没写进来的图不会发"
           }
         },
         "type": "object",
@@ -8424,6 +8966,14 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Defaults"
+          },
+          "chain": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Chain",
+            "default": []
           }
         },
         "type": "object",
@@ -8457,7 +9007,7 @@
           "label": {
             "type": "string",
             "title": "Label",
-            "description": "来源名称，如网页标题、文件名、#消息id"
+            "description": "来源名称，如网页标题、文件名、#频道名 #消息id"
           },
           "url": {
             "anyOf": [
@@ -8481,7 +9031,7 @@
         "properties": {
           "messages_24h": {
             "items": {
-              "$ref": "#/components/schemas/GroupCount"
+              "$ref": "#/components/schemas/ChannelCount"
             },
             "type": "array",
             "title": "Messages 24H"
@@ -8636,9 +9186,9 @@
             "type": "integer",
             "title": "Seen Count"
           },
-          "group_count": {
+          "guild_count": {
             "type": "integer",
-            "title": "Group Count"
+            "title": "Guild Count"
           },
           "enabled": {
             "type": "boolean",
@@ -8669,7 +9219,7 @@
             ],
             "title": "Emoji Id"
           },
-          "package_id": {
+          "guild_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -8678,22 +9228,22 @@
                 "type": "null"
               }
             ],
-            "title": "Package Id"
+            "title": "Guild Id"
           },
-          "key": {
+          "asset_url": {
             "type": "string",
-            "title": "Key"
+            "title": "Asset Url"
           },
           "tag_attempts": {
             "type": "integer",
             "title": "Tag Attempts"
           },
-          "groups": {
+          "guilds": {
             "items": {
-              "$ref": "#/components/schemas/StickerGroupUsage"
+              "$ref": "#/components/schemas/StickerGuildUsage"
             },
             "type": "array",
-            "title": "Groups"
+            "title": "Guilds"
           }
         },
         "type": "object",
@@ -8715,16 +9265,16 @@
           "unsafe_category",
           "tagged_at",
           "seen_count",
-          "group_count",
+          "guild_count",
           "enabled",
           "first_seen",
           "last_seen",
           "ref",
           "emoji_id",
-          "package_id",
-          "key",
+          "guild_id",
+          "asset_url",
           "tag_attempts",
-          "groups"
+          "guilds"
         ],
         "title": "StickerDetail"
       },
@@ -8739,9 +9289,13 @@
             "format": "date-time",
             "title": "At"
           },
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
           },
           "outcome": {
             "$ref": "#/components/schemas/DropOutcome"
@@ -8819,7 +9373,8 @@
         "required": [
           "id",
           "at",
-          "group_id",
+          "channel_id",
+          "guild_id",
           "outcome",
           "fit",
           "confidence",
@@ -8847,15 +9402,15 @@
         ],
         "title": "StickerEnabledIn"
       },
-      "StickerGroupUsage": {
+      "StickerGuildUsage": {
         "properties": {
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
-          },
-          "group_name": {
+          "guild_id": {
             "type": "string",
-            "title": "Group Name"
+            "title": "Guild Id"
+          },
+          "guild_name": {
+            "type": "string",
+            "title": "Guild Name"
           },
           "count": {
             "type": "integer",
@@ -8869,18 +9424,18 @@
         },
         "type": "object",
         "required": [
-          "group_id",
-          "group_name",
+          "guild_id",
+          "guild_name",
           "count",
           "last_seen"
         ],
-        "title": "StickerGroupUsage"
+        "title": "StickerGuildUsage"
       },
       "StickerKind": {
         "type": "string",
         "enum": [
           "image",
-          "mface"
+          "emoji"
         ]
       },
       "StickerOut": {
@@ -8990,9 +9545,9 @@
             "type": "integer",
             "title": "Seen Count"
           },
-          "group_count": {
+          "guild_count": {
             "type": "integer",
-            "title": "Group Count"
+            "title": "Guild Count"
           },
           "enabled": {
             "type": "boolean",
@@ -9028,7 +9583,7 @@
           "unsafe_category",
           "tagged_at",
           "seen_count",
-          "group_count",
+          "guild_count",
           "enabled",
           "first_seen",
           "last_seen"
@@ -9043,6 +9598,29 @@
           "ready",
           "failed"
         ]
+      },
+      "SyncOut": {
+        "properties": {
+          "guilds": {
+            "type": "integer",
+            "title": "Guilds"
+          },
+          "categories": {
+            "type": "integer",
+            "title": "Categories"
+          },
+          "channels": {
+            "type": "integer",
+            "title": "Channels"
+          }
+        },
+        "type": "object",
+        "required": [
+          "guilds",
+          "categories",
+          "channels"
+        ],
+        "title": "SyncOut"
       },
       "TaskRouteRow": {
         "properties": {
@@ -9176,9 +9754,13 @@
             "type": "integer",
             "title": "Id"
           },
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
           },
           "title": {
             "type": "string",
@@ -9197,7 +9779,7 @@
           },
           "participants": {
             "items": {
-              "type": "integer"
+              "type": "string"
             },
             "type": "array",
             "title": "Participants"
@@ -9263,7 +9845,8 @@
         "type": "object",
         "required": [
           "id",
-          "group_id",
+          "channel_id",
+          "guild_id",
           "title",
           "summary",
           "keywords",
@@ -9311,7 +9894,7 @@
           },
           "messages": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/QQMessage"
+              "$ref": "#/components/schemas/ChatMessage"
             },
             "type": "object",
             "title": "Messages",
@@ -9367,22 +9950,24 @@
             "type": "string",
             "enum": [
               "global",
-              "group",
+              "guild",
+              "category",
+              "channel",
               "private"
             ],
             "title": "Scope",
             "default": "global"
           },
-          "group_id": {
+          "scope_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Group Id"
+            "title": "Scope Id"
           },
           "match_type": {
             "type": "string",
@@ -9511,16 +10096,16 @@
             "title": "Scope",
             "default": "global"
           },
-          "group_id": {
+          "scope_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Group Id"
+            "title": "Scope Id"
           },
           "match_type": {
             "type": "string",
@@ -9616,22 +10201,33 @@
           "scope": {
             "type": "string",
             "enum": [
-              "group",
+              "channel",
               "private"
             ],
             "title": "Scope",
-            "default": "group"
+            "default": "channel"
           },
-          "group_id": {
+          "channel_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Group Id"
+            "title": "Channel Id"
+          },
+          "guild_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guild Id"
           },
           "to_me": {
             "type": "boolean",
@@ -9795,9 +10391,9 @@
       },
       "WorkspaceOut": {
         "properties": {
-          "group_id": {
-            "type": "integer",
-            "title": "Group Id"
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
           },
           "name": {
             "type": "string",
@@ -9896,7 +10492,7 @@
         },
         "type": "object",
         "required": [
-          "group_id",
+          "channel_id",
           "name",
           "description",
           "pending",

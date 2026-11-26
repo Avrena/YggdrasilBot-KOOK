@@ -1,8 +1,4 @@
-"""Bootstrap / ops CLI: ``python -m yggdrasil.cli <command>``.
-
-Everything here can also be done from the dashboard; the CLI exists for first setup
-and scripted environments. API keys are read from an environment variable, never argv.
-"""
+"""Bootstrap / ops CLI: ``python -m yggdrasil.cli <command>``."""
 
 import argparse
 import asyncio
@@ -13,7 +9,7 @@ import sys
 from sqlalchemy import select
 
 from yggdrasil.crypto import encrypt, mask
-from yggdrasil.db.models import Admin, ConfigAudit, Group, Provider, TaskRoute
+from yggdrasil.db.models import Admin, Channel, ConfigAudit, Guild, Provider, TaskRoute
 from yggdrasil.db.session import dispose_engine, get_session
 from yggdrasil.llm.registry import TASKS
 
@@ -113,18 +109,24 @@ async def route_set(args: argparse.Namespace) -> None:
     await _publish(f"route {args.task}")
 
 
-async def group_enable(args: argparse.Namespace) -> None:
+async def channel_enable(args: argparse.Namespace) -> None:
     async with get_session() as session:
-        g = await session.get(Group, args.group_id)
-        if g is None:
-            g = Group(group_id=args.group_id)
-            session.add(g)
-        g.enabled = not args.disable
+        if args.guild_id and await session.get(Guild, args.guild_id) is None:
+            session.add(Guild(guild_id=args.guild_id, name=args.guild_name or ""))
+        ch = await session.get(Channel, args.channel_id)
+        if ch is None:
+            ch = Channel(channel_id=args.channel_id, guild_id=args.guild_id or "", is_category=args.category)
+            session.add(ch)
+        ch.enabled = not args.disable
         if args.name:
-            g.name = args.name
-        await _audit(session, "group", str(args.group_id), "enable" if g.enabled else "disable", {})
-        _out("group", args.group_id, "enabled" if g.enabled else "disabled")
-    await _publish(f"group {args.group_id}")
+            ch.name = args.name
+        if args.guild_id:
+            ch.guild_id = args.guild_id
+        if args.parent_id is not None:
+            ch.parent_id = args.parent_id or None
+        await _audit(session, "channel", args.channel_id, "enable" if ch.enabled else "disable", {})
+        _out("channel", args.channel_id, "enabled" if ch.enabled else "disabled")
+    await _publish(f"channel {args.channel_id}")
 
 
 async def admin_add(args: argparse.Namespace) -> None:
@@ -139,11 +141,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m yggdrasil.cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("provider-add", help="create/update an OpenAI-compatible provider")
+    p = sub.add_parser("provider-add", help="create/update an OpenAI- or Anthropic-compatible provider")
     p.add_argument("name")
-    p.add_argument("base_url", help="including /v1")
-    p.add_argument("--key-env", help="environment variable holding the API key")
-    p.add_argument("--format", choices=["openai", "anthropic"], default="openai", help="chat wire format")
+    p.add_argument("base_url")
+    p.add_argument("--key-env")
+    p.add_argument("--format", choices=["openai", "anthropic"], default="openai")
     p.set_defaults(fn=provider_add)
 
     p = sub.add_parser("provider-refresh", help="fetch /models for a provider")
@@ -156,18 +158,22 @@ def main() -> None:
     p.add_argument("task")
     p.add_argument("provider")
     p.add_argument("model")
-    p.add_argument("--param", action="append", help="k=v (JSON values allowed), e.g. temperature=0.3")
-    p.add_argument("--fallback", help="provider:model")
+    p.add_argument("--param", action="append")
+    p.add_argument("--fallback")
     p.set_defaults(fn=route_set)
 
-    p = sub.add_parser("group", help="whitelist a group")
-    p.add_argument("group_id", type=int)
+    p = sub.add_parser("channel", help="whitelist a KOOK channel or category")
+    p.add_argument("channel_id")
+    p.add_argument("--guild-id", default="")
+    p.add_argument("--guild-name", default="")
+    p.add_argument("--parent-id", default=None)
     p.add_argument("--name", default="")
+    p.add_argument("--category", action="store_true")
     p.add_argument("--disable", action="store_true")
-    p.set_defaults(fn=group_enable)
+    p.set_defaults(fn=channel_enable)
 
     p = sub.add_parser("admin-add")
-    p.add_argument("kind", choices=["qq", "email"])
+    p.add_argument("kind", choices=["kook", "email"])
     p.add_argument("value")
     p.set_defaults(fn=admin_add)
 

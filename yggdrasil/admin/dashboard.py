@@ -1,4 +1,4 @@
-"""Dashboard home: who am I, and 24h counters."""
+"""Dashboard home: who am I, and 24h counters per KOOK channel."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from yggdrasil import runtime
 from yggdrasil.admin.auth import Actor
 from yggdrasil.config import APP_CONFIG
-from yggdrasil.db.models import Group, Invocation, Message, ReviewItem
+from yggdrasil.db.models import Channel, Guild, Invocation, Message, ReviewItem
 from yggdrasil.db.session import get_session
 
 router = APIRouter(tags=["dashboard"])
@@ -25,9 +25,11 @@ async def get_me(actor: Actor) -> Me:
     return Me(email=actor, environment=APP_CONFIG.environment)
 
 
-class GroupCount(BaseModel):
-    group_id: int
+class ChannelCount(BaseModel):
+    channel_id: str
+    guild_id: str
     name: str
+    guild_name: str
     enabled: bool
     count: int
 
@@ -38,7 +40,7 @@ class StatusCount(BaseModel):
 
 
 class Stats(BaseModel):
-    messages_24h: list[GroupCount]
+    messages_24h: list[ChannelCount]
     invocations_24h: list[StatusCount]
     pending_reviews: int
     snapshot_version: int
@@ -47,16 +49,18 @@ class Stats(BaseModel):
 @router.get("/stats")
 async def get_stats() -> Stats:
     since = datetime.now(UTC) - timedelta(hours=24)
+    snap = runtime.snapshot()
     async with get_session() as s:
         msg_rows = (
             await s.execute(
-                select(Message.group_id, func.count())
+                select(Message.channel_id, func.count())
                 .where(Message.sent_at >= since)
-                .group_by(Message.group_id)
+                .group_by(Message.channel_id)
                 .order_by(func.count().desc())
             )
         ).all()
-        groups = {g.group_id: g for g in (await s.scalars(select(Group))).all()}
+        channels = {c.channel_id: c for c in (await s.scalars(select(Channel))).all()}
+        guilds = {g.guild_id: g for g in (await s.scalars(select(Guild))).all()}
         inv_rows = (
             await s.execute(
                 select(Invocation.status, func.count())
@@ -68,15 +72,19 @@ async def get_stats() -> Stats:
         pending = await s.scalar(select(func.count()).select_from(ReviewItem).where(ReviewItem.status == "pending"))
     return Stats(
         messages_24h=[
-            GroupCount(
-                group_id=gid,
-                name=groups[gid].name if gid in groups else "",
-                enabled=gid in groups and groups[gid].enabled,
+            ChannelCount(
+                channel_id=cid,
+                guild_id=channels[cid].guild_id if cid in channels else "",
+                name=channels[cid].name if cid in channels else "",
+                guild_name=guilds[channels[cid].guild_id].name
+                if cid in channels and channels[cid].guild_id in guilds
+                else "",
+                enabled=snap.channel_enabled(cid),
                 count=n,
             )
-            for gid, n in msg_rows
+            for cid, n in msg_rows
         ],
         invocations_24h=[StatusCount(status=st, count=n) for st, n in inv_rows],
         pending_reviews=pending or 0,
-        snapshot_version=runtime.snapshot().version,
+        snapshot_version=snap.version,
     )

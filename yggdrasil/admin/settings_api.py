@@ -1,28 +1,30 @@
-"""Global and per-group settings documents (validated by :class:`yggdrasil.settings.Settings`)."""
+"""Four-level sparse settings documents: global -> guild -> category -> channel."""
 
 import typing
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ValidationError
 
 from yggdrasil.admin.auth import Actor
 from yggdrasil.admin.common import change, not_found
-from yggdrasil.db.models import Group, SettingsDoc
+from yggdrasil.db.models import Channel, Guild, SettingsDoc
 from yggdrasil.db.session import get_session
-from yggdrasil.settings import Settings, effective_settings
+from yggdrasil.settings import Settings, merge_settings
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
+SettingsScope = Literal["guild", "category", "channel"]
+
 
 class SettingsView(BaseModel):
-    value: dict[str, Any]  # the stored (sparse) document
-    effective: dict[str, Any]  # merged over defaults (and global, for groups)
-    defaults: dict[str, Any]  # what ``value`` is merged over
+    value: dict[str, Any]  # stored sparse override at this scope
+    effective: dict[str, Any]  # merged result including this scope
+    defaults: dict[str, Any]  # inherited parent chain (what value overrides)
+    chain: list[str] = []  # human-readable inheritance path, e.g. ["全局", "服务器", "分组", "频道"]
 
 
 def _unknown_keys(doc: dict[str, Any], model: type[BaseModel], prefix: str = "") -> list[str]:
-    """Keys pydantic would silently ignore (typos); nested models and dict[str, Model] are walked."""
     out: list[str] = []
     for key, value in doc.items():
         field = model.model_fields.get(key)
@@ -44,16 +46,16 @@ def _unknown_keys(doc: dict[str, Any], model: type[BaseModel], prefix: str = "")
     return out
 
 
-def validate_doc(global_doc: dict[str, Any], group_doc: dict[str, Any] | None) -> Settings:
-    """Validate a document by merging it the way the runtime does; 422 on bad types or unknown keys."""
-    unknown = _unknown_keys(group_doc if group_doc is not None else global_doc, Settings)
+def validate_layers(*layers: dict[str, Any] | None, check: dict[str, Any]) -> Settings:
+    """Validate ``check`` for unknown keys and validate the merged chain against :class:`Settings`."""
+    unknown = _unknown_keys(check, Settings)
     if unknown:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             [{"loc": ["body", *k.split(".")], "msg": "未知的设置项", "type": "extra_forbidden"} for k in unknown],
         )
     try:
-        return effective_settings(global_doc, group_doc)
+        return merge_settings(*layers)
     except ValidationError as e:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -67,6 +69,41 @@ async def global_doc() -> dict[str, Any]:
         return dict(doc.value) if doc else {}
 
 
+async def _load_parent_layers(
+    scope: SettingsScope, scope_id: str
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
+    """Return ``(parent_layers, own_doc, chain_labels)`` for a guild / category / channel scope."""
+    base = await global_doc()
+    async with get_session() as s:
+        if scope == "guild":
+            g = await s.get(Guild, scope_id)
+            if g is None:
+                raise not_found(f"服务器 {scope_id}")
+            return [base], dict(g.settings), ["全局", f"服务器 {g.name or g.guild_id}"]
+
+        ch = await s.get(Channel, scope_id)
+        if ch is None:
+            raise not_found(f"{'分组' if scope == 'category' else '频道'} {scope_id}")
+        if scope == "category" and not ch.is_category:
+            raise not_found(f"分组 {scope_id}")
+        if scope == "channel" and ch.is_category:
+            raise not_found(f"频道 {scope_id}")
+
+        g = await s.get(Guild, ch.guild_id)
+        parents: list[dict[str, Any]] = [base]
+        labels = ["全局"]
+        if g is not None:
+            parents.append(dict(g.settings))
+            labels.append(f"服务器 {g.name or g.guild_id}")
+        if scope == "channel" and ch.parent_id:
+            cat = await s.get(Channel, ch.parent_id)
+            if cat is not None:
+                parents.append(dict(cat.settings))
+                labels.append(f"分组 {cat.name or cat.channel_id}")
+        labels.append(f"{'分组' if ch.is_category else '频道'} {ch.name or ch.channel_id}")
+        return parents, dict(ch.settings), labels
+
+
 @router.get("/schema")
 async def get_settings_schema() -> dict[str, Any]:
     return Settings.model_json_schema()
@@ -77,14 +114,15 @@ async def get_global_settings() -> SettingsView:
     value = await global_doc()
     return SettingsView(
         value=value,
-        effective=effective_settings(value, None).model_dump(mode="json"),
+        effective=merge_settings(value).model_dump(mode="json"),
         defaults=Settings().model_dump(mode="json"),
+        chain=["默认", "全局"],
     )
 
 
 @router.put("/global")
 async def put_global_settings(body: dict[str, Any], actor: Actor) -> SettingsView:
-    effective = validate_doc(body, None)
+    effective = validate_layers(body, check=body)
     async with change(actor, "settings", "update", "global") as c:
         doc = await c.session.get(SettingsDoc, "global")
         if doc is None:
@@ -93,37 +131,43 @@ async def put_global_settings(body: dict[str, Any], actor: Actor) -> SettingsVie
             doc.value = body
         c.detail = {"value": body}
     return SettingsView(
-        value=body, effective=effective.model_dump(mode="json"), defaults=Settings().model_dump(mode="json")
+        value=body,
+        effective=effective.model_dump(mode="json"),
+        defaults=Settings().model_dump(mode="json"),
+        chain=["默认", "全局"],
     )
 
 
-@router.get("/groups/{group_id}")
-async def get_group_settings(group_id: int) -> SettingsView:
-    base = await global_doc()
-    async with get_session() as s:
-        g = await s.get(Group, group_id)
-        if g is None:
-            raise not_found(f"群 {group_id} ")
-        value = dict(g.settings)
+@router.get("/scopes/{scope}/{scope_id}")
+async def get_scope_settings(scope: SettingsScope, scope_id: str) -> SettingsView:
+    parents, value, labels = await _load_parent_layers(scope, scope_id)
     return SettingsView(
         value=value,
-        effective=effective_settings(base, value).model_dump(mode="json"),
-        defaults=effective_settings(base, None).model_dump(mode="json"),
+        effective=merge_settings(*parents, value).model_dump(mode="json"),
+        defaults=merge_settings(*parents).model_dump(mode="json"),
+        chain=labels,
     )
 
 
-@router.put("/groups/{group_id}")
-async def put_group_settings(group_id: int, body: dict[str, Any], actor: Actor) -> SettingsView:
-    base = await global_doc()
-    effective = validate_doc(base, body)
-    async with change(actor, "group", "settings", group_id) as c:
-        g = await c.session.get(Group, group_id)
-        if g is None:
-            raise not_found(f"群 {group_id} ")
-        g.settings = body
+@router.put("/scopes/{scope}/{scope_id}")
+async def put_scope_settings(scope: SettingsScope, scope_id: str, body: dict[str, Any], actor: Actor) -> SettingsView:
+    parents, _, labels = await _load_parent_layers(scope, scope_id)
+    effective = validate_layers(*parents, body, check=body)
+    async with change(actor, scope, "settings", scope_id) as c:
+        if scope == "guild":
+            row = await c.session.get(Guild, scope_id)
+            if row is None:
+                raise not_found(f"服务器 {scope_id}")
+            row.settings = body
+        else:
+            row = await c.session.get(Channel, scope_id)
+            if row is None:
+                raise not_found(f"{'分组' if scope == 'category' else '频道'} {scope_id}")
+            row.settings = body
         c.detail = {"value": body}
     return SettingsView(
         value=body,
         effective=effective.model_dump(mode="json"),
-        defaults=effective_settings(base, None).model_dump(mode="json"),
+        defaults=merge_settings(*parents).model_dump(mode="json"),
+        chain=labels,
     )

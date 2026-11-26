@@ -27,6 +27,7 @@ export type JsonSchema = {
 };
 
 export const SECTION_LABELS: Record<string, string> = {
+  features: "功能开关",
   persona: "人设",
   interaction: "交互",
   moderation: "审核",

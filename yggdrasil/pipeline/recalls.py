@@ -1,9 +1,4 @@
-"""Runs whose trigger message is recalled while they work: they stop and send nothing.
-
-A run watches its trigger message (``watch``). The group's recall notice (``recall``) marks the watch and cancels the
-tasks it guards (the agent and input moderation); the run checks ``Watch.recalled`` again before it answers. Once the
-answer is on its way, a recall changes nothing.
-"""
+"""Runs whose trigger message is deleted while they work: they stop and send nothing."""
 
 import asyncio
 from collections.abc import Generator
@@ -17,7 +12,6 @@ class Watch:
         self._tasks: set[asyncio.Task[Any]] = set()
 
     def guard(self, task: asyncio.Task[Any]) -> None:
-        """Cancel ``task`` when the trigger is recalled (at once, if it already was)."""
         if self.recalled:
             task.cancel()
             return
@@ -30,17 +24,16 @@ class Watch:
             task.cancel()
 
 
-_watches: dict[tuple[int, int], list[Watch]] = {}
+_watches: dict[tuple[str, str], list[Watch]] = {}
 
 
 @contextmanager
-def watch(group_id: int | None, message_id: int) -> Generator[Watch]:
-    """Watch a group message while the block runs (a private message is never recalled through a group notice)."""
+def watch(channel_id: str | None, message_id: str) -> Generator[Watch]:
     w = Watch()
-    if group_id is None:
+    if channel_id is None or not message_id:
         yield w
         return
-    key = (group_id, message_id)
+    key = (channel_id, message_id)
     _watches.setdefault(key, []).append(w)
     try:
         yield w
@@ -51,9 +44,8 @@ def watch(group_id: int | None, message_id: int) -> Generator[Watch]:
             del _watches[key]
 
 
-def recall(group_id: int, message_id: int) -> bool:
-    """The message was recalled: stop the runs it triggered. Returns whether there were any."""
-    watches = _watches.get((group_id, message_id), [])
+def recall(channel_id: str, message_id: str) -> bool:
+    watches = _watches.get((channel_id, message_id), [])
     for w in watches:
         w.mark()
     return bool(watches)

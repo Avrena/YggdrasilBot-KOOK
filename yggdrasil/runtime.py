@@ -1,8 +1,7 @@
-"""Hot-reloadable runtime configuration.
+"""Hot-reloadable runtime configuration with 4-level scope inheritance.
 
-Readers call :func:`snapshot` (cheap, immutable). Writers (admin API, CLI) change
-the database and call :func:`publish_change`; every process listening on the
-Redis channel reloads its snapshot.
+Scope chain: ``global`` -> ``guild`` -> ``category`` -> ``channel``.
+Readers call :func:`snapshot` (cheap, immutable). Writers update Postgres and call :func:`publish_change`.
 """
 
 import asyncio
@@ -18,9 +17,10 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.crypto import decrypt
 from yggdrasil.db.models import (
     Admin,
+    Channel,
     CommandTrigger,
     EmbedSpace,
-    Group,
+    Guild,
     Prompt,
     PromptVersion,
     Provider,
@@ -31,7 +31,7 @@ from yggdrasil.db.models import (
 from yggdrasil.db.session import get_session
 from yggdrasil.kv import redis_client
 from yggdrasil.llm.catalog import ModelCaps
-from yggdrasil.settings import Settings, effective_settings
+from yggdrasil.settings import Settings, merge_settings
 
 CHANNEL = "ygg:config"
 
@@ -61,10 +61,23 @@ class Route:
 
 
 @dataclass(frozen=True, slots=True)
-class GroupInfo:
-    group_id: int
+class GuildInfo:
+    guild_id: str
     name: str
-    enabled: bool
+    icon: str
+    settings_doc: dict[str, Any]
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelInfo:
+    channel_id: str
+    guild_id: str
+    parent_id: str | None
+    is_category: bool
+    position: int
+    name: str
+    enabled: bool | None  # None = inherit from parent category (default False if uncategorized)
     settings_doc: dict[str, Any]
 
 
@@ -72,8 +85,8 @@ class GroupInfo:
 class TriggerRule:
     id: int
     handler: str
-    scope: str
-    group_id: int | None
+    scope: str  # global | guild | category | channel | private
+    scope_id: str | None
     match_type: str
     patterns: tuple[str, ...]
     arg_template: str | None
@@ -110,27 +123,109 @@ class Snapshot:
     version: int = 0
     providers: dict[int, ProviderInfo] = field(default_factory=dict)
     routes: dict[str, Route] = field(default_factory=dict)
-    groups: dict[int, GroupInfo] = field(default_factory=dict)
+    guilds: dict[str, GuildInfo] = field(default_factory=dict)
+    channels: dict[str, ChannelInfo] = field(default_factory=dict)
     global_settings_doc: dict[str, Any] = field(default_factory=dict)
     triggers: tuple[TriggerRule, ...] = ()
     prompts: dict[str, str] = field(default_factory=dict)
-    superusers: frozenset[int] = frozenset()
+    superusers: frozenset[str] = frozenset()
     admin_emails: frozenset[str] = frozenset()
     embed_space: EmbedSpaceInfo | None = None
-    search_providers: tuple[SearchProviderInfo, ...] = ()  # sorted by (priority, id)
-    _settings_cache: dict[int | None, Settings] = field(default_factory=dict, repr=False)
+    search_providers: tuple[SearchProviderInfo, ...] = ()
+    _settings_cache: dict[tuple[str | None, str | None, str | None], Settings] = field(default_factory=dict, repr=False)
 
-    def settings(self, group_id: int | None = None) -> Settings:
-        cached = self._settings_cache.get(group_id)
+    def guild_of(self, channel_id: str | None) -> str | None:
+        if not channel_id:
+            return None
+        ch = self.channels.get(channel_id)
+        return ch.guild_id if ch is not None else None
+
+    def category_of(self, channel_id: str | None) -> str | None:
+        if not channel_id:
+            return None
+        ch = self.channels.get(channel_id)
+        if ch is None:
+            return None
+        if ch.is_category:
+            return ch.channel_id
+        return ch.parent_id
+
+    def channel_name(self, channel_id: str | None) -> str:
+        if not channel_id:
+            return ""
+        ch = self.channels.get(channel_id)
+        return ch.name if ch is not None else ""
+
+    def guild_name(self, guild_id: str | None) -> str:
+        if not guild_id:
+            return ""
+        g = self.guilds.get(guild_id)
+        return g.name if g is not None else ""
+
+    def channel_enabled(self, channel_id: str | None) -> bool:
+        """Resolve tri-state ``enabled``: guild gate -> channel override -> parent category override -> False."""
+        if not channel_id:
+            return False
+        ch = self.channels.get(channel_id)
+        if ch is None:
+            return False
+        guild = self.guilds.get(ch.guild_id)
+        if guild is not None and not guild.enabled:
+            return False
+        if ch.enabled is not None:
+            return ch.enabled
+        if not ch.is_category and ch.parent_id:
+            cat = self.channels.get(ch.parent_id)
+            if cat is not None and cat.enabled is not None:
+                return cat.enabled
+        return False
+
+    def guild_channels(self, guild_id: str, *, enabled_only: bool = True) -> list[ChannelInfo]:
+        out = [
+            c
+            for c in self.channels.values()
+            if not c.is_category and c.guild_id == guild_id and (not enabled_only or self.channel_enabled(c.channel_id))
+        ]
+        out.sort(key=lambda c: (c.position, c.channel_id))
+        return out
+
+    def shared_channel_ids(self, guild_id: str) -> list[str]:
+        """Enabled text channels in ``guild_id`` that participate in guild-shared memory."""
+        return [
+            c.channel_id
+            for c in self.guild_channels(guild_id, enabled_only=True)
+            if self.settings(channel_id=c.channel_id, guild_id=guild_id).memory.enabled
+            and self.settings(channel_id=c.channel_id, guild_id=guild_id).memory.share_in_guild
+        ]
+
+    def settings(
+        self,
+        channel_id: str | None = None,
+        *,
+        guild_id: str | None = None,
+        category_id: str | None = None,
+    ) -> Settings:
+        """Effective settings along ``global -> guild -> category -> channel``."""
+        ch = self.channels.get(channel_id) if channel_id else None
+        if ch is not None:
+            if ch.is_category:
+                category_id = ch.channel_id
+                ch = None
+            else:
+                category_id = category_id or ch.parent_id
+            guild_id = guild_id or self.channels[channel_id].guild_id if channel_id in self.channels else guild_id
+        if category_id and not guild_id and category_id in self.channels:
+            guild_id = self.channels[category_id].guild_id
+
+        key = (guild_id, category_id, ch.channel_id if ch else None)
+        cached = self._settings_cache.get(key)
         if cached is None:
-            group = self.groups.get(group_id) if group_id is not None else None
-            cached = effective_settings(self.global_settings_doc, group.settings_doc if group else None)
-            self._settings_cache[group_id] = cached
+            guild_doc = self.guilds[guild_id].settings_doc if guild_id and guild_id in self.guilds else None
+            cat_doc = self.channels[category_id].settings_doc if category_id and category_id in self.channels else None
+            ch_doc = ch.settings_doc if ch is not None else None
+            cached = merge_settings(self.global_settings_doc, guild_doc, cat_doc, ch_doc)
+            self._settings_cache[key] = cached
         return cached
-
-    def group_enabled(self, group_id: int) -> bool:
-        group = self.groups.get(group_id)
-        return group is not None and group.enabled
 
 
 _snapshot = Snapshot()
@@ -142,7 +237,6 @@ def snapshot() -> Snapshot:
 
 
 def on_reload(fn: Callable[[Snapshot], Awaitable[None] | None]) -> None:
-    """Register a callback run after every reload (e.g. recompiling the trigger index)."""
     _listeners.append(fn)
 
 
@@ -184,9 +278,22 @@ async def load() -> Snapshot:
             )
             for r in (await session.scalars(select(TaskRoute))).all()
         }
-        groups = {
-            g.group_id: GroupInfo(g.group_id, g.name, g.enabled, dict(g.settings))
-            for g in (await session.scalars(select(Group))).all()
+        guilds = {
+            g.guild_id: GuildInfo(g.guild_id, g.name, g.icon, dict(g.settings), g.enabled)
+            for g in (await session.scalars(select(Guild))).all()
+        }
+        channels = {
+            c.channel_id: ChannelInfo(
+                c.channel_id,
+                c.guild_id,
+                c.parent_id,
+                c.is_category,
+                c.position,
+                c.name,
+                c.enabled,
+                dict(c.settings),
+            )
+            for c in (await session.scalars(select(Channel))).all()
         }
         doc = await session.get(SettingsDoc, "global")
         triggers = tuple(
@@ -194,7 +301,7 @@ async def load() -> Snapshot:
                 t.id,
                 t.handler,
                 t.scope,
-                t.group_id,
+                t.scope_id,
                 t.match_type,
                 tuple(t.patterns),
                 t.arg_template,
@@ -215,7 +322,9 @@ async def load() -> Snapshot:
         admins = (await session.scalars(select(Admin))).all()
         space = await session.scalar(select(EmbedSpace).where(EmbedSpace.active))
 
-    superusers = {int(a.value) for a in admins if a.kind == "qq"} | set(APP_CONFIG.bootstrap_superusers)
+    superusers = {a.value.strip() for a in admins if a.kind == "kook" and a.value.strip()} | {
+        str(u).strip() for u in APP_CONFIG.bootstrap_superusers if str(u).strip()
+    }
     emails = {a.value.lower() for a in admins if a.kind == "email"} | {
         e.lower() for e in APP_CONFIG.bootstrap_admin_emails
     }
@@ -223,7 +332,8 @@ async def load() -> Snapshot:
         version=_snapshot.version + 1,
         providers=providers,
         routes=routes,
-        groups=groups,
+        guilds=guilds,
+        channels=channels,
         global_settings_doc=dict(doc.value) if doc else {},
         triggers=triggers,
         prompts=prompts,
@@ -237,11 +347,12 @@ async def load() -> Snapshot:
         if asyncio.iscoroutine(result):
             await result
     LOGGER.info(
-        "runtime config v{} loaded: {} providers, {} routes, {} groups, {} triggers",
+        "runtime config v{} loaded: {} providers, {} routes, {} guilds, {} channels, {} triggers",
         _snapshot.version,
         len(providers),
         len(routes),
-        len(groups),
+        len(guilds),
+        len(channels),
         len(triggers),
     )
     return _snapshot
@@ -262,7 +373,6 @@ async def publish_change(reason: str) -> None:
 
 
 async def listen_forever() -> None:
-    """Reload on every published change. Reconnects with backoff."""
     delay = 1.0
     while True:
         try:

@@ -54,9 +54,9 @@ from yggdrasil.sandbox.job_model import (
     JobStatus,
     ReportDeferred,
     Requester,
+    channel_key,
     events_key,
     fmt_duration,
-    group_key,
     job_key,
     keep_field,
     running_key,
@@ -147,14 +147,14 @@ def _bridge_scope(req: Requester, cfg: ToolSettings) -> ToolScope | None:
 class Workspaces(Protocol):
     """The ``WorkspaceManager`` methods jobs use."""
 
-    async def backend_for(self, group_id: int, name: str) -> tuple[Any, str] | None: ...
-    async def renew(self, group_id: int, name: str, cfg: ToolSettings) -> bool: ...
-    async def extend(self, group_id: int, name: str, claim: str, until: float, cfg: ToolSettings) -> float | None: ...
+    async def backend_for(self, channel_id: str, name: str) -> tuple[Any, str] | None: ...
+    async def renew(self, channel_id: str, name: str, cfg: ToolSettings) -> bool: ...
+    async def extend(self, channel_id: str, name: str, claim: str, until: float, cfg: ToolSettings) -> float | None: ...
     async def publish(
-        self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
+        self, channel_id: str, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
     ) -> Link: ...
     async def unpublish(
-        self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
+        self, channel_id: str, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
     ) -> bool: ...
 
 
@@ -172,10 +172,10 @@ def _default_workspaces() -> Workspaces:
     return manager()
 
 
-def _default_settings(group_id: int) -> Settings:
+def _default_settings(channel_id: str) -> Settings:
     from yggdrasil.runtime import snapshot
 
-    return snapshot().settings(group_id)
+    return snapshot().settings(channel_id=channel_id)
 
 
 async def _default_report(job: Job) -> str | None:
@@ -216,7 +216,7 @@ class JobRunner:
         report: Reporter = _default_report,
         archive: Archiver = _default_archive,
         transcribe: Transcriber = _default_transcribe,
-        settings: Callable[[int], Settings] = _default_settings,
+        settings: Callable[[str], Settings] = _default_settings,
         link_domain: Callable[[], str | None] | None = None,
         poll_s: float = POLL_S,
         clock: Callable[[], float] = time.time,
@@ -249,11 +249,11 @@ class JobRunner:
         keys = fields or tuple(k for k in data if k != "cancel")
         await self._r().hset(job_key(job.id), mapping={k: data[k] for k in keys})  # pyright: ignore[reportGeneralTypeIssues]
 
-    async def for_group(self, group_id: int, *, limit: int = 10) -> list[Job]:
-        """The group's jobs, newest first (running and recently finished)."""
+    async def for_channel(self, channel_id: str, *, limit: int = 10) -> list[Job]:
+        """The channel's jobs, newest first (running and recently finished)."""
         r = self._r()
-        await r.zremrangebyscore(group_key(group_id), 0, self._clock() - RETENTION_S)
-        ids = cast(list[str], await r.zrevrange(group_key(group_id), 0, limit - 1))
+        await r.zremrangebyscore(channel_key(channel_id), 0, self._clock() - RETENTION_S)
+        ids = cast(list[str], await r.zrevrange(channel_key(channel_id), 0, limit - 1))
         jobs = [j for j in [await self.get(i) for i in ids] if j is not None]
         return jobs
 
@@ -298,7 +298,7 @@ class JobRunner:
         # agent's wrap-up) by that much, plus time to stop it.
         wrap_s = WRAP_UP_S if kind == "agent" else 0.0
         until = self._clock() + limit_s + wrap_s + cfg.sandbox_invocation_s + START_MARGIN_S
-        if await self._workspaces().extend(req.group_id, workspace, ref.id, until, cfg) is None:
+        if await self._workspaces().extend(req.channel_id, workspace, ref.id, until, cfg) is None:
             raise SandboxError("工作区刚被重置或回收，稍后再试")
         return ref.id, float(limit_s)
 
@@ -311,9 +311,9 @@ class JobRunner:
                 await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
                     _RESERVE,
                     4,
-                    running_key(job.group_id),
+                    running_key(job.channel_id),
                     job_key(job.id),
-                    group_key(job.group_id),
+                    channel_key(job.channel_id),
                     ACTIVE_KEY,
                     str(cfg.sandbox_max_jobs),
                     job.id,
@@ -325,9 +325,9 @@ class JobRunner:
             )
         )
         if code == 1:
-            raise SandboxError(f"本群同时最多 {cfg.sandbox_max_jobs} 个后台任务，先等一个结束或用 cancel_job 取消")
+            raise SandboxError(f"本频道同时最多 {cfg.sandbox_max_jobs} 个后台任务，先等一个结束或用 cancel_job 取消")
         if code == 2:
-            raise SandboxError("本群已经有一个后台大任务在跑，同时只能有一个；等它结束或用 cancel_job 取消")
+            raise SandboxError("本频道已经有一个后台大任务在跑，同时只能有一个；等它结束或用 cancel_job 取消")
 
     async def _cas(self, job_id: str, expect: str, **values: str) -> bool:
         """Set ``values`` on the job record only while its status is still ``expect``."""
@@ -346,7 +346,7 @@ class JobRunner:
                 LOGGER.opt(exception=True).info("stopping half-started sandbox job {} failed", job.id)
         r = self._r()
         try:
-            await r.hdel(keep_key(job.group_id, job.workspace), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
+            await r.hdel(keep_key(job.channel_id, job.workspace), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
             from yggdrasil import relay
 
             await relay.revoke_token(job.id)
@@ -355,7 +355,7 @@ class JobRunner:
                 job.id, "starting", status="failed", error=error[:2000], ended_at=repr(now), report="skipped"
             ):
                 job.status, job.error, job.ended_at, job.report = "failed", error[:2000], now, "skipped"
-                await r.hdel(running_key(job.group_id), job.id)  # pyright: ignore[reportGeneralTypeIssues]
+                await r.hdel(running_key(job.channel_id), job.id)  # pyright: ignore[reportGeneralTypeIssues]
                 await self._settle(job)
         except Exception:
             LOGGER.exception("cleaning up the failed start of sandbox job {} failed", job.id)
@@ -367,7 +367,8 @@ class JobRunner:
         return Job(
             id=random_id(8),
             kind=kind,
-            group_id=req.group_id,
+            channel_id=req.channel_id,
+            guild_id=req.guild_id,
             user_id=req.user_id,
             trigger_message_id=req.trigger_message_id,
             invocation_id=req.invocation_id,
@@ -387,7 +388,7 @@ class JobRunner:
         process just started is stopped again and the start fails."""
         r = self._r()
         # The keep entry first: the moment the record says running, the reap must already spare the process.
-        await r.hset(keep_key(job.group_id, job.workspace), keep_field(job.id), str(pid))  # pyright: ignore[reportGeneralTypeIssues]
+        await r.hset(keep_key(job.channel_id, job.workspace), keep_field(job.id), str(pid))  # pyright: ignore[reportGeneralTypeIssues]
         if not await self._cas(job.id, "starting", status="running", pid=str(pid), model=job.model, driver=job.driver):
             await asyncio.shield(self._abort_start(job, ops, "启动太慢", kill=True))
             raise SandboxError("后台任务启动太慢，已被判定失败，刚启动的进程也已停掉；可以重试")
@@ -408,7 +409,7 @@ class JobRunner:
         which the helper hands to the script as ``YGG_BRIDGE_URL`` / ``YGG_BRIDGE_TOKEN``."""
         from yggdrasil import relay
 
-        cfg = self._settings(req.group_id).tools
+        cfg = self._settings(req.channel_id).tools
         claim, limit_s = await self._admit(req, backend, workspace, "command", cfg)
         job = self._new(req, "command", workspace, claim, title, script, limit_s)
         await self._reserve(job, cfg)
@@ -418,7 +419,7 @@ class JobRunner:
             url, scope = relay.relay_url(), _bridge_scope(req, cfg)
             if url is not None and scope is not None:
                 token = await relay.issue_token(
-                    group_id=req.group_id,
+                    channel_id=req.channel_id,
                     job_id=job.id,
                     models=[],
                     max_input_tokens=0,
@@ -435,8 +436,8 @@ class JobRunner:
                 raise
             raise err from e
         await self._started(job, pid, ops)
-        LOGGER.bind(audit="sandbox", action="job_start", group=job.group_id, job=job.id).info(
-            "sandbox job {} (command) started in group {} pid={}", job.id, job.group_id, pid
+        LOGGER.bind(audit="sandbox", action="job_start", channel=job.channel_id, job=job.id).info(
+            "sandbox job {} (command) started in channel {} pid={}", job.id, job.channel_id, pid
         )
         return job
 
@@ -447,7 +448,7 @@ class JobRunner:
         base_url = relay.relay_url()
         if base_url is None:
             raise SandboxError("没有配置模型中转，不能委托后台大任务")
-        settings = self._settings(req.group_id)
+        settings = self._settings(req.channel_id)
         cfg = settings.tools
         claim, limit_s = await self._admit(req, backend, workspace, "agent", cfg)
         models = await relay.relay_models()
@@ -465,7 +466,7 @@ class JobRunner:
         scope = _bridge_scope(req, cfg)
         try:
             token = await relay.issue_token(
-                group_id=req.group_id,
+                channel_id=req.channel_id,
                 job_id=job.id,
                 models=[model.id],
                 max_input_tokens=cfg.sandbox_job_max_input_tokens,
@@ -502,7 +503,7 @@ class JobRunner:
             ]
             await self._transcribe(job.id, opening, {}, full)
             argv, env = omp.launch(
-                group_id=req.group_id,
+                channel_id=req.channel_id,
                 model=model.id,
                 rules_path=rules,
                 max_time_s=int(limit_s + WRAP_UP_S) + 120,
@@ -516,18 +517,18 @@ class JobRunner:
                 raise
             raise err from e
         await self._started(job, pid, ops)
-        LOGGER.bind(audit="sandbox", action="job_start", group=job.group_id, job=job.id).info(
-            "sandbox job {} (agent, {}) started in group {} pid={}", job.id, model.id, job.group_id, pid
+        LOGGER.bind(audit="sandbox", action="job_start", channel=job.channel_id, job=job.id).info(
+            "sandbox job {} (agent, {}) started in channel {} pid={}", job.id, model.id, job.channel_id, pid
         )
         return job
 
     # --- cancelling -----------------------------------------------------------------------------------
 
-    async def cancel(self, job_id: str, *, by: str, group_id: int | None = None) -> Job | None:
-        """Ask the poller to stop a running job (it does so within a poll interval). ``group_id`` restricts
-        the lookup to one group; returns the job, or ``None`` when there is no such job."""
+    async def cancel(self, job_id: str, *, by: str, channel_id: str | None = None) -> Job | None:
+        """Ask the poller to stop a running job (it does so within a poll interval). ``channel_id`` restricts
+        the lookup to one channel; returns the job, or ``None`` when there is no such job."""
         job = await self.get(job_id)
-        if job is None or (group_id is not None and job.group_id != group_id):
+        if job is None or (channel_id is not None and job.channel_id != channel_id):
             return None
         if job.running and not job.cancel:
             await self._r().hset(job_key(job_id), "cancel", by)  # pyright: ignore[reportGeneralTypeIssues]
@@ -625,7 +626,7 @@ class JobRunner:
 
     async def _step(self, job: Job) -> None:
         now = self._clock()
-        found = await self._workspaces().backend_for(job.group_id, job.workspace)
+        found = await self._workspaces().backend_for(job.channel_id, job.workspace)
         if found is None or found[1] != job.claim:
             if found is not None:
                 await found[0].aclose()
@@ -656,12 +657,12 @@ class JobRunner:
             await backend.aclose()
 
     async def _renew(self, job: Job) -> None:
-        cfg = self._settings(job.group_id).tools
+        cfg = self._settings(job.channel_id).tools
         if self._clock() - job.renewed_at < cfg.sandbox_idle_min * 60 / 4:
             return
         job.renewed_at = self._clock()
         await self._save(job, "renewed_at")
-        if not await self._workspaces().renew(job.group_id, job.workspace, cfg):
+        if not await self._workspaces().renew(job.channel_id, job.workspace, cfg):
             LOGGER.warning("sandbox job {}: renewing the workspace failed", job.id)
 
     async def _step_command(self, job: Job, ops: JobOps) -> None:
@@ -685,7 +686,7 @@ class JobRunner:
         async def on_message(msg: dict[str, Any]) -> None:
             if msg.get("role") == "user" and _plain(msg.get("content")).strip() == job.spec.strip():
                 return  # the task itself, already in the transcript since the job started
-            full = self._settings(job.group_id).privacy.capture_llm_content
+            full = self._settings(job.channel_id).privacy.capture_llm_content
             blobs: dict[str, Blob] = {}
             starts = self._tool_starts.setdefault(job.id, {})
             await self._transcribe(
@@ -699,7 +700,7 @@ class JobRunner:
             omp.DriverState.from_json(job.driver),
             JobChannel(ops, job.dir),
             host,
-            session_dir=omp.session_dir(job.group_id),
+            session_dir=omp.session_dir(job.channel_id),
             model=job.model,
             task=job.spec,
             tools=omp.host_tools(links=bool(self._link_domain())),
@@ -770,11 +771,11 @@ class JobRunner:
         job.report = "skipped" if job.cancel.startswith("chat:") else "pending"
         job.report_at = self._clock()
         r = self._r()
-        await r.hdel(keep_key(job.group_id, job.workspace), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
-        await r.hdel(running_key(job.group_id), job.id)  # pyright: ignore[reportGeneralTypeIssues]
+        await r.hdel(keep_key(job.channel_id, job.workspace), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
+        await r.hdel(running_key(job.channel_id), job.id)  # pyright: ignore[reportGeneralTypeIssues]
         await self._save(job, "status", "ended_at", "result", "error", "exit_code", "usage", "report", "report_at")
         await self._event(job, f"{STATUS_TEXT[status]}" + (f"：{error[:100]}" if error else ""))
-        LOGGER.bind(audit="sandbox", action="job_end", group=job.group_id, job=job.id).info(
+        LOGGER.bind(audit="sandbox", action="job_end", channel=job.channel_id, job=job.id).info(
             "sandbox job {} ended: {} {}", job.id, status, error[:200]
         )
         if job.report == "skipped":
@@ -787,14 +788,14 @@ class JobRunner:
             from yggdrasil.pipeline import ratelimit
 
             try:
-                await ratelimit.add_tokens(job.group_id, tokens)
+                await ratelimit.add_tokens(job.channel_id, tokens)
             except Exception:
                 LOGGER.exception("billing sandbox job {} failed", job.id)
 
     # --- host tools (omp) -----------------------------------------------------------------------------
 
     async def _host_tool(self, job: Job, ops: JobOps, name: str, args: dict[str, Any]) -> tuple[str, bool]:
-        cfg = self._settings(job.group_id).tools
+        cfg = self._settings(job.channel_id).tools
         if name == "progress":
             text = " ".join(str(args.get("text", "")).split())[:300]
             job.progress = text
@@ -808,7 +809,7 @@ class JobRunner:
             if not path.lower().endswith(_IMAGE_EXTS):
                 return "只能发 PNG/JPEG/GIF/WebP 图片", True
             if any(x.get("path") == path for x in job.images):
-                return "已记下这张图，任务结束后会随结果一起发到群里（发之前还要过审核）。", False
+                return "已记下这张图，任务结束后会随结果一起发到频道里（发之前还要过审核）。", False
             if len(job.images) >= MAX_SHOW:
                 return f"这个任务最多发 {MAX_SHOW} 张图，已经够了", True
             size = await ops.file_size(path)
@@ -820,7 +821,7 @@ class JobRunner:
             job.images = [*job.images, {"path": path, "caption": caption}]
             await self._save(job, "images")
             await self._event(job, f"show {path}")
-            return "已记下这张图，任务结束后会随结果一起发到群里（发之前还要过审核）。", False
+            return "已记下这张图，任务结束后会随结果一起发到频道里（发之前还要过审核）。", False
         if name in ("publish", "unpublish"):
             port = args.get("port")
             if not isinstance(port, int):
@@ -828,12 +829,12 @@ class JobRunner:
             audit = {"job": job.id}
             try:
                 if name == "publish":
-                    link = await self._workspaces().publish(job.group_id, job.workspace, port, cfg, audit=audit)
+                    link = await self._workspaces().publish(job.channel_id, job.workspace, port, cfg, audit=audit)
                     job.links = [*(x for x in job.links if x.get("port") != port), {"port": port, "url": link.url}]
                     await self._save(job, "links")
                     await self._event(job, f"publish {port} → {link.url}")
                     return f"已公开端口 {port}：{link.url}\n这个链接任何人都能打开；在最终回答里写出它。", False
-                closed = await self._workspaces().unpublish(job.group_id, job.workspace, port, cfg, audit=audit)
+                closed = await self._workspaces().unpublish(job.channel_id, job.workspace, port, cfg, audit=audit)
             except SandboxError as e:
                 return str(e), True
             job.links = [x for x in job.links if x.get("port") != port]

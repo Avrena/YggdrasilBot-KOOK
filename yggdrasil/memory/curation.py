@@ -1,20 +1,4 @@
-"""Memory curation: hourly scoring and archiving of closed topics and profile facts.
-
-Topics (route ``memory_topic``): closed topics are rated newest first, in batches. The model rates each 1–5 with a
-short reason; its weight scales that by size (:func:`~yggdrasil.memory.common.topic_weight`), and topics below
-``topic_archive_below_weight`` are archived (out of search, digests, profile updates and prompts).
-
-Facts (route ``memory_profile``): one call per user rates the unscored facts and names near-duplicates among the
-user's active facts. Duplicates merge into the fact the model keeps (sources unioned, the rest archived), facts
-rated below ``fact_archive_below_importance`` are archived, and each user keeps at most ``facts_per_user`` active
-facts ranked by weight with recency decay. The profile updater rates new facts itself, so once the backlog is
-done this mostly enforces the cap.
-
-Archived facts stay in the table and can be restored in the console; restored facts are ``locked`` and never
-archived again. Items an answer leaves out stay unrated, and an answer that rates nothing it was shown (empty, or
-only ids that weren't shown) counts as a failure: both are asked about again next run. Per-run caps let an existing
-backlog drain over a few runs.
-"""
+"""Guild-level memory curation: hourly scoring and archiving of closed topics and profile facts."""
 
 from collections.abc import Collection, Sequence
 
@@ -41,7 +25,7 @@ TOPIC_BATCH = 25
 MAX_TOPICS_PER_RUN = 200
 MAX_USERS_PER_RUN = 20
 MAX_FACTS_PER_CALL = 150
-MAX_KNOWN_FACTS = 60  # already rated facts shown to find duplicates of the new ones
+MAX_KNOWN_FACTS = 60
 SUMMARY_MAX_CHARS = 400
 REASON_MAX_CHARS = 40
 
@@ -72,7 +56,7 @@ class FactReview(BaseModel):
 
 
 class NothingRated(ValueError):
-    """The answer rated none of the items it was shown (empty, or only ids that weren't shown)."""
+    pass
 
 
 def clamp_importance(value: int) -> int:
@@ -80,7 +64,6 @@ def clamp_importance(value: int) -> int:
 
 
 def valid_topic_scores(scores: Sequence[TopicScore], topic_ids: Collection[int]) -> dict[int, TopicScore]:
-    """The first score of each shown topic, importance clamped to 1–5, reason on one short line."""
     shown = set(topic_ids)
     out: dict[int, TopicScore] = {}
     for s in scores:
@@ -91,7 +74,6 @@ def valid_topic_scores(scores: Sequence[TopicScore], topic_ids: Collection[int])
 
 
 def valid_fact_scores(scores: Sequence[FactScore], fact_ids: Collection[int]) -> dict[int, int]:
-    """fact id -> importance (1–5) for the facts that were up for rating; the first score wins."""
     shown = set(fact_ids)
     out: dict[int, int] = {}
     for s in scores:
@@ -103,8 +85,6 @@ def valid_fact_scores(scores: Sequence[FactScore], fact_ids: Collection[int]) ->
 def valid_merges(
     merges: Sequence[FactMerge], fact_ids: Collection[int], locked: Collection[int]
 ) -> dict[int, list[int]]:
-    """kept fact id -> duplicate ids. Only shown facts, each in one merge at most; locked facts are never merged
-    away (an admin restored them)."""
     shown, keep_out = set(fact_ids), set(locked)
     used: set[int] = set()
     out: dict[int, list[int]] = {}
@@ -119,16 +99,16 @@ def valid_merges(
     return out
 
 
-async def _score_topics(group_id: int, mem: MemorySettings, stats: dict[str, int]) -> None:
-    bot_name = snapshot().settings(group_id).persona.name
-    sent: list[int] = []  # each topic is asked about once per run
+async def _score_topics(guild_id: str, mem: MemorySettings, stats: dict[str, int]) -> None:
+    bot_name = snapshot().settings(guild_id=guild_id).persona.name
+    sent: list[int] = []
     while len(sent) < MAX_TOPICS_PER_RUN:
         async with get_session() as session:
             batch = (
                 await session.scalars(
                     select(Topic)
                     .where(
-                        Topic.group_id == group_id,
+                        Topic.guild_id == guild_id,
                         Topic.status == "closed",
                         Topic.scored_at.is_(None),
                         Topic.id.notin_(sent),
@@ -164,15 +144,14 @@ async def _score_topics(group_id: int, mem: MemorySettings, stats: dict[str, int
             if not scores:
                 raise NothingRated(f"none of the {len(ids)} topics shown")
         except Exception:
-            # Nothing is marked: these topics come first again next run.
             stats["failed"] += 1
-            LOGGER.exception("group {}: topic curation failed", group_id)
+            LOGGER.exception("guild {}: topic curation failed", guild_id)
             return
         async with get_session() as session:
             rated: list[int] = []
             for t in batch:
                 if (s := scores.get(t.id)) is None:
-                    continue  # left out of the answer: stays unrated, asked about again next run
+                    continue
                 rated += await session.scalars(
                     update(Topic)
                     .where(Topic.id == t.id, Topic.status == "closed", Topic.scored_at.is_(None))
@@ -193,16 +172,15 @@ async def _score_topics(group_id: int, mem: MemorySettings, stats: dict[str, int
             return
 
 
-async def _fact_users(group_id: int) -> list[int]:
-    """Members with unrated active facts (not opted out), the most unrated first."""
+async def _fact_users(guild_id: str) -> list[str]:
     opted_out = exists().where(
-        UserProfile.group_id == group_id, UserProfile.user_id == UserProfileFact.user_id, UserProfile.opted_out
+        UserProfile.guild_id == guild_id, UserProfile.user_id == UserProfileFact.user_id, UserProfile.opted_out
     )
     async with get_session() as session:
         rows = await session.execute(
             select(UserProfileFact.user_id)
             .where(
-                UserProfileFact.group_id == group_id,
+                UserProfileFact.guild_id == guild_id,
                 UserProfileFact.archived_at.is_(None),
                 UserProfileFact.scored_at.is_(None),
                 ~opted_out,
@@ -214,12 +192,11 @@ async def _fact_users(group_id: int) -> list[int]:
         return list(rows.scalars())
 
 
-async def _review_facts(group_id: int, user_id: int, mem: MemorySettings, stats: dict[str, int]) -> None:
-    """Rate one member's unrated facts, merge duplicates and archive the low ones (one model call)."""
+async def _review_facts(guild_id: str, user_id: str, mem: MemorySettings, stats: dict[str, int]) -> None:
     async with get_session() as session:
-        profile = await session.get(UserProfile, (group_id, user_id))
+        profile = await session.get(UserProfile, (guild_id, user_id))
         active = select(UserProfileFact).where(
-            UserProfileFact.group_id == group_id,
+            UserProfileFact.guild_id == guild_id,
             UserProfileFact.user_id == user_id,
             UserProfileFact.archived_at.is_(None),
         )
@@ -240,7 +217,7 @@ async def _review_facts(group_id: int, user_id: int, mem: MemorySettings, stats:
     prompt = render(
         PROMPT,
         mode="facts",
-        bot_name=snapshot().settings(group_id).persona.name,
+        bot_name=snapshot().settings(guild_id=guild_id).persona.name,
         name=llm.fence(clean_name(profile.display_name if profile else "") or UNKNOWN_NAME),
         user_id=user_id,
         facts=[{"id": f.id, "fact": llm.fence(f.fact)} for f in unrated],
@@ -279,7 +256,7 @@ async def _review_facts(group_id: int, user_id: int, mem: MemorySettings, stats:
                             values |= {"archived_at": func.now(), "archive_reason": "low"}
                             stats["facts_archived"] += 1
             else:
-                continue  # left out of the answer: an unrated fact stays unrated, asked about again next run
+                continue
             await session.execute(
                 update(UserProfileFact)
                 .where(UserProfileFact.id == f.id, UserProfileFact.archived_at.is_(None))
@@ -287,9 +264,7 @@ async def _review_facts(group_id: int, user_id: int, mem: MemorySettings, stats:
             )
 
 
-async def cap_facts(session: AsyncSession, group_id: int, mem: MemorySettings) -> int:
-    """Archive what exceeds ``facts_per_user`` active facts per member, lowest weight with decay first. Members
-    with unrated facts wait until they are rated; locked facts are kept (and still take a place)."""
+async def cap_facts(session: AsyncSession, guild_id: str, mem: MemorySettings) -> int:
     if mem.facts_per_user <= 0:
         return 0
     unrated = aliased(UserProfileFact)
@@ -305,10 +280,10 @@ async def cap_facts(session: AsyncSession, group_id: int, mem: MemorySettings) -
             .label("rn"),
         )
         .where(
-            UserProfileFact.group_id == group_id,
+            UserProfileFact.guild_id == guild_id,
             UserProfileFact.archived_at.is_(None),
             ~exists().where(
-                unrated.group_id == group_id,
+                unrated.guild_id == guild_id,
                 unrated.user_id == UserProfileFact.user_id,
                 unrated.archived_at.is_(None),
                 unrated.scored_at.is_(None),
@@ -325,24 +300,23 @@ async def cap_facts(session: AsyncSession, group_id: int, mem: MemorySettings) -
     return result.rowcount or 0  # type: ignore[attr-defined]
 
 
-async def curate_group(group_id: int) -> dict[str, int]:
-    """Hourly entry point (see module docstring); one member's failure doesn't stop the others."""
-    mem = snapshot().settings(group_id).memory
+async def curate_guild(guild_id: str) -> dict[str, int]:
+    mem = snapshot().settings(guild_id=guild_id).memory
     keys = ("topics_scored", "topics_archived", "facts_scored", "facts_merged", "facts_archived", "facts_capped")
     stats: dict[str, int] = dict.fromkeys((*keys, "failed"), 0)
     if llm.available(TOPIC_TASK):
-        await _score_topics(group_id, mem, stats)
+        await _score_topics(guild_id, mem, stats)
     else:
-        LOGGER.debug("group {}: task {} not configured; topics stay unscored", group_id, TOPIC_TASK)
+        LOGGER.debug("guild {}: task {} not configured; topics stay unscored", guild_id, TOPIC_TASK)
     if llm.available(FACT_TASK):
-        for user_id in await _fact_users(group_id):
+        for user_id in await _fact_users(guild_id):
             try:
-                await _review_facts(group_id, user_id, mem, stats)
+                await _review_facts(guild_id, user_id, mem, stats)
             except Exception:
                 stats["failed"] += 1
-                LOGGER.exception("group {}: fact curation failed", group_id)
+                LOGGER.exception("guild {}: fact curation failed", guild_id)
     else:
-        LOGGER.debug("group {}: task {} not configured; facts stay unscored", group_id, FACT_TASK)
+        LOGGER.debug("guild {}: task {} not configured; facts stay unscored", guild_id, FACT_TASK)
     async with get_session() as session:
-        stats["facts_capped"] = await cap_facts(session, group_id, mem)
+        stats["facts_capped"] = await cap_facts(session, guild_id, mem)
     return stats

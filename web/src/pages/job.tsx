@@ -3,7 +3,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { ArrowLeftIcon } from "lucide-react";
 import { toast } from "sonner";
 import { cancelJobMutation, getJobOptions, getJobTranscriptOptions } from "@/client/@tanstack/react-query.gen";
-import { ConfirmButton, ExternalLink, PageHeader, QueryState, SectionHeader, useGroupName } from "@/components/common";
+import { ConfirmButton, ExternalLink, PageHeader, QueryState, SectionHeader, useChannelName } from "@/components/common";
 import { Code, ContextUsage, Facts, Transcript } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,7 @@ export function JobPage() {
     ...cancelJobMutation(),
     onSuccess: () => toast.success("已请求取消，几秒内停止"),
   });
-  const groupName = useGroupName();
+  const channelName = useChannelName();
   const t = transcript.data;
   return (
     <div>
@@ -70,7 +70,7 @@ export function JobPage() {
                 <Facts
                   items={[
                     ["类型", JOB_KIND[d.kind] ?? d.kind],
-                    ["群", groupName(d.group_id)],
+                    ["频道", channelName(d.channel_id)],
                     ["请求者", <span className="font-mono">{d.user_id}</span>],
                     ["工作区", <span className="font-mono">{d.workspace}</span>],
                     ["模型", d.model ? <span className="font-mono text-xs">{d.model}</span> : "—"],

@@ -71,13 +71,13 @@ class AppConfig(BaseSettings):
     environment: str = Field(default="dev", alias="YGG_ENV")
     host: str = Field(default="0.0.0.0", alias="YGG_HOST")
     port: int = Field(default=8080, alias="YGG_PORT")
-    # SnowLuma (OneBot v11) connects in on /onebot/v11/ws with this token. The Milky endpoint (Yogurt), which the bot
-    # connects out to, is set up in the dashboard instead (qq.milky_link): its URL and token live in the database.
-    onebot_access_token: str = Field(default="", alias="ONEBOT_ACCESS_TOKEN")
-    # Fernet key (urlsafe base64, 32 bytes) used to encrypt provider API keys and the Milky access token at rest.
+    # Optional bootstrap KOOK Bot token; the dashboard stores an encrypted token in settings (kook.bot) that takes
+    # precedence once configured.
+    kook_bot_token: str = Field(default="", alias="KOOK_BOT_TOKEN")
+    # Fernet key (urlsafe base64, 32 bytes) used to encrypt provider API keys and the KOOK bot token at rest.
     secret_key: str = Field(alias="YGG_SECRET_KEY")
-    # Bootstrap admins; the dashboard manages the rest.
-    bootstrap_superusers: list[int] = Field(default_factory=list, alias="YGG_SUPERUSERS")
+    # Bootstrap admins (KOOK user IDs as strings); the dashboard manages the rest.
+    bootstrap_superusers: list[str] = Field(default_factory=list, alias="YGG_SUPERUSERS")
     bootstrap_admin_emails: list[str] = Field(default_factory=list, alias="YGG_ADMIN_EMAILS")
     # Response header oauth2-proxy (set-xauthrequest) returns to Traefik forwardAuth; dev mode trusts
     # YGG_DEV_ADMIN_EMAIL instead.

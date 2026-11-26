@@ -1,151 +1,73 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { CheckIcon, XIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Fragment, useState } from "react";
-import { toast } from "sonner";
-import { decideEventMutation, listEventsOptions } from "@/client/@tanstack/react-query.gen";
-import type { EventOut } from "@/client/types.gen";
+import { listEventsOptions } from "@/client/@tanstack/react-query.gen";
 import {
-  ConfirmButton,
   Empty,
   FilterBar,
-  Hint,
-  Meta,
+  GuildSelect,
   OptionSelect,
   PageHeader,
   Pager,
   Pre,
   QueryState,
-  useDebounced,
-  useGroupName,
+  useChannelName,
+  useGuildName,
 } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtTime } from "@/lib/format";
 
 const LIMIT = 50;
 
-/** Kind prefixes offered as filters (the API matches by prefix). */
-const KIND_FILTERS: Record<string, string> = {
-  "request.": "全部申请",
-  "request.group.invite": "加群邀请",
-  "request.group.add": "入群申请",
-  "request.friend": "好友申请",
-  "notice.group_decrease.kick_me": "bot 被踢",
-  "notice.group_ban.self": "bot 被禁言",
-  "notice.group_admin.self": "bot 管理员变动",
-  "notice.bot_offline": "掉线",
-  "notice.group_increase": "进群",
-  "notice.group_decrease": "退群或被踢",
-  "notice.group_ban": "禁言",
-};
-
 const KIND_LABELS: Record<string, string> = {
-  "request.group.invite": "加群邀请",
-  "request.group.add": "入群申请",
-  "request.friend": "好友申请",
-  "notice.group_decrease.kick_me": "bot 被踢出群",
-  "notice.group_decrease.leave": "成员退群",
-  "notice.group_decrease.kick": "成员被踢",
-  "notice.group_increase.self": "bot 进群",
-  "notice.group_increase.approve": "成员进群（审批）",
-  "notice.group_increase.invite": "成员进群（邀请）",
-  "notice.group_ban.self.ban": "bot 被禁言",
-  "notice.group_ban.self.lift_ban": "bot 解除禁言",
-  "notice.group_ban.all.ban": "全员禁言",
-  "notice.group_ban.all.lift_ban": "解除全员禁言",
-  "notice.group_ban.member.ban": "成员被禁言",
-  "notice.group_ban.member.lift_ban": "成员解除禁言",
-  "notice.group_admin.self.set": "bot 成为管理员",
-  "notice.group_admin.self.unset": "bot 被取消管理员",
-  "notice.group_admin.member.set": "成员成为管理员",
-  "notice.group_admin.member.unset": "成员被取消管理员",
-  "notice.bot_offline": "QQ 掉线",
+  "kook.self_joined_guild": "bot 加入服务器",
+  "kook.self_exited_guild": "bot 退出/被移出服务器",
+  "kook.updated_guild": "服务器信息更新",
+  "kook.deleted_guild": "服务器被删除",
+  "kook.added_channel": "新增频道",
+  "kook.updated_channel": "频道更新",
+  "kook.deleted_channel": "频道被删除",
+  "kook.joined_guild": "成员加入服务器",
+  "kook.exited_guild": "成员离开服务器",
+  "kook.pinned_message": "消息置顶",
+  "kook.unpinned_message": "取消置顶",
 };
-
-type Status = "pending" | "approved" | "rejected" | "expired" | "failed";
-const STATUS: Record<Status, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
-  pending: { label: "待处理", variant: "default" },
-  approved: { label: "已同意", variant: "secondary" },
-  rejected: { label: "已拒绝", variant: "outline" },
-  expired: { label: "已过期", variant: "outline" },
-  failed: { label: "处理失败", variant: "destructive" },
-};
-
-function EventDetail({ event: e }: { event: EventOut }) {
-  const d = e.data as Record<string, unknown>;
-  const comment = typeof d.comment === "string" ? d.comment : "";
-  const items = [
-    !!e.operator_id && (
-      <>
-        操作人 <span className="font-mono">{e.operator_id}</span>
-      </>
-    ),
-    typeof d.duration === "number" && d.duration > 0 && `${Math.round(d.duration / 60)} 分钟`,
-    comment && (
-      <Hint content={comment}>
-        <span className="line-clamp-1 break-all">附言：{comment}</span>
-      </Hint>
-    ),
-  ];
-  return items.some(Boolean) ? <Meta items={items} className="text-foreground" /> : "—";
-}
 
 export function EventsPage() {
-  const [kind, setKind] = useState<string | null>("request.");
-  const [status, setStatus] = useState<Status | null>(null);
-  const [groupId, setGroupId] = useState("");
-  const debouncedGroupId = useDebounced(groupId);
+  const [kind, setKind] = useState<string | null>(null);
+  const [guildId, setGuildId] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState<number | null>(null);
-  const groupName = useGroupName();
+  const guildName = useGuildName();
+  const channelName = useChannelName();
   const events = useQuery(
     listEventsOptions({
-      query: { kind, status, group_id: debouncedGroupId ? Number(debouncedGroupId) : null, limit: LIMIT, offset },
+      query: { kind, guild_id: guildId, limit: LIMIT, offset },
     }),
   );
-  const decide = useMutation({
-    ...decideEventMutation(),
-    onSuccess: (e) => toast.success(`E${e.id} ${STATUS[e.status as Status]?.label ?? e.status}`),
-  });
-  const reset = <T,>(set: (v: T) => void) => (v: T) => {
-    set(v);
-    setOffset(0);
-  };
+  const reset =
+    <T,>(set: (v: T) => void) =>
+    (v: T) => {
+      set(v);
+      setOffset(0);
+    };
 
   return (
     <div>
       <PageHeader
         title="事件"
-        description="加群和好友申请、bot 自身状态和已启用群的成员变动。保留天数和自动处理策略在设置的 events 一节。"
+        description="KOOK 网关收到的服务器、频道与成员系统事件记录。保留天数与自动停用策略在设置的 events 一节。"
       />
       <FilterBar>
-        <Hint content="填群号；事件也会来自未加入白名单的群，所以这里不是群下拉框">
-          <Input
-            className="w-36"
-            inputMode="numeric"
-            placeholder="群号"
-            aria-label="群号（可填未启用的群）"
-            value={groupId}
-            onChange={(e) => reset(setGroupId)(e.target.value.replace(/\D/g, ""))}
-          />
-        </Hint>
+        <GuildSelect className="w-56" value={guildId} onChange={reset(setGuildId)} />
         <OptionSelect
-          className="w-40"
+          className="w-48"
           aria-label="类型"
           value={kind}
           onChange={reset(setKind)}
           noneLabel="全部类型"
-          options={Object.entries(KIND_FILTERS).map(([value, label]) => ({ value, label }))}
-        />
-        <OptionSelect
-          className="w-32"
-          aria-label="状态"
-          value={status}
-          onChange={(v) => reset(setStatus)(v as Status | null)}
-          noneLabel="全部状态"
-          options={Object.entries(STATUS).map(([value, s]) => ({ value, label: s.label }))}
+          options={Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }))}
         />
       </FilterBar>
       <QueryState isLoading={events.isLoading} error={events.error} />
@@ -157,11 +79,10 @@ export function EventsPage() {
               <TableHead className="w-20">编号</TableHead>
               <TableHead className="w-36">时间</TableHead>
               <TableHead>类型</TableHead>
-              <TableHead>群</TableHead>
-              <TableHead>对象</TableHead>
-              <TableHead>详情</TableHead>
+              <TableHead>服务器</TableHead>
+              <TableHead>频道</TableHead>
+              <TableHead>用户</TableHead>
               <TableHead>状态</TableHead>
-              <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -174,7 +95,6 @@ export function EventsPage() {
                       size="xs"
                       className="font-mono"
                       aria-expanded={open === e.id}
-                      aria-label={`E${e.id} 原始数据`}
                       onClick={(ev) => {
                         ev.stopPropagation();
                         setOpen(open === e.id ? null : e.id);
@@ -184,49 +104,15 @@ export function EventsPage() {
                     </Button>
                   </TableCell>
                   <TableCell className="text-xs">{fmtTime(e.at)}</TableCell>
-                  <TableCell>
-                    {KIND_LABELS[e.kind] ?? e.kind}
-                  </TableCell>
-                  <TableCell className="text-xs">{e.group_id != null ? groupName(e.group_id) : "—"}</TableCell>
+                  <TableCell>{KIND_LABELS[e.kind] ?? e.kind}</TableCell>
+                  <TableCell className="text-xs">{e.guild_id ? guildName(e.guild_id) : "—"}</TableCell>
+                  <TableCell className="text-xs">{e.channel_id ? channelName(e.channel_id) : "—"}</TableCell>
                   <TableCell className="font-mono text-xs">{e.user_id ?? "—"}</TableCell>
-                  <TableCell className="max-w-72 text-xs whitespace-normal">
-                    <EventDetail event={e} />
-                  </TableCell>
-                  <TableCell>
-                    {e.status ? (
-                      <Hint content={e.handled_by === "auto" ? "自动处理" : e.handled_by}>
-                        <Badge variant={STATUS[e.status as Status]?.variant ?? "outline"}>
-                          {STATUS[e.status as Status]?.label ?? e.status}
-                        </Badge>
-                      </Hint>
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                  <TableCell onClick={(ev) => ev.stopPropagation()}>
-                    {e.status === "pending" && (
-                      <div className="flex justify-end gap-1.5">
-                        <Button
-                          size="sm"
-                          disabled={decide.isPending}
-                          onClick={() => decide.mutate({ path: { event_id: e.id }, body: { approve: true } })}
-                        >
-                          <CheckIcon data-icon="inline-start" /> 同意
-                        </Button>
-                        <ConfirmButton
-                          title={`拒绝 E${e.id}？`}
-                          description="拒绝后无法撤销。"
-                          onConfirm={() => decide.mutate({ path: { event_id: e.id }, body: { approve: false } })}
-                        >
-                          <XIcon data-icon="inline-start" /> 拒绝
-                        </ConfirmButton>
-                      </div>
-                    )}
-                  </TableCell>
+                  <TableCell>{e.status ? <Badge variant="outline">{e.status}</Badge> : "—"}</TableCell>
                 </TableRow>
                 {open === e.id && (
                   <TableRow>
-                    <TableCell colSpan={8}>
+                    <TableCell colSpan={7}>
                       <Pre value={e.data} />
                     </TableCell>
                   </TableRow>

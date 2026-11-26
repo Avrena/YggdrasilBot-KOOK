@@ -1,4 +1,4 @@
-"""Downloading and preparing message attachments (images, files) for the model."""
+"""Downloading and preparing KOOK message attachments (images, files) for the model."""
 
 import asyncio
 import io
@@ -15,24 +15,21 @@ from pydantic_ai import BinaryContent
 
 from yggdrasil.agent.deps import Handle
 from yggdrasil.core.log import LOGGER
-from yggdrasil.qq.client import QQ
-from yggdrasil.qq.model import QQError
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.ssrf import guarded_client
 from yggdrasil.transcript.store import blob as stored_blob
 
 IMAGE_MAX_DOWNLOAD = 20 * 1024 * 1024
-_IMAGE_MAX_SIDE = 1568  # Claude downsizes anything larger; also keeps payloads well under the 5 MB cap
+_IMAGE_MAX_SIDE = 1568
 _IMAGE_MAX_BYTES = 3 * 1024 * 1024
 
-# Animated images: models only read the first frame, so they get one sheet of sampled frames instead.
 _SHEET_MAX_FRAMES = 16
-_SAMPLE_STEP_MS = 100  # look at the animation every 0.1 s
-_HOLD_MS = 300  # a frame with only a small change is still kept after this long
-_CHANGE = 0.06  # visible change: mean difference (0-1) of the most-changed 1/16 of the picture
-_MIN_CHANGE = 0.015  # below this a frame counts as unchanged (dithering, compression noise)
+_SAMPLE_STEP_MS = 100
+_HOLD_MS = 300
+_CHANGE = 0.06
+_MIN_CHANGE = 0.015
 _MAX_DECODE_FRAMES = 600
-_DEFAULT_FRAME_MS = 100  # browsers play GIF frames of 0-10 ms at 100 ms
+_DEFAULT_FRAME_MS = 100
 _SHEET_GAP = 4
 _IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
 _UNSAFE_NAME = re.compile(r"[^\w.\-]+")
@@ -43,7 +40,6 @@ class MediaTooLarge(ToolError):
 
 
 async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
-    """Download ``url``; ``guarded`` routes it through the SSRF guard (URLs that came from third-party content)."""
     client = guarded_client(timeout=60) if guarded else httpx.AsyncClient(timeout=60, follow_redirects=True)
     async with client, client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
         resp.raise_for_status()
@@ -56,63 +52,43 @@ async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
     return b"".join(chunks)
 
 
-async def media_bytes(
-    qq: QQ, group_id: int | None, user_id: int, h: Handle, max_bytes: int, *, made: Mapping[str, bytes] | None = None
-) -> tuple[bytes, str]:
-    """Bytes + file name ("file" when there is none) of an image/file handle: an image the bot made this run from
-    ``made`` (``Deps.made_images``), a picture it made or sent earlier from our blob store, else the segment's
-    ``url``. A QQ attachment without a url (files never carry one), or whose url has expired (QQ signs media links
-    with an rkey that lasts hours), gets a working link from ``QQ.media_url`` once.
-
-    Handles registered by web tools carry a ``source`` (``x``, ...): their URLs come from third-party content and
-    are fetched through the SSRF guard, never refreshed. QQ attachment URLs come from the protocol side and are
-    fetched directly.
-    """
+async def media_bytes(h: Handle, max_bytes: int, *, made: Mapping[str, bytes] | None = None) -> tuple[bytes, str]:
+    """Bytes + file name of an image/file handle: in-memory ``made``, stored ``transcript_blobs``, else URL."""
     data = h.data
-    name = str(data.get("file_name") or "file")
+    name = str(data.get("file_name") or data.get("name") or "file")
     if sha := data.get("blob"):
         if made and (own := made.get(str(sha))) is not None:
             return own, name
         if (kept := await stored_blob(str(sha))) is not None:
             return kept.data, name
-        if data.get("made"):  # its run's transcript wasn't kept (privacy setting, failed save): nothing else has it
+        if data.get("made"):
             raise ToolError(f"{h.key} 是之前生成的图，已经找不到了；需要的话重新生成")
     url = str(data.get("url") or "")
-    if data.get("source"):
-        return await download(url, max_bytes, guarded=True), name
-    if url:
-        try:
-            return await download(url, max_bytes), name
-        except httpx.HTTPStatusError as e:
-            if not 400 <= e.response.status_code < 500:
-                raise
-    what = "图片" if h.kind == "image" else "文件"
-    gone = f"{what}链接已过期，也没能重新获取（可能太久了）" if url else f"拿不到{what}的下载地址"
+    if not url:
+        what = "图片" if h.kind == "image" else "文件"
+        raise ToolError(f"拿不到{what}的下载地址")
+    guarded = bool(data.get("source")) and data.get("source") != "kook"
     try:
-        fresh = await qq.media_url({"type": h.kind, "data": data}, group_id=group_id, user_id=user_id)
-    except QQError as e:
-        raise ToolError(gone) from e
-    if not fresh or fresh == url:
-        raise ToolError(gone)
-    return await download(fresh, max_bytes), name
+        return await download(url, max_bytes, guarded=guarded), name
+    except httpx.HTTPStatusError as e:
+        what = "图片" if h.kind == "image" else "文件"
+        raise ToolError(f"下载{what}失败（HTTP {e.response.status_code}）") from e
 
 
 def is_image(blob: bytes) -> bool:
-    """Whether Pillow recognises the bytes as a picture (reads the header only)."""
     try:
         Image.open(io.BytesIO(blob)).close()
     except Image.UnidentifiedImageError:
         return False
     except (OSError, ValueError, Image.DecompressionBombError):
-        return True  # recognised, just not decodable here; fit_image leaves it to the model API
+        return True
     return True
 
 
 def looks_like_image(h: Handle) -> bool:
-    """An image segment, or a file named like a picture (photos are often sent as group files to keep quality)."""
     if h.kind == "image":
         return True
-    name = str(h.data.get("file_name") or "")
+    name = str(h.data.get("file_name") or h.data.get("name") or "")
     return h.kind == "file" and PurePath(name).suffix.lower() in _IMAGE_SUFFIXES
 
 
@@ -127,22 +103,18 @@ def media_type(blob: bytes) -> str:
 
 
 def safe_name(name: str, fallback: str) -> str:
-    """A plain file name: no directories, no shell-hostile characters."""
     base = _UNSAFE_NAME.sub("_", PurePosixPath(name.replace("\\", "/")).name).strip("._")[:120]
     return base or fallback
 
 
 def file_name(ref: str, h: Handle, blob: bytes) -> str:
-    """What to call the bytes of attachment ``ref`` in a workspace: its own file name, else one made from the ref
-    (``img-3.png``)."""
     fallback = re.sub(r"\W+", "-", ref).strip("-") or "file"
     if is_image(blob):
         fallback += "." + media_type(blob).removeprefix("image/").replace("jpeg", "jpg")
-    return safe_name(str(h.data.get("file_name") or ""), fallback)
+    return safe_name(str(h.data.get("file_name") or h.data.get("name") or ""), fallback)
 
 
 def fit_image(blob: bytes) -> bytes:
-    """Downscale/re-encode images that are too large or in a format models don't take (BMP, ...)."""
     try:
         img = Image.open(io.BytesIO(blob))
         too_big = max(img.size) > _IMAGE_MAX_SIDE or len(blob) > _IMAGE_MAX_BYTES
@@ -156,15 +128,14 @@ def fit_image(blob: bytes) -> bytes:
             img.convert("RGB").save(out, "JPEG", quality=85)
         return out.getvalue()
     except (OSError, ValueError, Image.DecompressionBombError):
-        return blob  # not decodable here; let the model API judge
+        return blob
 
 
-_SEND_MAX_BYTES = 600 * 1024
+_SEND_MAX_BYTES = 1024 * 1024
 
 
 def compact_image(blob: bytes) -> bytes:
-    """A large opaque picture as JPEG before it is sent: QQ recompresses it anyway, and a 1 MB PNG uploads slowly
-    enough to time out the send. Transparent and animated images stay as they are."""
+    """Re-encode large opaque images as JPEG for faster KOOK asset upload; keep animations & alpha intact."""
     if len(blob) <= _SEND_MAX_BYTES:
         return blob
     try:
@@ -185,15 +156,12 @@ def compact_image(blob: bytes) -> bytes:
 
 @dataclass(frozen=True, slots=True)
 class ModelImage:
-    """An image ready for a vision model; an animation arrives as one sheet of sampled frames."""
-
     data: bytes
-    times: tuple[float, ...] = ()  # seconds of each sampled frame; empty for a still image
+    times: tuple[float, ...] = ()
     duration: float = 0.0
 
     @property
     def note(self) -> str:
-        """Tells the model how to read a frame sheet; empty for a still image."""
         if not self.times:
             return ""
         return (
@@ -207,7 +175,6 @@ class ModelImage:
 
 
 def model_image(blob: bytes) -> ModelImage:
-    """What a vision model should see: an animation as a frame sheet, anything else through :func:`fit_image`."""
     try:
         with Image.open(io.BytesIO(blob)) as img:
             if getattr(img, "is_animated", False) and (sheet := _frame_sheet(img)) is not None:
@@ -225,18 +192,15 @@ def _flatten(frame: Image.Image) -> Image.Image:
 
 
 def _change(a: Image.Image, b: Image.Image) -> float:
-    """Mean difference (0-1, over RGB) of the most-changed cell of a 4x4 grid, so a blink counts as much as a big
-    move and a colour change counts even at the same brightness."""
     diff = ImageChops.difference(a, b)
     cells = ((x, y, x + 16, y + 16) for x in range(0, 64, 16) for y in range(0, 64, 16))
     return max(sum(ImageStat.Stat(diff.crop(cell)).mean) / (3 * 255) for cell in cells)
 
 
-type _Sample = tuple[int, int, Image.Image]  # frame index, sample time in ms, 64x64 thumbnail
+type _Sample = tuple[int, int, Image.Image]
 
 
 def _samples(img: Image.Image) -> tuple[list[_Sample], int]:
-    """One sample per ``_SAMPLE_STEP_MS`` of playback (shorter frames may be skipped), and the duration in ms."""
     samples: list[_Sample] = []
     start = sample = 0
     for i, frame in enumerate(itertools.islice(ImageSequence.Iterator(img), _MAX_DECODE_FRAMES)):
@@ -250,7 +214,6 @@ def _samples(img: Image.Image) -> tuple[list[_Sample], int]:
 
 
 def _changed(samples: list[_Sample]) -> list[_Sample]:
-    """Samples that changed visibly since the last kept one, or changed a little and ``_HOLD_MS`` has passed."""
     kept = [samples[0]]
     for s in samples[1:]:
         d = _change(s[2], kept[-1][2])
@@ -260,8 +223,6 @@ def _changed(samples: list[_Sample]) -> list[_Sample]:
 
 
 def _frame_sheet(img: Image.Image) -> ModelImage | None:
-    """The frames where the picture changed; more than ``_SHEET_MAX_FRAMES`` are thinned evenly, so busy stretches
-    keep more frames than calm ones. None when nothing moves (the first frame says it all)."""
     samples, duration = _samples(img)
     kept = _changed(samples) if samples else []
     if len(kept) < 2:
@@ -302,24 +263,15 @@ def _tile(frames: list[Image.Image], times: tuple[float, ...]) -> bytes:
     return out.getvalue()
 
 
-async def load_image(
-    qq: QQ, group_id: int | None, user_id: int, h: Handle, *, made: Mapping[str, bytes] | None = None
-) -> ModelImage:
-    """An image handle, or a file handle whose content is a picture, ready for a vision model; ``made`` as for
-    :func:`media_bytes`."""
-    blob, name = await media_bytes(qq, group_id, user_id, h, IMAGE_MAX_DOWNLOAD, made=made)
+async def load_image(h: Handle, *, made: Mapping[str, bytes] | None = None) -> ModelImage:
+    blob, name = await media_bytes(h, IMAGE_MAX_DOWNLOAD, made=made)
     if not is_image(blob):
-        # Bytes Pillow can't place (SVG, HEIC, a web page) would reach a vision model labelled as JPEG and fail the
-        # whole run with a provider 400.
         raise ToolError(f"{name} 不是图片，用 read_file 读" if h.kind == "file" else f"{h.key} 不是能识别的图片格式")
     return await asyncio.to_thread(model_image, blob)
 
 
-async def load_images(
-    qq: QQ, group_id: int | None, user_id: int, handles: list[Handle]
-) -> list[tuple[str, ModelImage]]:
-    """(handle key, model-ready image) for each image that downloads; failures are left to view_image."""
-    results = await asyncio.gather(*(load_image(qq, group_id, user_id, h) for h in handles), return_exceptions=True)
+async def load_images(handles: list[Handle]) -> list[tuple[str, ModelImage]]:
+    results = await asyncio.gather(*(load_image(h) for h in handles), return_exceptions=True)
     loaded = []
     for h, result in zip(handles, results, strict=True):
         if isinstance(result, BaseException):

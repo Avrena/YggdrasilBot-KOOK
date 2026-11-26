@@ -1,9 +1,8 @@
 # Network policies (enforced by most CNIs; k3s ships an enforcing controller). Adjust the ingress
 # controller selector to yours: k3s runs Traefik in kube-system with app.kubernetes.io/name=traefik.
 #
-# The bot serves both the OneBot reverse WebSocket and the dashboard on port 8080. NetworkPolicy cannot match
-# paths, so /onebot is kept off the public route (ingress.yaml) and the port only admits the OneBot endpoint
-# and the ingress controller.
+# The bot connects outbound to KOOK Gateway/REST and serves the dashboard on port 8080 (admitting only the
+# ingress controller).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -16,9 +15,6 @@ spec:
     - Ingress
   ingress:
     - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: snowluma
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
@@ -27,39 +23,6 @@ spec:
               app.kubernetes.io/name: traefik
       ports:
         - port: 8080
-          protocol: TCP
----
-# Nothing needs to reach SnowLuma (noVNC 6081, WebUI 5099): QR login and the WebUI go through
-# `kubectl port-forward`, which NetworkPolicy does not filter.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: yggdrasil-snowluma
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: snowluma
-  policyTypes:
-    - Ingress
----
-# yogurt.yaml: its Milky API (:3000) for the bot only. The QR code is read from the log or copied out with kubectl.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: yggdrasil-yogurt
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: yogurt
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: yggdrasil-bot
-      ports:
-        - port: 3000
           protocol: TCP
 ---
 # The render page only loads bundled assets (everything else is aborted in the page), so no egress at all.

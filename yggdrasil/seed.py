@@ -7,17 +7,19 @@ from yggdrasil.db.models import CommandTrigger, SettingsDoc
 from yggdrasil.db.session import get_session
 
 DEFAULT_TRIGGERS: list[dict] = [
-    # tldr: prefix keyword, target = quoted message (or the message itself)
     {
         "handler": "tldr",
+        "scope": "global",
+        "scope_id": None,
         "match_type": "keyword_prefix",
         "patterns": ["tldr", "太长不看", "总结一下"],
         "priority": 10,
-        "note": "回复一条消息并发送 tldr",
+        "note": "回复一条消息或发链接并输入 tldr",
     },
-    # privacy (require @ / name so normal chatter doesn't trigger them)
     {
         "handler": "privacy.optout",
+        "scope": "global",
+        "scope_id": None,
         "match_type": "keyword_exact",
         "patterns": ["不要记我"],
         "require_mention": True,
@@ -25,6 +27,8 @@ DEFAULT_TRIGGERS: list[dict] = [
     },
     {
         "handler": "privacy.optin",
+        "scope": "global",
+        "scope_id": None,
         "match_type": "keyword_exact",
         "patterns": ["记得我"],
         "require_mention": True,
@@ -32,19 +36,34 @@ DEFAULT_TRIGGERS: list[dict] = [
     },
     {
         "handler": "privacy.forget",
+        "scope": "global",
+        "scope_id": None,
         "match_type": "keyword_exact",
         "patterns": ["忘记我"],
         "require_mention": True,
         "priority": 5,
     },
-    # chat: @bot, reply to bot, or the bot's name in the text
-    {"handler": "chat", "match_type": "mention", "patterns": [], "priority": 100},
-    {"handler": "chat", "match_type": "reply_to_bot", "patterns": [], "priority": 100},
-    {"handler": "chat", "match_type": "name_mention", "patterns": [], "priority": 110},
-    # admin commands in private chat (superusers only)
+    {"handler": "chat", "scope": "global", "scope_id": None, "match_type": "mention", "patterns": [], "priority": 100},
+    {
+        "handler": "chat",
+        "scope": "global",
+        "scope_id": None,
+        "match_type": "reply_to_bot",
+        "patterns": [],
+        "priority": 100,
+    },
+    {
+        "handler": "chat",
+        "scope": "global",
+        "scope_id": None,
+        "match_type": "name_mention",
+        "patterns": [],
+        "priority": 110,
+    },
     {
         "handler": "admin.review",
         "scope": "private",
+        "scope_id": None,
         "match_type": "keyword_prefix",
         "patterns": ["通过"],
         "arg_template": "approve {rest}",
@@ -54,6 +73,7 @@ DEFAULT_TRIGGERS: list[dict] = [
     {
         "handler": "admin.review",
         "scope": "private",
+        "scope_id": None,
         "match_type": "keyword_prefix",
         "patterns": ["拒绝"],
         "arg_template": "reject {rest}",
@@ -63,6 +83,7 @@ DEFAULT_TRIGGERS: list[dict] = [
     {
         "handler": "admin.review",
         "scope": "private",
+        "scope_id": None,
         "match_type": "keyword_prefix",
         "patterns": ["改"],
         "arg_template": "edit {rest}",
@@ -72,14 +93,16 @@ DEFAULT_TRIGGERS: list[dict] = [
     {
         "handler": "admin.status",
         "scope": "private",
+        "scope_id": None,
         "match_type": "keyword_exact",
         "patterns": ["状态", "status"],
         "allowed_roles": ["superuser"],
         "priority": 5,
     },
-    # Natural-language admin operations: "@bot ops <instruction>" in a group, "ops <instruction>" in private.
     {
         "handler": "admin.ops",
+        "scope": "global",
+        "scope_id": None,
         "match_type": "regex",
         "patterns": [r"^(?i:ops)(?![A-Za-z0-9_])"],
         "require_mention": True,

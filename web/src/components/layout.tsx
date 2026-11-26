@@ -29,7 +29,7 @@ export const NAV = [
   { to: "/providers", label: "Providers", icon: ServerIcon },
   { to: "/routes", label: "模型路由", icon: RouteIcon },
   { to: "/search", label: "搜索源", icon: SearchIcon },
-  { to: "/groups", label: "群管理", icon: UsersIcon },
+  { to: "/channels", label: "服务器与频道", icon: UsersIcon },
   { to: "/triggers", label: "指令", icon: TerminalSquareIcon },
   { to: "/settings", label: "设置", icon: Settings2Icon },
   { to: "/prompts", label: "提示词", icon: MessageSquareTextIcon },

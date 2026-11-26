@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { ActivatePromptVersionData, ActivatePromptVersionErrors, ActivatePromptVersionResponses, AddAdminData, AddAdminErrors, AddAdminResponses, ArchiveSmallTopicsData, ArchiveSmallTopicsErrors, ArchiveSmallTopicsResponses, ArchiveTopicData, ArchiveTopicErrors, ArchiveTopicResponses, BackfillGroupData, BackfillGroupErrors, BackfillGroupResponses, CancelJobData, CancelJobErrors, CancelJobResponses, CreateEmbedSpaceData, CreateEmbedSpaceErrors, CreateEmbedSpaceResponses, CreateGlossaryTermData, CreateGlossaryTermErrors, CreateGlossaryTermResponses, CreatePromptVersionData, CreatePromptVersionErrors, CreatePromptVersionResponses, CreateProviderData, CreateProviderErrors, CreateProviderResponses, CreateSearchProviderData, CreateSearchProviderErrors, CreateSearchProviderResponses, CreateTriggerData, CreateTriggerErrors, CreateTriggerResponses, DecideEventData, DecideEventErrors, DecideEventResponses, DecideReviewData, DecideReviewErrors, DecideReviewResponses, DeleteGlossaryTermData, DeleteGlossaryTermErrors, DeleteGlossaryTermResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteProfileData, DeleteProfileErrors, DeleteProfileFactData, DeleteProfileFactErrors, DeleteProfileFactResponses, DeleteProfileResponses, DeleteProviderData, DeleteProviderErrors, DeleteProviderResponses, DeleteQqMilkyData, DeleteQqMilkyResponses, DeleteQqMilkyTokenData, DeleteQqMilkyTokenResponses, DeleteRouteData, DeleteRouteErrors, DeleteRouteResponses, DeleteSearchProviderData, DeleteSearchProviderErrors, DeleteSearchProviderResponses, DeleteTriggerData, DeleteTriggerErrors, DeleteTriggerResponses, DestroyAllWorkspacesData, DestroyAllWorkspacesResponses, DestroyWorkspaceData, DestroyWorkspaceErrors, DestroyWorkspaceResponses, GetGlobalSettingsData, GetGlobalSettingsResponses, GetGroupSettingsData, GetGroupSettingsErrors, GetGroupSettingsResponses, GetInvocationData, GetInvocationErrors, GetInvocationResponses, GetInvocationTranscriptData, GetInvocationTranscriptErrors, GetInvocationTranscriptResponses, GetJobData, GetJobErrors, GetJobResponses, GetJobTranscriptData, GetJobTranscriptErrors, GetJobTranscriptResponses, GetMeData, GetMeResponses, GetProfileData, GetProfileErrors, GetProfileResponses, GetPromptData, GetPromptErrors, GetPromptResponses, GetProviderBalanceData, GetProviderBalanceErrors, GetProviderBalanceResponses, GetQqMilkyData, GetQqMilkyResponses, GetSearchProviderBalanceData, GetSearchProviderBalanceErrors, GetSearchProviderBalanceResponses, GetSettingsSchemaData, GetSettingsSchemaResponses, GetStatsData, GetStatsResponses, GetStickerData, GetStickerErrors, GetStickerResponses, GetTriggerMetaData, GetTriggerMetaResponses, ListAdminsData, ListAdminsResponses, ListDigestsData, ListDigestsErrors, ListDigestsResponses, ListEmbedSpacesData, ListEmbedSpacesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListGlossaryData, ListGlossaryErrors, ListGlossaryResponses, ListGroupsData, ListGroupsResponses, ListInvocationsData, ListInvocationsErrors, ListInvocationsResponses, ListJobsData, ListJobsErrors, ListJobsResponses, ListPipelinesData, ListPipelinesResponses, ListProfilesData, ListProfilesErrors, ListProfilesResponses, ListPromptsData, ListPromptsResponses, ListProvidersData, ListProvidersResponses, ListReviewsData, ListReviewsErrors, ListReviewsResponses, ListRoutesData, ListRoutesResponses, ListSearchProvidersData, ListSearchProvidersResponses, ListStickerDropsData, ListStickerDropsErrors, ListStickerDropsResponses, ListStickersData, ListStickersErrors, ListStickersResponses, ListTopicsData, ListTopicsErrors, ListTopicsResponses, ListTriggersData, ListTriggersResponses, ListWorkspacesData, ListWorkspacesResponses, LockGlossaryTermData, LockGlossaryTermErrors, LockGlossaryTermResponses, PreviewPromptData, PreviewPromptErrors, PreviewPromptResponses, PutGlobalSettingsData, PutGlobalSettingsErrors, PutGlobalSettingsResponses, PutGroupSettingsData, PutGroupSettingsErrors, PutGroupSettingsResponses, PutQqMilkyData, PutQqMilkyErrors, PutQqMilkyResponses, ReembedEmbedSpaceData, ReembedEmbedSpaceErrors, ReembedEmbedSpaceResponses, RefreshProviderModelsData, RefreshProviderModelsErrors, RefreshProviderModelsResponses, RemoveAdminData, RemoveAdminErrors, RemoveAdminResponses, ResetPromptData, ResetPromptErrors, ResetPromptResponses, RestoreProfileFactData, RestoreProfileFactErrors, RestoreProfileFactResponses, SetProviderAliasesData, SetProviderAliasesErrors, SetProviderAliasesResponses, SetStickerEnabledData, SetStickerEnabledErrors, SetStickerEnabledResponses, StickerImageData, StickerImageErrors, StickerImageResponses, TestProviderData, TestProviderErrors, TestProviderResponses, TestSearchProviderData, TestSearchProviderErrors, TestSearchProviderResponses, TestTriggerData, TestTriggerErrors, TestTriggerResponses, TranscriptBlobData, TranscriptBlobErrors, TranscriptBlobResponses, UpdateGlossaryTermData, UpdateGlossaryTermErrors, UpdateGlossaryTermResponses, UpdateProviderData, UpdateProviderErrors, UpdateProviderResponses, UpdateSearchProviderData, UpdateSearchProviderErrors, UpdateSearchProviderResponses, UpdateTriggerData, UpdateTriggerErrors, UpdateTriggerResponses, UpsertGroupData, UpsertGroupErrors, UpsertGroupResponses, UpsertRouteData, UpsertRouteErrors, UpsertRouteResponses } from './types.gen';
+import type { ActivatePromptVersionData, ActivatePromptVersionErrors, ActivatePromptVersionResponses, AddAdminData, AddAdminErrors, AddAdminResponses, ArchiveSmallTopicsData, ArchiveSmallTopicsErrors, ArchiveSmallTopicsResponses, ArchiveTopicData, ArchiveTopicErrors, ArchiveTopicResponses, BackfillChannelData, BackfillChannelErrors, BackfillChannelResponses, CancelJobData, CancelJobErrors, CancelJobResponses, CreateEmbedSpaceData, CreateEmbedSpaceErrors, CreateEmbedSpaceResponses, CreateGlossaryTermData, CreateGlossaryTermErrors, CreateGlossaryTermResponses, CreatePromptVersionData, CreatePromptVersionErrors, CreatePromptVersionResponses, CreateProviderData, CreateProviderErrors, CreateProviderResponses, CreateSearchProviderData, CreateSearchProviderErrors, CreateSearchProviderResponses, CreateTriggerData, CreateTriggerErrors, CreateTriggerResponses, DecideReviewData, DecideReviewErrors, DecideReviewResponses, DeleteChannelData, DeleteChannelErrors, DeleteChannelResponses, DeleteGlossaryTermData, DeleteGlossaryTermErrors, DeleteGlossaryTermResponses, DeleteGuildData, DeleteGuildErrors, DeleteGuildResponses, DeleteKookConnectionData, DeleteKookConnectionResponses, DeleteProfileData, DeleteProfileErrors, DeleteProfileFactData, DeleteProfileFactErrors, DeleteProfileFactResponses, DeleteProfileResponses, DeleteProviderData, DeleteProviderErrors, DeleteProviderResponses, DeleteRouteData, DeleteRouteErrors, DeleteRouteResponses, DeleteSearchProviderData, DeleteSearchProviderErrors, DeleteSearchProviderResponses, DeleteTriggerData, DeleteTriggerErrors, DeleteTriggerResponses, DestroyAllWorkspacesData, DestroyAllWorkspacesResponses, DestroyWorkspaceData, DestroyWorkspaceErrors, DestroyWorkspaceResponses, GetChannelTreeData, GetChannelTreeResponses, GetGlobalSettingsData, GetGlobalSettingsResponses, GetInvocationData, GetInvocationErrors, GetInvocationResponses, GetInvocationTranscriptData, GetInvocationTranscriptErrors, GetInvocationTranscriptResponses, GetJobData, GetJobErrors, GetJobResponses, GetJobTranscriptData, GetJobTranscriptErrors, GetJobTranscriptResponses, GetKookConnectionData, GetKookConnectionResponses, GetMeData, GetMeResponses, GetProfileData, GetProfileErrors, GetProfileResponses, GetPromptData, GetPromptErrors, GetPromptResponses, GetProviderBalanceData, GetProviderBalanceErrors, GetProviderBalanceResponses, GetScopeSettingsData, GetScopeSettingsErrors, GetScopeSettingsResponses, GetSearchProviderBalanceData, GetSearchProviderBalanceErrors, GetSearchProviderBalanceResponses, GetSettingsSchemaData, GetSettingsSchemaResponses, GetStatsData, GetStatsResponses, GetStickerData, GetStickerErrors, GetStickerResponses, GetTriggerMetaData, GetTriggerMetaResponses, ListAdminsData, ListAdminsResponses, ListChannelsData, ListChannelsErrors, ListChannelsResponses, ListDigestsData, ListDigestsErrors, ListDigestsResponses, ListEmbedSpacesData, ListEmbedSpacesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListGlossaryData, ListGlossaryErrors, ListGlossaryResponses, ListGuildsData, ListGuildsResponses, ListInvocationsData, ListInvocationsErrors, ListInvocationsResponses, ListJobsData, ListJobsErrors, ListJobsResponses, ListKookLiveGuildsData, ListKookLiveGuildsResponses, ListPipelinesData, ListPipelinesResponses, ListProfilesData, ListProfilesErrors, ListProfilesResponses, ListPromptsData, ListPromptsResponses, ListProvidersData, ListProvidersResponses, ListReviewsData, ListReviewsErrors, ListReviewsResponses, ListRoutesData, ListRoutesResponses, ListSearchProvidersData, ListSearchProvidersResponses, ListStickerDropsData, ListStickerDropsErrors, ListStickerDropsResponses, ListStickersData, ListStickersErrors, ListStickersResponses, ListTopicsData, ListTopicsErrors, ListTopicsResponses, ListTriggersData, ListTriggersResponses, ListWorkspacesData, ListWorkspacesResponses, LockGlossaryTermData, LockGlossaryTermErrors, LockGlossaryTermResponses, PreviewPromptData, PreviewPromptErrors, PreviewPromptResponses, PutGlobalSettingsData, PutGlobalSettingsErrors, PutGlobalSettingsResponses, PutKookConnectionData, PutKookConnectionErrors, PutKookConnectionResponses, PutScopeSettingsData, PutScopeSettingsErrors, PutScopeSettingsResponses, ReembedEmbedSpaceData, ReembedEmbedSpaceErrors, ReembedEmbedSpaceResponses, RefreshProviderModelsData, RefreshProviderModelsErrors, RefreshProviderModelsResponses, RemoveAdminData, RemoveAdminErrors, RemoveAdminResponses, ResetPromptData, ResetPromptErrors, ResetPromptResponses, RestoreProfileFactData, RestoreProfileFactErrors, RestoreProfileFactResponses, SetProviderAliasesData, SetProviderAliasesErrors, SetProviderAliasesResponses, SetStickerEnabledData, SetStickerEnabledErrors, SetStickerEnabledResponses, StickerImageData, StickerImageErrors, StickerImageResponses, SyncKookStructureData, SyncKookStructureResponses, TestProviderData, TestProviderErrors, TestProviderResponses, TestSearchProviderData, TestSearchProviderErrors, TestSearchProviderResponses, TestTriggerData, TestTriggerErrors, TestTriggerResponses, TranscriptBlobData, TranscriptBlobErrors, TranscriptBlobResponses, UpdateGlossaryTermData, UpdateGlossaryTermErrors, UpdateGlossaryTermResponses, UpdateProviderData, UpdateProviderErrors, UpdateProviderResponses, UpdateSearchProviderData, UpdateSearchProviderErrors, UpdateSearchProviderResponses, UpdateTriggerData, UpdateTriggerErrors, UpdateTriggerResponses, UpsertChannelData, UpsertChannelErrors, UpsertChannelResponses, UpsertGuildData, UpsertGuildErrors, UpsertGuildResponses, UpsertRouteData, UpsertRouteErrors, UpsertRouteResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -217,15 +217,15 @@ export const putGlobalSettings = <ThrowOnError extends boolean = false>(options:
 });
 
 /**
- * Get Group Settings
+ * Get Scope Settings
  */
-export const getGroupSettings = <ThrowOnError extends boolean = false>(options: Options<GetGroupSettingsData, ThrowOnError>): RequestResult<GetGroupSettingsResponses, GetGroupSettingsErrors, ThrowOnError> => (options.client ?? client).get<GetGroupSettingsResponses, GetGroupSettingsErrors, ThrowOnError>({ url: '/settings/groups/{group_id}', ...options });
+export const getScopeSettings = <ThrowOnError extends boolean = false>(options: Options<GetScopeSettingsData, ThrowOnError>): RequestResult<GetScopeSettingsResponses, GetScopeSettingsErrors, ThrowOnError> => (options.client ?? client).get<GetScopeSettingsResponses, GetScopeSettingsErrors, ThrowOnError>({ url: '/settings/scopes/{scope}/{scope_id}', ...options });
 
 /**
- * Put Group Settings
+ * Put Scope Settings
  */
-export const putGroupSettings = <ThrowOnError extends boolean = false>(options: Options<PutGroupSettingsData, ThrowOnError>): RequestResult<PutGroupSettingsResponses, PutGroupSettingsErrors, ThrowOnError> => (options.client ?? client).put<PutGroupSettingsResponses, PutGroupSettingsErrors, ThrowOnError>({
-    url: '/settings/groups/{group_id}',
+export const putScopeSettings = <ThrowOnError extends boolean = false>(options: Options<PutScopeSettingsData, ThrowOnError>): RequestResult<PutScopeSettingsResponses, PutScopeSettingsErrors, ThrowOnError> => (options.client ?? client).put<PutScopeSettingsResponses, PutScopeSettingsErrors, ThrowOnError>({
+    url: '/settings/scopes/{scope}/{scope_id}',
     ...options,
     headers: {
         'Content-Type': 'application/json',
@@ -234,24 +234,20 @@ export const putGroupSettings = <ThrowOnError extends boolean = false>(options: 
 });
 
 /**
- * Delete Qq Milky
- *
- * Forget URL and token; the bot disconnects.
+ * Delete Kook Connection
  */
-export const deleteQqMilky = <ThrowOnError extends boolean = false>(options?: Options<DeleteQqMilkyData, ThrowOnError>): RequestResult<DeleteQqMilkyResponses, unknown, ThrowOnError> => (options?.client ?? client).delete<DeleteQqMilkyResponses, unknown, ThrowOnError>({ url: '/qq/milky', ...options });
+export const deleteKookConnection = <ThrowOnError extends boolean = false>(options?: Options<DeleteKookConnectionData, ThrowOnError>): RequestResult<DeleteKookConnectionResponses, unknown, ThrowOnError> => (options?.client ?? client).delete<DeleteKookConnectionResponses, unknown, ThrowOnError>({ url: '/kook/connection', ...options });
 
 /**
- * Get Qq Milky
+ * Get Kook Connection
  */
-export const getQqMilky = <ThrowOnError extends boolean = false>(options?: Options<GetQqMilkyData, ThrowOnError>): RequestResult<GetQqMilkyResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetQqMilkyResponses, unknown, ThrowOnError>({ url: '/qq/milky', ...options });
+export const getKookConnection = <ThrowOnError extends boolean = false>(options?: Options<GetKookConnectionData, ThrowOnError>): RequestResult<GetKookConnectionResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetKookConnectionResponses, unknown, ThrowOnError>({ url: '/kook/connection', ...options });
 
 /**
- * Put Qq Milky
- *
- * Set the URL and, when given, the token; the bot reconnects.
+ * Put Kook Connection
  */
-export const putQqMilky = <ThrowOnError extends boolean = false>(options: Options<PutQqMilkyData, ThrowOnError>): RequestResult<PutQqMilkyResponses, PutQqMilkyErrors, ThrowOnError> => (options.client ?? client).put<PutQqMilkyResponses, PutQqMilkyErrors, ThrowOnError>({
-    url: '/qq/milky',
+export const putKookConnection = <ThrowOnError extends boolean = false>(options: Options<PutKookConnectionData, ThrowOnError>): RequestResult<PutKookConnectionResponses, PutKookConnectionErrors, ThrowOnError> => (options.client ?? client).put<PutKookConnectionResponses, PutKookConnectionErrors, ThrowOnError>({
+    url: '/kook/connection',
     ...options,
     headers: {
         'Content-Type': 'application/json',
@@ -260,27 +256,44 @@ export const putQqMilky = <ThrowOnError extends boolean = false>(options: Option
 });
 
 /**
- * Delete Qq Milky Token
+ * List Kook Live Guilds
+ */
+export const listKookLiveGuilds = <ThrowOnError extends boolean = false>(options?: Options<ListKookLiveGuildsData, ThrowOnError>): RequestResult<ListKookLiveGuildsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListKookLiveGuildsResponses, unknown, ThrowOnError>({ url: '/kook/guilds', ...options });
+
+/**
+ * Sync Kook Structure
  *
- * Forget the token; the bot reconnects without one.
+ * Pull Guild -> Category -> Text Channel structure from KOOK into DB without clobbering overrides.
  */
-export const deleteQqMilkyToken = <ThrowOnError extends boolean = false>(options?: Options<DeleteQqMilkyTokenData, ThrowOnError>): RequestResult<DeleteQqMilkyTokenResponses, unknown, ThrowOnError> => (options?.client ?? client).delete<DeleteQqMilkyTokenResponses, unknown, ThrowOnError>({ url: '/qq/milky/token', ...options });
+export const syncKookStructure = <ThrowOnError extends boolean = false>(options?: Options<SyncKookStructureData, ThrowOnError>): RequestResult<SyncKookStructureResponses, unknown, ThrowOnError> => (options?.client ?? client).post<SyncKookStructureResponses, unknown, ThrowOnError>({ url: '/kook/sync', ...options });
 
 /**
- * List Groups
+ * List Guilds
  */
-export const listGroups = <ThrowOnError extends boolean = false>(options?: Options<ListGroupsData, ThrowOnError>): RequestResult<ListGroupsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListGroupsResponses, unknown, ThrowOnError>({ url: '/groups', ...options });
+export const listGuilds = <ThrowOnError extends boolean = false>(options?: Options<ListGuildsData, ThrowOnError>): RequestResult<ListGuildsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListGuildsResponses, unknown, ThrowOnError>({ url: '/channels/guilds', ...options });
 
 /**
- * Delete Group
+ * List Channels
  */
-export const deleteGroup = <ThrowOnError extends boolean = false>(options: Options<DeleteGroupData, ThrowOnError>): RequestResult<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError> => (options.client ?? client).delete<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError>({ url: '/groups/{group_id}', ...options });
+export const listChannels = <ThrowOnError extends boolean = false>(options?: Options<ListChannelsData, ThrowOnError>): RequestResult<ListChannelsResponses, ListChannelsErrors, ThrowOnError> => (options?.client ?? client).get<ListChannelsResponses, ListChannelsErrors, ThrowOnError>({ url: '/channels', ...options });
 
 /**
- * Upsert Group
+ * Get Channel Tree
+ *
+ * Collapsible 3-level tree: Guild -> Category -> Channel.
  */
-export const upsertGroup = <ThrowOnError extends boolean = false>(options: Options<UpsertGroupData, ThrowOnError>): RequestResult<UpsertGroupResponses, UpsertGroupErrors, ThrowOnError> => (options.client ?? client).put<UpsertGroupResponses, UpsertGroupErrors, ThrowOnError>({
-    url: '/groups/{group_id}',
+export const getChannelTree = <ThrowOnError extends boolean = false>(options?: Options<GetChannelTreeData, ThrowOnError>): RequestResult<GetChannelTreeResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetChannelTreeResponses, unknown, ThrowOnError>({ url: '/channels/tree', ...options });
+
+/**
+ * Delete Guild
+ */
+export const deleteGuild = <ThrowOnError extends boolean = false>(options: Options<DeleteGuildData, ThrowOnError>): RequestResult<DeleteGuildResponses, DeleteGuildErrors, ThrowOnError> => (options.client ?? client).delete<DeleteGuildResponses, DeleteGuildErrors, ThrowOnError>({ url: '/channels/guilds/{guild_id}', ...options });
+
+/**
+ * Upsert Guild
+ */
+export const upsertGuild = <ThrowOnError extends boolean = false>(options: Options<UpsertGuildData, ThrowOnError>): RequestResult<UpsertGuildResponses, UpsertGuildErrors, ThrowOnError> => (options.client ?? client).put<UpsertGuildResponses, UpsertGuildErrors, ThrowOnError>({
+    url: '/channels/guilds/{guild_id}',
     ...options,
     headers: {
         'Content-Type': 'application/json',
@@ -289,9 +302,26 @@ export const upsertGroup = <ThrowOnError extends boolean = false>(options: Optio
 });
 
 /**
- * Backfill Group
+ * Delete Channel
  */
-export const backfillGroup = <ThrowOnError extends boolean = false>(options: Options<BackfillGroupData, ThrowOnError>): RequestResult<BackfillGroupResponses, BackfillGroupErrors, ThrowOnError> => (options.client ?? client).post<BackfillGroupResponses, BackfillGroupErrors, ThrowOnError>({ url: '/groups/{group_id}/backfill', ...options });
+export const deleteChannel = <ThrowOnError extends boolean = false>(options: Options<DeleteChannelData, ThrowOnError>): RequestResult<DeleteChannelResponses, DeleteChannelErrors, ThrowOnError> => (options.client ?? client).delete<DeleteChannelResponses, DeleteChannelErrors, ThrowOnError>({ url: '/channels/{channel_id}', ...options });
+
+/**
+ * Upsert Channel
+ */
+export const upsertChannel = <ThrowOnError extends boolean = false>(options: Options<UpsertChannelData, ThrowOnError>): RequestResult<UpsertChannelResponses, UpsertChannelErrors, ThrowOnError> => (options.client ?? client).put<UpsertChannelResponses, UpsertChannelErrors, ThrowOnError>({
+    url: '/channels/{channel_id}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Backfill Channel
+ */
+export const backfillChannel = <ThrowOnError extends boolean = false>(options: Options<BackfillChannelData, ThrowOnError>): RequestResult<BackfillChannelResponses, BackfillChannelErrors, ThrowOnError> => (options.client ?? client).post<BackfillChannelResponses, BackfillChannelErrors, ThrowOnError>({ url: '/channels/{channel_id}/backfill', ...options });
 
 /**
  * Get Trigger Meta
@@ -335,7 +365,7 @@ export const updateTrigger = <ThrowOnError extends boolean = false>(options: Opt
 /**
  * Test Trigger
  *
- * Run the exact runtime index against the currently loaded snapshot.
+ * Run the exact runtime 4-level index against the currently loaded snapshot.
  */
 export const testTrigger = <ThrowOnError extends boolean = false>(options: Options<TestTriggerData, ThrowOnError>): RequestResult<TestTriggerResponses, TestTriggerErrors, ThrowOnError> => (options.client ?? client).post<TestTriggerResponses, TestTriggerErrors, ThrowOnError>({
     url: '/triggers/test',
@@ -444,26 +474,12 @@ export const decideReview = <ThrowOnError extends boolean = false>(options: Opti
 export const listEvents = <ThrowOnError extends boolean = false>(options?: Options<ListEventsData, ThrowOnError>): RequestResult<ListEventsResponses, ListEventsErrors, ThrowOnError> => (options?.client ?? client).get<ListEventsResponses, ListEventsErrors, ThrowOnError>({ url: '/events', ...options });
 
 /**
- * Decide Event
- */
-export const decideEvent = <ThrowOnError extends boolean = false>(options: Options<DecideEventData, ThrowOnError>): RequestResult<DecideEventResponses, DecideEventErrors, ThrowOnError> => (options.client ?? client).post<DecideEventResponses, DecideEventErrors, ThrowOnError>({
-    url: '/events/{event_id}/decide',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
  * List Topics
  */
 export const listTopics = <ThrowOnError extends boolean = false>(options?: Options<ListTopicsData, ThrowOnError>): RequestResult<ListTopicsResponses, ListTopicsErrors, ThrowOnError> => (options?.client ?? client).get<ListTopicsResponses, ListTopicsErrors, ThrowOnError>({ url: '/memory/topics', ...options });
 
 /**
  * Archive Topic
- *
- * Archive (hide from the agent) or restore one finished topic.
  */
 export const archiveTopic = <ThrowOnError extends boolean = false>(options: Options<ArchiveTopicData, ThrowOnError>): RequestResult<ArchiveTopicResponses, ArchiveTopicErrors, ThrowOnError> => (options.client ?? client).post<ArchiveTopicResponses, ArchiveTopicErrors, ThrowOnError>({
     url: '/memory/topics/{topic_id}/archive',
@@ -476,8 +492,6 @@ export const archiveTopic = <ThrowOnError extends boolean = false>(options: Opti
 
 /**
  * Archive Small Topics
- *
- * Apply the group's current archive thresholds (size and curation weight) to its finished topics.
  */
 export const archiveSmallTopics = <ThrowOnError extends boolean = false>(options: Options<ArchiveSmallTopicsData, ThrowOnError>): RequestResult<ArchiveSmallTopicsResponses, ArchiveSmallTopicsErrors, ThrowOnError> => (options.client ?? client).post<ArchiveSmallTopicsResponses, ArchiveSmallTopicsErrors, ThrowOnError>({
     url: '/memory/topics/archive-small',
@@ -547,24 +561,22 @@ export const listProfiles = <ThrowOnError extends boolean = false>(options?: Opt
 /**
  * Delete Profile
  */
-export const deleteProfile = <ThrowOnError extends boolean = false>(options: Options<DeleteProfileData, ThrowOnError>): RequestResult<DeleteProfileResponses, DeleteProfileErrors, ThrowOnError> => (options.client ?? client).delete<DeleteProfileResponses, DeleteProfileErrors, ThrowOnError>({ url: '/memory/profiles/{group_id}/{user_id}', ...options });
+export const deleteProfile = <ThrowOnError extends boolean = false>(options: Options<DeleteProfileData, ThrowOnError>): RequestResult<DeleteProfileResponses, DeleteProfileErrors, ThrowOnError> => (options.client ?? client).delete<DeleteProfileResponses, DeleteProfileErrors, ThrowOnError>({ url: '/memory/profiles/{guild_id}/{user_id}', ...options });
 
 /**
  * Get Profile
  */
-export const getProfile = <ThrowOnError extends boolean = false>(options: Options<GetProfileData, ThrowOnError>): RequestResult<GetProfileResponses, GetProfileErrors, ThrowOnError> => (options.client ?? client).get<GetProfileResponses, GetProfileErrors, ThrowOnError>({ url: '/memory/profiles/{group_id}/{user_id}', ...options });
+export const getProfile = <ThrowOnError extends boolean = false>(options: Options<GetProfileData, ThrowOnError>): RequestResult<GetProfileResponses, GetProfileErrors, ThrowOnError> => (options.client ?? client).get<GetProfileResponses, GetProfileErrors, ThrowOnError>({ url: '/memory/profiles/{guild_id}/{user_id}', ...options });
 
 /**
  * Delete Profile Fact
  */
-export const deleteProfileFact = <ThrowOnError extends boolean = false>(options: Options<DeleteProfileFactData, ThrowOnError>): RequestResult<DeleteProfileFactResponses, DeleteProfileFactErrors, ThrowOnError> => (options.client ?? client).delete<DeleteProfileFactResponses, DeleteProfileFactErrors, ThrowOnError>({ url: '/memory/profiles/{group_id}/{user_id}/facts/{fact_id}', ...options });
+export const deleteProfileFact = <ThrowOnError extends boolean = false>(options: Options<DeleteProfileFactData, ThrowOnError>): RequestResult<DeleteProfileFactResponses, DeleteProfileFactErrors, ThrowOnError> => (options.client ?? client).delete<DeleteProfileFactResponses, DeleteProfileFactErrors, ThrowOnError>({ url: '/memory/profiles/{guild_id}/{user_id}/facts/{fact_id}', ...options });
 
 /**
  * Restore Profile Fact
- *
- * Bring an archived fact back; it is locked, so curation never archives it again.
  */
-export const restoreProfileFact = <ThrowOnError extends boolean = false>(options: Options<RestoreProfileFactData, ThrowOnError>): RequestResult<RestoreProfileFactResponses, RestoreProfileFactErrors, ThrowOnError> => (options.client ?? client).post<RestoreProfileFactResponses, RestoreProfileFactErrors, ThrowOnError>({ url: '/memory/profiles/{group_id}/{user_id}/facts/{fact_id}/restore', ...options });
+export const restoreProfileFact = <ThrowOnError extends boolean = false>(options: Options<RestoreProfileFactData, ThrowOnError>): RequestResult<RestoreProfileFactResponses, RestoreProfileFactErrors, ThrowOnError> => (options.client ?? client).post<RestoreProfileFactResponses, RestoreProfileFactErrors, ThrowOnError>({ url: '/memory/profiles/{guild_id}/{user_id}/facts/{fact_id}/restore', ...options });
 
 /**
  * List Pipelines
@@ -593,8 +605,6 @@ export const listStickers = <ThrowOnError extends boolean = false>(options?: Opt
 
 /**
  * List Sticker Drops
- *
- * Sticker-drop decisions, newest first: every call to the decision model, sent or not.
  */
 export const listStickerDrops = <ThrowOnError extends boolean = false>(options?: Options<ListStickerDropsData, ThrowOnError>): RequestResult<ListStickerDropsResponses, ListStickerDropsErrors, ThrowOnError> => (options?.client ?? client).get<ListStickerDropsResponses, ListStickerDropsErrors, ThrowOnError>({ url: '/stickers/drops', ...options });
 
@@ -622,18 +632,13 @@ export const setStickerEnabled = <ThrowOnError extends boolean = false>(options:
 
 /**
  * List Workspaces
- *
- * Every group's workspaces, grouped by group (most recently used group first), each group's most recently
- * used first.
  */
 export const listWorkspaces = <ThrowOnError extends boolean = false>(options?: Options<ListWorkspacesData, ThrowOnError>): RequestResult<ListWorkspacesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListWorkspacesResponses, unknown, ThrowOnError>({ url: '/sandbox/workspaces', ...options });
 
 /**
  * Destroy Workspace
- *
- * Destroy one workspace now (its files, links and record), even while an invocation or job is using it.
  */
-export const destroyWorkspace = <ThrowOnError extends boolean = false>(options: Options<DestroyWorkspaceData, ThrowOnError>): RequestResult<DestroyWorkspaceResponses, DestroyWorkspaceErrors, ThrowOnError> => (options.client ?? client).delete<DestroyWorkspaceResponses, DestroyWorkspaceErrors, ThrowOnError>({ url: '/sandbox/workspaces/{group_id}/{name}', ...options });
+export const destroyWorkspace = <ThrowOnError extends boolean = false>(options: Options<DestroyWorkspaceData, ThrowOnError>): RequestResult<DestroyWorkspaceResponses, DestroyWorkspaceErrors, ThrowOnError> => (options.client ?? client).delete<DestroyWorkspaceResponses, DestroyWorkspaceErrors, ThrowOnError>({ url: '/sandbox/workspaces/{channel_id}/{name}', ...options });
 
 /**
  * Destroy All Workspaces
@@ -642,8 +647,6 @@ export const destroyAllWorkspaces = <ThrowOnError extends boolean = false>(optio
 
 /**
  * List Jobs
- *
- * Background jobs of every group, newest first: those still running (or reporting) first, then the archive.
  */
 export const listJobs = <ThrowOnError extends boolean = false>(options?: Options<ListJobsData, ThrowOnError>): RequestResult<ListJobsResponses, ListJobsErrors, ThrowOnError> => (options?.client ?? client).get<ListJobsResponses, ListJobsErrors, ThrowOnError>({ url: '/sandbox/jobs', ...options });
 
@@ -654,16 +657,11 @@ export const getJob = <ThrowOnError extends boolean = false>(options: Options<Ge
 
 /**
  * Get Job Transcript
- *
- * The job as a conversation: omp's messages for agent jobs (live while it runs), the script, the bot tools its
- * code called and its output for command jobs.
  */
 export const getJobTranscript = <ThrowOnError extends boolean = false>(options: Options<GetJobTranscriptData, ThrowOnError>): RequestResult<GetJobTranscriptResponses, GetJobTranscriptErrors, ThrowOnError> => (options.client ?? client).get<GetJobTranscriptResponses, GetJobTranscriptErrors, ThrowOnError>({ url: '/sandbox/jobs/{job_id}/transcript', ...options });
 
 /**
  * Cancel Job
- *
- * Stop a running job; the poller ends it within seconds and the group still gets its report.
  */
 export const cancelJob = <ThrowOnError extends boolean = false>(options: Options<CancelJobData, ThrowOnError>): RequestResult<CancelJobResponses, CancelJobErrors, ThrowOnError> => (options.client ?? client).post<CancelJobResponses, CancelJobErrors, ThrowOnError>({ url: '/sandbox/jobs/{job_id}/cancel', ...options });
 

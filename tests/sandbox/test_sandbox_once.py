@@ -104,6 +104,6 @@ async def test_sh_reports_an_unknown_outcome_instead_of_running_twice() -> None:
     ws = workspace(stub, FakeChannel())
     settings = Settings.model_validate({"moderation": {"enabled": False}})
     session = cast(Any, type("S", (), {"backend": ws})())
-    text = str(await sh(run_ctx(group_id=10001, settings=settings, sandbox=session), "touch /workspace/once"))
+    text = str(await sh(run_ctx(channel_id="ch-10001", settings=settings, sandbox=session), "touch /workspace/once"))
     assert UNKNOWN_OUTCOME in text
     assert sum(1 for argv in stub.calls if argv[:3] == ["/opt/ygg/ygg", "sh", "run"]) == 1

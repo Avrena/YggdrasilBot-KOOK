@@ -1,9 +1,4 @@
-"""Tools of the ops agent. Only superusers ever get them (checked before the agent is built).
-
-Writes go through the dashboard's own handlers, so validation, the ``config_audit`` row (actor
-``qq:<uid>``) and the hot reload are identical to the dashboard. Each undoable write pushes the
-previous state onto a per-user Redis stack that ``undo_last_change`` pops.
-"""
+"""Tools of the ops agent (superusers only): 4-level config management, KOOK sync, review, and KOOK API v3."""
 
 import json
 import re
@@ -19,8 +14,8 @@ from pydantic import BaseModel
 from pydantic_ai import RunContext, Tool
 from sqlalchemy import func, select
 
-from yggdrasil import events
-from yggdrasil.admin import groups as groups_api
+from yggdrasil.admin import channels as channels_api
+from yggdrasil.admin import kook as kook_api_admin
 from yggdrasil.admin import reviews as reviews_api
 from yggdrasil.admin import routes as routes_api
 from yggdrasil.admin import settings_api
@@ -29,19 +24,20 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
 from yggdrasil.db.models import (
     BotEvent,
+    Channel,
     CommandTrigger,
     ConfigAudit,
-    Group,
+    Guild,
     Invocation,
     Provider,
     ReviewItem,
     TaskRoute,
 )
 from yggdrasil.db.session import get_session
+from yggdrasil.kook.client import Kook
+from yggdrasil.kook.model import KookError
 from yggdrasil.kv import redis_client
-from yggdrasil.people import label, names_in_groups, self_label
-from yggdrasil.qq.client import QQ
-from yggdrasil.qq.model import Protocol, QQError
+from yggdrasil.people import label, names_in_guilds, self_label
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import Settings
 from yggdrasil.tools.errors import ToolError
@@ -50,43 +46,45 @@ from yggdrasil.transcript.notes import TraceNotes
 _UNDO_KEEP = 20
 _UNDO_TTL_S = 7 * 86400
 
+ScopeLevel = Literal["global", "guild", "category", "channel"]
+
 
 @dataclass
 class QuotedMessage:
-    qq_message_id: int
+    kook_message_id: str
     is_self: bool
     text: str
 
 
 @dataclass
 class OpsDeps:
-    qq: QQ
-    user_id: int
-    group_id: int | None
+    kook: Kook
+    user_id: str
+    channel_id: str | None
+    guild_id: str | None = None
     quoted: QuotedMessage | None = None
     actions: list[str] = field(default_factory=list)
     tool_counts: Counter[str] = field(default_factory=Counter)
-    notes: TraceNotes = field(default_factory=TraceNotes)  # for the invocation's transcript
+    notes: TraceNotes = field(default_factory=TraceNotes)
 
     @property
     def actor(self) -> str:
-        return f"qq:{self.user_id}"
+        return f"kook:{self.user_id}"
 
 
 async def _labeler(
-    ctx: RunContext[OpsDeps], pairs: list[tuple[int | None, int | None]]
-) -> Callable[[int | None, int | None], str | int | None]:
-    """``名字(QQ)`` for users in listed rows (one alias lookup); the bot itself as ``{bot_name}(你)``."""
-    names = await names_in_groups(pairs)
-    self_id = ctx.deps.qq.self_id
-    me = self_label(snapshot().settings(None).persona.name)
+    ctx: RunContext[OpsDeps], pairs: list[tuple[str | None, str | None]]
+) -> Callable[[str | None, str | None], str | None]:
+    names = await names_in_guilds(pairs)
+    self_id = ctx.deps.kook.self_id
+    me = self_label(snapshot().settings().persona.name)
 
-    def who(group_id: int | None, user_id: int | None) -> str | int | None:
+    def who(guild_id: str | None, user_id: str | None) -> str | None:
         if not user_id:
             return user_id
         if user_id == self_id:
             return me
-        return label(names.get((group_id, user_id)) if group_id else None, user_id)
+        return label(names.get((guild_id, user_id)) if guild_id else None, user_id)
 
     return who
 
@@ -112,10 +110,10 @@ def _op[**P](name: str, *, write: bool = False) -> Callable[[Callable[P, Awaitab
                 outcome = "error"
                 ctx.deps.notes.failed(ctx.tool_call_id)
                 return f"[失败] {e}"
-            except QQError as e:
+            except KookError as e:
                 outcome = "error"
                 ctx.deps.notes.failed(ctx.tool_call_id)
-                return f"[失败] QQ：{str(e)[:300]}"
+                return f"[失败] KOOK：{str(e)[:300]}"
             except Exception as e:
                 outcome = "error"
                 ctx.deps.notes.failed(ctx.tool_call_id)
@@ -131,7 +129,6 @@ def _op[**P](name: str, *, write: bool = False) -> Callable[[Callable[P, Awaitab
 
 
 def _detail(detail: Any) -> str:
-    """FastAPI error detail (string or validation list) as one line."""
     if isinstance(detail, list):
         return "；".join(f"{'.'.join(str(x) for x in d.get('loc', [])[1:])}: {d.get('msg')}" for d in detail)
     return str(detail)
@@ -144,20 +141,20 @@ def _json(value: Any) -> str:
 # --- undo stack ----------------------------------------------------------------
 
 
-def _undo_key(user_id: int) -> str:
+def _undo_key(user_id: str) -> str:
     return f"ygg:ops:undo:{user_id}"
 
 
-async def _push_undo(deps: OpsDeps, label: str, step: dict[str, Any]) -> None:
+async def _push_undo(deps: OpsDeps, title: str, step: dict[str, Any]) -> None:
     r = redis_client()
     key = _undo_key(deps.user_id)
-    await r.lpush(key, _json({"label": label, **step}))
+    await r.lpush(key, _json({"label": title, **step}))
     await r.ltrim(key, 0, _UNDO_KEEP - 1)
     await r.expire(key, _UNDO_TTL_S)
 
 
 def merge_patch(doc: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    """RFC 7386-style: nested dicts merge, ``None`` removes the key (back to the inherited value)."""
+    """RFC 7386-style: nested dicts merge, ``None`` removes the key (back to inherited value)."""
     out = dict(doc)
     for key, value in patch.items():
         if value is None:
@@ -178,15 +175,20 @@ def merge_patch(doc: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 
 @_op("status")
 async def status(ctx: RunContext[OpsDeps]) -> str:
-    """当前配置版本、启用的群、已配置的路由、待审核数量。"""
+    """当前配置版本、服务器和启用频道数量、已配置的路由、待审核数量。"""
     snap = snapshot()
     async with get_session() as s:
         pending = await s.scalar(select(func.count()).select_from(ReviewItem).where(ReviewItem.status == "pending"))
-    groups = [f"{g.name}({g.group_id})" for g in snap.groups.values() if g.enabled]
+    enabled = [
+        f"#{c.name}({c.channel_id})"
+        for c in snap.channels.values()
+        if not c.is_category and snap.channel_enabled(c.channel_id)
+    ]
     return _json(
         {
             "config_version": snap.version,
-            "enabled_groups": groups,
+            "guilds": len(snap.guilds),
+            "enabled_channels": enabled,
             "routes": sorted(snap.routes),
             "pending_reviews": pending,
         }
@@ -194,23 +196,24 @@ async def status(ctx: RunContext[OpsDeps]) -> str:
 
 
 @_op("get_settings")
-async def get_settings(ctx: RunContext[OpsDeps], group_id: int | None = None, section: str | None = None) -> str:
-    """查看设置。group_id 为空看全局；section 指定一节（persona、interaction、moderation、ratelimit、context、
-    tools、memory、privacy）时额外返回这一节的生效值。stored 是手动改过的部分，没写的项用默认值或全局值。"""
-    base = await settings_api.global_doc()
-    stored = base
-    if group_id is not None:
-        async with get_session() as s:
-            g = await s.get(Group, group_id)
-            if g is None:
-                raise ToolError(f"群 {group_id} 不在列表里")
-            stored = dict(g.settings)
-    out: dict[str, Any] = {"scope": f"group {group_id}" if group_id is not None else "global", "stored": stored}
+async def get_settings(
+    ctx: RunContext[OpsDeps],
+    scope: ScopeLevel = "global",
+    scope_id: str | None = None,
+    section: str | None = None,
+) -> str:
+    """查看四级设置（global / guild / category / channel）。section 指定一节时额外返回生效值。"""
+    if scope == "global":
+        view = await settings_api.get_global_settings()
+    else:
+        if not scope_id:
+            raise ToolError(f"{scope} 级设置必须提供 scope_id")
+        view = await settings_api.get_scope_settings(scope, scope_id)
+    out: dict[str, Any] = {"scope": scope, "scope_id": scope_id, "chain": view.chain, "stored": view.value}
     if section:
-        effective = settings_api.effective_settings(base, stored if group_id is not None else None)
         if section not in Settings.model_fields:
             raise ToolError(f"没有 {section} 这一节，可选：{', '.join(Settings.model_fields)}")
-        out["effective"] = {section: getattr(effective, section).model_dump(mode="json")}
+        out["effective"] = {section: view.effective.get(section)}
     return _json(out)
 
 
@@ -234,12 +237,49 @@ async def settings_reference(ctx: RunContext[OpsDeps], section: str) -> str:
     )
 
 
-@_op("list_groups")
-async def list_groups(ctx: RunContext[OpsDeps]) -> str:
-    """所有已知的群：群号、名称、是否启用、有没有单群设置覆盖。"""
-    groups = await groups_api.list_groups()
+@_op("list_channels")
+async def list_channels(ctx: RunContext[OpsDeps]) -> str:
+    """查看所有服务器 → 分组 → 频道树结构、启用状态与覆盖摘要。"""
+    tree = await channels_api.get_channel_tree()
     return _json(
-        [{"group_id": g.group_id, "name": g.name, "enabled": g.enabled, "overrides": g.settings} for g in groups]
+        [
+            {
+                "guild_id": g.guild.guild_id,
+                "name": g.guild.name,
+                "enabled": g.guild.enabled,
+                "overrides": list(g.guild.settings),
+                "categories": [
+                    {
+                        "category_id": cat.category.channel_id,
+                        "name": cat.category.name,
+                        "enabled": cat.category.enabled,
+                        "overrides": list(cat.category.settings),
+                        "channels": [
+                            {
+                                "channel_id": ch.channel_id,
+                                "name": ch.name,
+                                "enabled": ch.enabled,
+                                "effective_enabled": ch.effective_enabled,
+                                "overrides": list(ch.settings),
+                            }
+                            for ch in cat.channels
+                        ],
+                    }
+                    for cat in g.categories
+                ],
+                "ungrouped": [
+                    {
+                        "channel_id": ch.channel_id,
+                        "name": ch.name,
+                        "enabled": ch.enabled,
+                        "effective_enabled": ch.effective_enabled,
+                        "overrides": list(ch.settings),
+                    }
+                    for ch in g.ungrouped
+                ],
+            }
+            for g in tree
+        ]
     )
 
 
@@ -262,7 +302,7 @@ async def list_routes(ctx: RunContext[OpsDeps]) -> str:
 
 @_op("list_triggers")
 async def list_triggers(ctx: RunContext[OpsDeps]) -> str:
-    """所有触发规则（id、handler、范围、匹配方式、关键词、优先级、是否启用）。"""
+    """所有触发规则（id、handler、scope、scope_id、匹配方式、关键词、优先级、是否启用）。"""
     rows = await triggers_api.list_triggers()
     return _json(
         [
@@ -271,7 +311,7 @@ async def list_triggers(ctx: RunContext[OpsDeps]) -> str:
                     "id",
                     "handler",
                     "scope",
-                    "group_id",
+                    "scope_id",
                     "match_type",
                     "patterns",
                     "priority",
@@ -289,13 +329,14 @@ async def list_triggers(ctx: RunContext[OpsDeps]) -> str:
 async def list_reviews(
     ctx: RunContext[OpsDeps], status: Literal["pending", "approved", "rejected", "expired"] = "pending"
 ) -> str:
-    """审核队列（默认只看待审核）：R 号、群、请求、候选回复开头、审核结果。"""
+    """审核队列（默认只看待审核）：R 号、频道、请求、候选回复开头、审核结果。"""
     page = await reviews_api.list_reviews(status=status, limit=20, offset=0)
     return _json(
         [
             {
                 "id": f"R{r.id}",
-                "group_id": r.group_id,
+                "channel_id": r.channel_id,
+                "guild_id": r.guild_id,
                 "request": r.request_text[:200],
                 "reply": " ".join(s.content for s in r.reply.sections)[:200],
                 "verdict": r.verdict.model_dump(include={"verdict", "score", "categories"}),
@@ -307,18 +348,19 @@ async def list_reviews(
 
 @_op("recent_invocations")
 async def recent_invocations(ctx: RunContext[OpsDeps], limit: int = 10) -> str:
-    """最近的调用记录：时间、群、触发人、handler、状态、耗时、错误。"""
+    """最近的调用记录：时间、频道、触发人、handler、状态、耗时、错误。"""
     async with get_session() as s:
         rows = (
             await s.scalars(select(Invocation).order_by(Invocation.created_at.desc()).limit(min(max(limit, 1), 30)))
         ).all()
-    who = await _labeler(ctx, [(i.group_id, i.user_id) for i in rows])
+    who = await _labeler(ctx, [(i.guild_id, i.user_id) for i in rows])
     return _json(
         [
             {
                 "at": i.created_at.astimezone().strftime("%m-%d %H:%M"),
-                "group": i.group_id,
-                "user": who(i.group_id, i.user_id),
+                "channel_id": i.channel_id,
+                "guild_id": i.guild_id,
+                "user": who(i.guild_id, i.user_id),
                 "handler": i.handler,
                 "status": i.status,
                 "ms": i.duration_ms,
@@ -333,52 +375,109 @@ async def recent_invocations(ctx: RunContext[OpsDeps], limit: int = 10) -> str:
 
 
 @_op("update_settings", write=True)
-async def update_settings(ctx: RunContext[OpsDeps], patch: dict[str, Any], group_id: int | None = None) -> str:
-    """修改设置。patch 是按节嵌套的部分设置，例如 {"moderation": {"default_rule": {"threshold": 0.9}}}；
-    值写 null 表示删掉这项手动设置（恢复默认，或单群恢复成全局值）。group_id 为空改全局，否则只改这个群。"""
-    if group_id is None:
+async def update_settings(
+    ctx: RunContext[OpsDeps],
+    patch: dict[str, Any],
+    scope: ScopeLevel = "global",
+    scope_id: str | None = None,
+) -> str:
+    """修改四级设置（global / guild / category / channel）。值写 null 表示删除该层覆盖恢复继承上级。"""
+    if scope == "global":
         before = await settings_api.global_doc()
         after = merge_patch(before, patch)
         await settings_api.put_global_settings(after, ctx.deps.actor)
+        tag = "全局"
     else:
-        async with get_session() as s:
-            g = await s.get(Group, group_id)
-            if g is None:
-                raise ToolError(f"群 {group_id} 不在列表里")
-            before = dict(g.settings)
+        if not scope_id:
+            raise ToolError(f"{scope} 级设置必须提供 scope_id")
+        view = await settings_api.get_scope_settings(scope, scope_id)
+        before = dict(view.value)
         after = merge_patch(before, patch)
-        await settings_api.put_group_settings(group_id, after, ctx.deps.actor)
-    scope = "全局" if group_id is None else f"群 {group_id} "
-    await _push_undo(ctx.deps, f"{scope}设置", {"kind": "settings", "group_id": group_id, "doc": before})
-    return f"已修改{scope}设置：{_json(patch)}"
+        await settings_api.put_scope_settings(scope, scope_id, after, ctx.deps.actor)
+        tag = f"{scope} {scope_id} "
+    await _push_undo(
+        ctx.deps,
+        f"{tag}设置",
+        {"kind": "settings", "scope": scope, "scope_id": scope_id, "doc": before},
+    )
+    return f"已修改{tag}设置：{_json(patch)}"
 
 
-@_op("set_group", write=True)
-async def set_group(
-    ctx: RunContext[OpsDeps], group_id: int, enabled: bool | None = None, name: str | None = None
+@_op("set_channel", write=True)
+async def set_channel(
+    ctx: RunContext[OpsDeps],
+    channel_id: str,
+    enabled: bool | None = None,
+    clear_enabled: bool = False,
+    name: str | None = None,
+    guild_id: str | None = None,
 ) -> str:
-    """启用或停用一个群（不在列表里的会新建），或者改群名。只改传入的项。只知道群名时，
-    先用 qq_api 查 bot 加入的群列表找到群号；新建时把群名一起传进来。"""
+    """启用或停用某个频道/分组（clear_enabled=True 表示设为 null 继承所属分组）。"""
     async with get_session() as s:
-        g = await s.get(Group, group_id)
-        prev = {"name": g.name, "enabled": g.enabled} if g else None
-    if prev is None and enabled is None:
-        raise ToolError(f"群 {group_id} 不在列表里，要新增请同时指定 enabled")
-    body = groups_api.GroupIn(
+        ch = await s.get(Channel, channel_id)
+        prev = (
+            {
+                "guild_id": ch.guild_id,
+                "parent_id": ch.parent_id,
+                "name": ch.name,
+                "topic": ch.topic,
+                "position": ch.position,
+                "is_category": ch.is_category,
+                "enabled": ch.enabled,
+            }
+            if ch
+            else None
+        )
+    if prev is None and not guild_id:
+        raise ToolError(f"频道 {channel_id} 不在列表里，请先执行 sync_kook 或传入 guild_id")
+    next_enabled = None if clear_enabled else (enabled if enabled is not None else (prev or {}).get("enabled"))
+    body = channels_api.ChannelIn(
+        guild_id=guild_id or (prev or {})["guild_id"],
+        parent_id=(prev or {}).get("parent_id"),
         name=name if name is not None else (prev or {}).get("name", ""),
-        enabled=enabled if enabled is not None else bool(prev and prev["enabled"]),
+        topic=(prev or {}).get("topic", ""),
+        position=(prev or {}).get("position", 0),
+        is_category=bool((prev or {}).get("is_category", False)),
+        enabled=next_enabled,
         settings=None,
     )
-    out = await groups_api.upsert_group(group_id, body, ctx.deps.actor)
-    await _push_undo(ctx.deps, f"群 {group_id}", {"kind": "group", "group_id": group_id, "prev": prev})
-    return f"群 {out.group_id}（{out.name}）：{'启用' if out.enabled else '停用'}"
+    out = await channels_api.upsert_channel(channel_id, body, ctx.deps.actor)
+    await _push_undo(ctx.deps, f"频道 {channel_id}", {"kind": "channel", "channel_id": channel_id, "prev": prev})
+    state = "继承分组" if out.enabled is None else ("启用" if out.enabled else "停用")
+    return f"频道 #{out.name}（{out.channel_id}）：{state}（实际生效：{'启用' if out.effective_enabled else '停用'}）"
 
 
-@_op("backfill_group", write=True)
-async def backfill_group(ctx: RunContext[OpsDeps], group_id: int) -> str:
-    """回填一个群的历史消息（后台进行，数量由 memory.backfill_messages 决定）。不能撤销。"""
-    await groups_api.backfill_group(group_id, ctx.deps.actor)
-    return f"已开始回填群 {group_id}"
+@_op("set_guild", write=True)
+async def set_guild(
+    ctx: RunContext[OpsDeps], guild_id: str, enabled: bool | None = None, name: str | None = None
+) -> str:
+    """启用或停用整个 KOOK 服务器。"""
+    async with get_session() as s:
+        g = await s.get(Guild, guild_id)
+        prev = {"name": g.name, "icon": g.icon, "enabled": g.enabled} if g else None
+    body = channels_api.GuildIn(
+        name=name if name is not None else (prev or {}).get("name", guild_id),
+        icon=(prev or {}).get("icon", ""),
+        enabled=enabled if enabled is not None else bool(prev is None or prev["enabled"]),
+        settings=None,
+    )
+    out = await channels_api.upsert_guild(guild_id, body, ctx.deps.actor)
+    await _push_undo(ctx.deps, f"服务器 {guild_id}", {"kind": "guild", "guild_id": guild_id, "prev": prev})
+    return f"服务器「{out.name}」（{out.guild_id}）：{'启用' if out.enabled else '停用'}"
+
+
+@_op("sync_kook", write=True)
+async def sync_kook(ctx: RunContext[OpsDeps]) -> str:
+    """从 KOOK 同步所有服务器、分组和文字频道到数据库（保留已有设置与开关）。"""
+    res = await kook_api_admin.sync_kook_structure(ctx.deps.actor)
+    return f"已同步 {res.guilds} 个服务器、{res.categories} 个分组、{res.channels} 个文字频道"
+
+
+@_op("backfill_channel", write=True)
+async def backfill_channel(ctx: RunContext[OpsDeps], channel_id: str) -> str:
+    """回填一个文字频道的历史消息（后台进行）。不能撤销。"""
+    await channels_api.backfill_channel(channel_id, ctx.deps.actor)
+    return f"已开始回填频道 {channel_id}"
 
 
 @_op("decide_review", write=True)
@@ -388,8 +487,7 @@ async def decide_review(
     review_id: int | None = None,
     text: str | None = None,
 ) -> str:
-    """处理审核：approve 通过并发送原回复，reject 拒绝，edit 把 text 作为回复发出。review_id 不写时，
-    用被回复的审核通知里的 R 号；还没有就取唯一一条待审核。不能撤销。"""
+    """处理审核：approve 通过并发送原回复，reject 拒绝，edit 把 text 作为回复发出。不能撤销。"""
     if review_id is None and ctx.deps.quoted and (m := re.search(r"R(\d+)", ctx.deps.quoted.text)):
         review_id = int(m.group(1))
     if review_id is None:
@@ -407,7 +505,7 @@ class TriggerSpec(triggers_api.TriggerIn):
 
 @_op("save_trigger", write=True)
 async def save_trigger(ctx: RunContext[OpsDeps], trigger: TriggerSpec, trigger_id: int | None = None) -> str:
-    """新增（trigger_id 为空）或修改一条触发规则。修改时要传完整的规则，先用 list_triggers 看原值。"""
+    """新增（trigger_id 为空）或修改一条触发规则。修改时传完整规则。"""
     prev = None
     if trigger_id is not None:
         async with get_session() as s:
@@ -452,7 +550,7 @@ async def set_route(
     fallback_provider: str | None = None,
     fallback_model: str | None = None,
 ) -> str:
-    """更换某个任务的模型（provider 用名称）。不写兜底就去掉兜底；参数和限制保持不变。会按模型能力校验。"""
+    """更换某个任务的模型（provider 用名称）。"""
     async with get_session() as s:
         row = await s.get(TaskRoute, task)
         prev = (
@@ -482,22 +580,27 @@ async def set_route(
 
 @_op("undo_last_change", write=True)
 async def undo_last_change(ctx: RunContext[OpsDeps]) -> str:
-    """撤销你最近一次通过对话做的配置修改（设置、群、触发规则、路由）。连续调用会继续往前撤。审核和回填不能撤销。"""
+    """撤销你最近一次通过对话做的配置修改。"""
     raw = await redis_client().lpop(_undo_key(ctx.deps.user_id))
     if raw is None:
         raise ToolError("没有可以撤销的修改")
     step = json.loads(str(raw))
     actor, kind = ctx.deps.actor, step["kind"]
     if kind == "settings":
-        if step["group_id"] is None:
+        if step["scope"] == "global":
             await settings_api.put_global_settings(step["doc"], actor)
         else:
-            await settings_api.put_group_settings(step["group_id"], step["doc"], actor)
-    elif kind == "group":
+            await settings_api.put_scope_settings(step["scope"], step["scope_id"], step["doc"], actor)
+    elif kind == "channel":
         if step["prev"] is None:
-            await groups_api.delete_group(step["group_id"], actor)
+            await channels_api.delete_channel(step["channel_id"], actor)
         else:
-            await groups_api.upsert_group(step["group_id"], groups_api.GroupIn(**step["prev"]), actor)
+            await channels_api.upsert_channel(step["channel_id"], channels_api.ChannelIn(**step["prev"]), actor)
+    elif kind == "guild":
+        if step["prev"] is None:
+            await channels_api.delete_guild(step["guild_id"], actor)
+        else:
+            await channels_api.upsert_guild(step["guild_id"], channels_api.GuildIn(**step["prev"]), actor)
     elif kind == "trigger":
         if step["prev"] is None:
             await triggers_api.delete_trigger(step["id"], actor)
@@ -515,147 +618,86 @@ async def undo_last_change(ctx: RunContext[OpsDeps]) -> str:
 
 @_op("recall_message", write=True)
 async def recall_message(ctx: RunContext[OpsDeps]) -> str:
-    """撤回被回复的那条 bot 消息。"""
+    """删除/撤回被回复的那条 bot 消息。"""
     q = ctx.deps.quoted
-    if q is None or not q.is_self or ctx.deps.group_id is None:
-        raise ToolError("没有回复 bot 在群里发的消息")
-    await ctx.deps.qq.recall(group_id=ctx.deps.group_id, user_id=ctx.deps.user_id, message_id=q.qq_message_id)
-    return "已撤回"
+    if q is None or not q.is_self:
+        raise ToolError("没有回复 bot 发的消息")
+    await ctx.deps.kook.recall(channel_id=ctx.deps.channel_id, msg_id=q.kook_message_id)
+    return "已删除"
 
 
 @_op("list_events")
 async def list_events(
     ctx: RunContext[OpsDeps],
     kind: str | None = None,
-    status: Literal["pending", "approved", "rejected", "expired", "failed"] | None = None,
-    group_id: int | None = None,
+    guild_id: str | None = None,
     limit: int = 20,
 ) -> str:
-    """bot 记录的事件（E 号）：加群邀请 request.group.invite、入群申请 request.group.add、好友申请 request.friend、
-    bot 被踢/被禁言/管理员变动、成员进退群和禁言、掉线。kind 按前缀筛选（如 "request."），status 只对申请有意义。"""
+    """bot 记录的 KOOK 系统事件（服务器/频道变动等）。"""
     async with get_session() as s:
         q = select(BotEvent).order_by(BotEvent.at.desc()).limit(min(max(limit, 1), 50))
         if kind:
             q = q.where(BotEvent.kind.startswith(kind))
-        if status:
-            q = q.where(BotEvent.status == status)
-        if group_id is not None:
-            q = q.where(BotEvent.group_id == group_id)
+        if guild_id:
+            q = q.where(BotEvent.guild_id == guild_id)
         rows = (await s.scalars(q)).all()
-    who = await _labeler(ctx, [(e.group_id, u) for e in rows for u in (e.user_id, e.operator_id)])
+    who = await _labeler(ctx, [(e.guild_id, u) for e in rows for u in (e.user_id, e.operator_id)])
     return _json(
         [
             {
                 "id": f"E{e.id}",
                 "at": e.at.astimezone().strftime("%m-%d %H:%M"),
                 "kind": e.kind,
-                "group": e.group_id,
-                "user": who(e.group_id, e.user_id),
-                "operator": who(e.group_id, e.operator_id),
+                "guild_id": e.guild_id,
+                "channel_id": e.channel_id,
+                "user": who(e.guild_id, e.user_id),
+                "operator": who(e.guild_id, e.operator_id),
                 "status": e.status,
-                "comment": e.data.get("comment") or None,
             }
             for e in rows
         ]
     )
 
 
-@_op("decide_request", write=True)
-async def decide_request(
-    ctx: RunContext[OpsDeps], approve: bool, event_id: int | None = None, reason: str | None = None
-) -> str:
-    """同意或拒绝一条待处理的申请（加群邀请、入群申请、好友申请）。event_id 不写时，用被回复的通知里的 E 号；
-    还没有就取唯一一条待处理申请。同意加群邀请后要启用该群，再调 set_group。不能撤销。"""
-    if event_id is None and ctx.deps.quoted and (m := re.search(r"E(\d+)", ctx.deps.quoted.text)):
-        event_id = int(m.group(1))
-    if event_id is None:
-        async with get_session() as s:
-            pending = (
-                await s.scalars(select(BotEvent.id).where(BotEvent.status == "pending").order_by(BotEvent.at.desc()))
-            ).all()
-        if len(pending) != 1:
-            raise ToolError(f"待处理的申请有 {len(pending)} 条，请说明是哪一条（E 号）")
-        event_id = pending[0]
-    try:
-        row = await events.decide_request(event_id, approve, ctx.deps.actor, reason)
-    except events.EventError as e:
-        raise ToolError(str(e)) from e
-    return f"E{row.id}（{row.kind}）→ {row.status}"
+_KOOK_NEVER = frozenset({"/guild/leave", "/guild/delete", "/user/offline"})
+_KOOK_MAX_CHARS = 8000
 
 
-# Never callable through qq_api, whatever ops.qq_write_actions says: leaving groups, account, friends, join requests
-# (requests go through decide_request, which records the decision), the protocol endpoint itself.
-_QQ_NEVER: dict[Protocol, frozenset[str]] = {
-    "onebot": frozenset(
-        {
-            "set_group_leave",
-            "delete_friend",
-            "set_friend_add_request",
-            "set_group_add_request",
-            "set_qq_profile",
-            "set_qq_avatar",
-            "set_self_longnick",
-            "set_online_status",
-            "set_diy_online_status",
-            "set_restart",
-            "clean_cache",
-            "bot_exit",
-        }
-    ),
-    "milky": frozenset(
-        {
-            "quit_group",
-            "delete_friend",
-            "accept_friend_request",
-            "reject_friend_request",
-            "accept_group_request",
-            "reject_group_request",
-            "accept_group_invitation",
-            "reject_group_invitation",
-            "set_avatar",
-            "set_nickname",
-            "set_bio",
-            "get_cookies",
-            "get_csrf_token",
-        }
-    ),
-}
-# Getters that hand out login secrets (either protocol).
-_QQ_SECRET = re.compile(r"cookie|csrf|credential|clientkey|rkey|token|password", re.IGNORECASE)
-_QQ_MAX_CHARS = 8000
-
-
-def qq_gate(protocol: Protocol, action: str, write_allowed: list[str]) -> bool:
-    """Whether ``action`` of ``protocol`` is a write (True) or a read (False); ToolError when it may not be called."""
-    if action in _QQ_NEVER[protocol]:
-        raise ToolError(f"{action} 不允许通过对话调用")
-    bare = action.lstrip("_.")
-    if bare.startswith("get_"):
-        if _QQ_SECRET.search(bare):
-            raise ToolError(f"{action} 会返回登录凭据，不允许调用")
+def kook_gate(method: str, path: str, write_allowed: list[str]) -> bool:
+    """Return True if ``(method, path)`` is an allowed write, False if read; raise ToolError otherwise."""
+    m = method.upper().strip()
+    p = "/" + path.strip().lstrip("/")
+    if p in _KOOK_NEVER:
+        raise ToolError(f"{p} 不允许通过对话调用")
+    if m == "GET":
         return False
-    if action not in write_allowed:
-        raise ToolError(f"{action} 不在允许的写接口里（设置 ops.qq_write_actions）")
+    if m != "POST":
+        raise ToolError(f"KOOK API 只支持 GET 或 POST，不支持 {m}")
+    if p not in write_allowed:
+        raise ToolError(f"{p} 不在允许的写接口里（设置 ops.kook_write_actions）")
     return True
 
 
-@_op("qq_api")
-async def qq_api(ctx: RunContext[OpsDeps], action: str, params: dict[str, Any] | None = None) -> str:
-    """直接调用当前连接的 QQ 协议接口（协议、接口名和参数写法见系统提示），例如查群列表、群信息、群成员、消息、
-    群历史、精华消息。get_ 开头的只读接口都能调；会改东西的接口只能调设置 ops.qq_write_actions 里列出的
-    （默认：撤回、禁言、全员禁言、踢人、改群名片、设/删精华、发群公告、发消息），这类调用会记入审计且不能撤销。"""
-    action = action.strip()
-    qq = ctx.deps.qq
-    write = qq_gate(qq.protocol, action, snapshot().settings(None).ops.qq_write_actions)
+@_op("kook_api")
+async def kook_api(
+    ctx: RunContext[OpsDeps],
+    path: str,
+    method: Literal["GET", "POST"] = "GET",
+    params: dict[str, Any] | None = None,
+) -> str:
+    """直接调用 KOOK API v3 接口（例如 GET /guild/list、GET /channel/list、POST /message/pin）。
+    GET 只读接口默认放行；POST 写接口只能调 ops.kook_write_actions 列出的路径，记入审计且不可撤销。"""
+    p = "/" + path.strip().lstrip("/")
+    write = kook_gate(method, p, snapshot().settings().ops.kook_write_actions)
     params = params or {}
-    result = await qq.call(action, params)
+    result = await ctx.deps.kook.call(method, p, params)
     if write:
         async with get_session() as s:
-            s.add(ConfigAudit(actor=ctx.deps.actor, entity="qq", entity_id=action, action="call", detail=params))
-        ctx.deps.actions.append(f"已调用 {action}")
+            s.add(ConfigAudit(actor=ctx.deps.actor, entity="kook", entity_id=p, action="call", detail=params))
+        ctx.deps.actions.append(f"已调用 {method} {p}")
     text = _json(result)
-    if len(text) > _QQ_MAX_CHARS:
-        text = text[:_QQ_MAX_CHARS] + f"…（已截断，共 {len(text)} 字符；需要的话换更精确的接口或参数）"
+    if len(text) > _KOOK_MAX_CHARS:
+        text = text[:_KOOK_MAX_CHARS] + f"…（已截断，共 {len(text)} 字符）"
     return text
 
 
@@ -663,29 +705,30 @@ _READ: tuple[Callable[..., Awaitable[str]], ...] = (
     status,
     get_settings,
     settings_reference,
-    list_groups,
+    list_channels,
     list_routes,
     list_triggers,
     list_reviews,
     recent_invocations,
-    qq_api,
+    kook_api,
     list_events,
 )
 _WRITE: tuple[Callable[..., Awaitable[str]], ...] = (
     update_settings,
-    set_group,
-    backfill_group,
+    set_channel,
+    set_guild,
+    sync_kook,
+    backfill_channel,
     decide_review,
     save_trigger,
     delete_trigger,
     set_route,
     undo_last_change,
-    decide_request,
 )
 
 
 def ops_tools(deps: OpsDeps) -> list[Tool[OpsDeps]]:
     tools: list[Tool[OpsDeps]] = [Tool(fn, takes_ctx=True) for fn in (*_READ, *_WRITE)]
-    if deps.quoted is not None and deps.quoted.is_self and deps.group_id is not None:
+    if deps.quoted is not None and deps.quoted.is_self:
         tools.append(Tool(recall_message, takes_ctx=True))
     return tools

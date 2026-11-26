@@ -3,87 +3,113 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ARRAY, BigInteger, ForeignKey, Identity, Index, LargeBinary, PrimaryKeyConstraint, Text, func
+from sqlalchemy import ARRAY, Boolean, ForeignKey, Identity, Index, LargeBinary, PrimaryKeyConstraint, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yggdrasil.db.base import Base, TimestampMixin
 
 
 class Provider(Base, TimestampMixin):
-    """An OpenAI-compatible endpoint (new-api, TEI, llama.cpp, ...)."""
+    """An OpenAI- or Anthropic-compatible LLM endpoint."""
 
     __tablename__ = "providers"
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(Text, unique=True)
-    # Wire format for chat: openai (Chat Completions) | anthropic (Messages API). Embeddings, rerank
-    # and /models always use the OpenAI-compatible routes.
     api_format: Mapped[str] = mapped_column(Text, default="openai", server_default="openai")
-    base_url: Mapped[str] = mapped_column(Text)  # including /v1
+    base_url: Mapped[str] = mapped_column(Text)
     api_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     headers: Mapped[dict[str, Any]] = mapped_column(default=dict)
     enabled: Mapped[bool] = mapped_column(default=True)
-    models: Mapped[list[Any]] = mapped_column(default=list)  # cached /v1/models ids
+    models: Mapped[list[Any]] = mapped_column(default=list)
     models_fetched_at: Mapped[datetime | None]
-    # model id -> models.dev id, for ids the automatic prefix-stripping match can't resolve
     model_aliases: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
-    # model id -> yggdrasil.llm.catalog.ModelCaps, refreshed with the model list / on alias edits
     model_caps: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
-    # model id -> ModelCaps as the provider's own /models reports them (OpenRouter); used for unaliased ids
     upstream_caps: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
-    # optional key used only to read the account balance (OpenRouter management key); Fernet like api_key_enc
     balance_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
 
 
 class SearchProvider(Base, TimestampMixin):
-    """A web search backend. ``web_search`` tries enabled ones in priority order (a pool)."""
+    """A web search backend. ``web_search`` tries enabled ones in priority order."""
 
     __tablename__ = "search_providers"
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(Text, unique=True)
-    kind: Mapped[str] = mapped_column(Text)  # yggdrasil.tools.search.KINDS
+    kind: Mapped[str] = mapped_column(Text)
     base_url: Mapped[str] = mapped_column(Text)
     api_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     enabled: Mapped[bool] = mapped_column(default=True)
-    priority: Mapped[int] = mapped_column(default=100)  # lower is tried first
-    monthly_limit: Mapped[int | None]  # requests per calendar month (UTC); None = unlimited
-    params: Mapped[dict[str, Any]] = mapped_column(default=dict)  # kind-specific, e.g. exa {"type": "auto"}
+    priority: Mapped[int] = mapped_column(default=100)
+    monthly_limit: Mapped[int | None]
+    params: Mapped[dict[str, Any]] = mapped_column(default=dict)
 
 
 class TaskRoute(Base, TimestampMixin):
-    """Which model serves a task (chat, tldr, quick_ack, embedding, moderation, ...)."""
+    """Which model serves a task (chat, tldr, vision, memory_*, moderation, ...)."""
 
     __tablename__ = "task_routes"
 
     task: Mapped[str] = mapped_column(Text, primary_key=True)
     provider_id: Mapped[int] = mapped_column(ForeignKey("providers.id", ondelete="RESTRICT"))
     model: Mapped[str] = mapped_column(Text)
-    params: Mapped[dict[str, Any]] = mapped_column(default=dict)  # temperature, max_tokens, ...
+    params: Mapped[dict[str, Any]] = mapped_column(default=dict)
     fallback_provider_id: Mapped[int | None] = mapped_column(ForeignKey("providers.id", ondelete="SET NULL"))
     fallback_model: Mapped[str | None] = mapped_column(Text)
-    limits: Mapped[dict[str, Any]] = mapped_column(default=dict)  # request_limit, tool_calls_limit
+    limits: Mapped[dict[str, Any]] = mapped_column(default=dict)
 
 
-class Group(Base, TimestampMixin):
-    __tablename__ = "groups"
+class Guild(Base, TimestampMixin):
+    """A KOOK server (guild). Holds guild-level sparse settings overrides (layer 2 of 4)."""
 
-    group_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    __tablename__ = "guilds"
+
+    guild_id: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text, default="")
-    enabled: Mapped[bool] = mapped_column(default=False)  # whitelist
-    # Deep-merged over the global settings document (see yggdrasil.settings.Settings).
+    icon: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    # Sparse override merged over global settings; categories and channels inherit from this.
+    settings: Mapped[dict[str, Any]] = mapped_column(default=dict)
+
+
+class Channel(Base, TimestampMixin):
+    """A KOOK category (``is_category=True``) or text channel (``is_category=False``).
+
+    Inherits ``enabled`` and ``settings`` along ``global -> guild -> category -> channel``.
+    ``enabled`` is tri-state: ``None`` inherits from parent category (or defaults False if uncategorized);
+    ``True`` / ``False`` explicitly overrides at this level.
+    """
+
+    __tablename__ = "channels"
+    __table_args__ = (Index("ix_channels_guild_parent", "guild_id", "parent_id"),)
+
+    channel_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    guild_id: Mapped[str] = mapped_column(Text)
+    parent_id: Mapped[str | None] = mapped_column(Text)
+    is_category: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[int] = mapped_column(default=0)
+    name: Mapped[str] = mapped_column(Text, default="")
+    topic: Mapped[str] = mapped_column(Text, default="", server_default="")
+    enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Sparse override merged over parent layer (category -> guild -> global).
     settings: Mapped[dict[str, Any]] = mapped_column(default=dict)
     backfilled_at: Mapped[datetime | None]
 
 
 class CommandTrigger(Base, TimestampMixin):
+    """Data-driven trigger rule.
+
+    ``scope``: ``global`` | ``guild`` | ``category`` | ``channel`` | ``private``.
+    ``scope_id``: None for ``global`` / ``private``, else the matching guild/category/channel id.
+    """
+
     __tablename__ = "command_triggers"
-    __table_args__ = (Index("ix_command_triggers_scope", "scope", "group_id"),)
+    __table_args__ = (Index("ix_command_triggers_scope", "scope", "scope_id"),)
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     handler: Mapped[str] = mapped_column(Text)
-    scope: Mapped[str] = mapped_column(Text, default="global")  # global | group | private
-    group_id: Mapped[int | None]
+    scope: Mapped[str] = mapped_column(Text, default="global")
+    scope_id: Mapped[str | None] = mapped_column(Text)
     match_type: Mapped[str] = mapped_column(Text)
     patterns: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     arg_template: Mapped[str | None] = mapped_column(Text)
@@ -116,7 +142,7 @@ class PromptVersion(Base):
 
 
 class Admin(Base):
-    """``kind``: qq (superuser: reviews, admin commands) | email (dashboard access)."""
+    """``kind``: ``kook`` (superuser KOOK user id: reviews, ops commands) | ``email`` (dashboard access)."""
 
     __tablename__ = "admins"
     __table_args__ = (PrimaryKeyConstraint("kind", "value"),)
@@ -128,9 +154,8 @@ class Admin(Base):
 
 
 class SettingsDoc(Base, TimestampMixin):
-    """Settings rows: ``global`` (the global document, validated by yggdrasil.settings.Settings) and ``qq.milky``
-    (the console-configured Milky connection ``{url, token_enc}``, the token Fernet-encrypted with YGG_SECRET_KEY;
-    managed only by ``admin.qq``)."""
+    """Settings rows: ``global`` (validated by :class:`yggdrasil.settings.Settings`) and ``kook.bot``
+    (encrypted KOOK bot token managed by ``admin.kook``)."""
 
     __tablename__ = "settings"
 
@@ -146,17 +171,17 @@ class EmbedSpace(Base, TimestampMixin):
     model: Mapped[str] = mapped_column(Text)
     dim: Mapped[int]
     active: Mapped[bool] = mapped_column(default=False)
-    status: Mapped[str] = mapped_column(Text, default="backfilling")  # backfilling | ready
+    status: Mapped[str] = mapped_column(Text, default="backfilling")
 
 
 class PipelineState(Base, TimestampMixin):
-    """Per-group watermarks so memory pipelines are resumable and replayable."""
+    """Per-scope watermarks (``scope_id`` = channel_id for chunk/topic, guild_id for glossary)."""
 
     __tablename__ = "pipeline_state"
-    __table_args__ = (PrimaryKeyConstraint("pipeline", "group_id"),)
+    __table_args__ = (PrimaryKeyConstraint("pipeline", "scope_id"),)
 
     pipeline: Mapped[str] = mapped_column(Text)
-    group_id: Mapped[int]
+    scope_id: Mapped[str] = mapped_column(Text)
     last_msg_id: Mapped[int] = mapped_column(default=0)
     state: Mapped[dict[str, Any]] = mapped_column(default=dict)
 

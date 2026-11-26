@@ -1,4 +1,4 @@
-"""Collected stickers: listing, details, the original image, enable/disable, and the sticker-drop decisions."""
+"""Collected KOOK stickers (custom guild emojis & standalone GIF/image stickers) and per-channel drop logs."""
 
 from datetime import datetime
 from typing import Literal
@@ -9,12 +9,12 @@ from sqlalchemy import ScalarSelect, func, or_, select
 
 from yggdrasil.admin.auth import Actor
 from yggdrasil.admin.common import Page, change, not_found
-from yggdrasil.db.models import Group, Sticker, StickerBlob, StickerDrop, StickerUsage
+from yggdrasil.db.models import Guild, Sticker, StickerBlob, StickerDrop, StickerUsage
 from yggdrasil.db.session import get_session
 
 router = APIRouter(prefix="/stickers", tags=["stickers"])
 
-type StickerKind = Literal["image", "mface"]
+type StickerKind = Literal["image", "emoji"]
 type StickerStatus = Literal["fetching", "untagged", "ready", "failed"]
 type DropOutcome = Literal["sent", "dice", "unfit", "refused"]
 
@@ -37,33 +37,33 @@ class StickerOut(BaseModel):
     unsafe_category: str
     tagged_at: datetime | None
     seen_count: int
-    group_count: int
+    guild_count: int
     enabled: bool
     first_seen: datetime
     last_seen: datetime
 
 
-class StickerGroupUsage(BaseModel):
-    group_id: int
-    group_name: str
+class StickerGuildUsage(BaseModel):
+    guild_id: str
+    guild_name: str
     count: int
     last_seen: datetime
 
 
 class StickerDetail(StickerOut):
-    ref: str  # image: the content sha1 from the NT file id; mface: "<package_id>:<emoji_id>"
+    ref: str
     emoji_id: str | None
-    package_id: str | None
-    key: str
+    guild_id: str | None
+    asset_url: str
     tag_attempts: int
-    groups: list[StickerGroupUsage]  # most used first
+    guilds: list[StickerGuildUsage]
 
 
 class StickerEnabledIn(BaseModel):
     enabled: bool
 
 
-def _out(st: Sticker, group_count: int) -> StickerOut:
+def _out(st: Sticker, guild_count: int) -> StickerOut:
     return StickerOut(
         id=st.id,
         kind=st.kind,  # pyright: ignore[reportArgumentType]
@@ -82,14 +82,14 @@ def _out(st: Sticker, group_count: int) -> StickerOut:
         unsafe_category=st.unsafe_category,
         tagged_at=st.tagged_at,
         seen_count=st.seen_count,
-        group_count=group_count,
+        guild_count=guild_count,
         enabled=st.enabled,
         first_seen=st.first_seen,
         last_seen=st.last_seen,
     )
 
 
-def _group_count() -> ScalarSelect[int]:
+def _guild_count() -> ScalarSelect[int]:
     return (
         select(func.count())
         .select_from(StickerUsage)
@@ -106,7 +106,7 @@ async def list_stickers(
     include_failed: bool = Query(False, description="without a status filter, also list failed stickers"),
     enabled: bool | None = None,
     flagged: bool | None = None,
-    group_id: int | None = None,
+    guild_id: str | None = None,
     q: str | None = None,
     order: Literal["seen", "recent"] = "seen",
     limit: int = Query(60, ge=1, le=200),
@@ -121,8 +121,8 @@ async def list_stickers(
         cond.append(Sticker.status != "failed")
     if enabled is not None:
         cond.append(Sticker.enabled.is_(enabled))
-    if group_id is not None:
-        cond.append(Sticker.id.in_(select(StickerUsage.sticker_id).where(StickerUsage.group_id == group_id)))
+    if guild_id:
+        cond.append(Sticker.id.in_(select(StickerUsage.sticker_id).where(StickerUsage.guild_id == guild_id)))
     if flagged is not None:
         cond.append(Sticker.unsafe_category != "" if flagged else Sticker.unsafe_category == "")
     if q:
@@ -140,7 +140,7 @@ async def list_stickers(
     async with get_session() as s:
         total = await s.scalar(select(func.count()).select_from(Sticker).where(*cond)) or 0
         rows = await s.execute(
-            select(Sticker, _group_count()).where(*cond).order_by(*ordering).limit(limit).offset(offset)
+            select(Sticker, _guild_count()).where(*cond).order_by(*ordering).limit(limit).offset(offset)
         )
         items = [_out(st, n) for st, n in rows.all()]
     return Page[StickerOut](items=items, total=total)
@@ -149,11 +149,12 @@ async def list_stickers(
 class StickerDropOut(BaseModel):
     id: int
     at: datetime
-    group_id: int
+    channel_id: str
+    guild_id: str
     outcome: DropOutcome
     fit: float | None
     confidence: float | None
-    sticker_id: int | None  # the model's pick (sent or not); None when it picked nothing usable
+    sticker_id: int | None
     sticker_description: str
     sticker_has_image: bool
     candidate_count: int
@@ -165,15 +166,17 @@ class StickerDropOut(BaseModel):
 
 @router.get("/drops")
 async def list_sticker_drops(
-    group_id: int | None = None,
+    guild_id: str | None = None,
+    channel_id: str | None = None,
     outcome: DropOutcome | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> Page[StickerDropOut]:
-    """Sticker-drop decisions, newest first: every call to the decision model, sent or not."""
     cond = []
-    if group_id is not None:
-        cond.append(StickerDrop.group_id == group_id)
+    if guild_id:
+        cond.append(StickerDrop.guild_id == guild_id)
+    if channel_id:
+        cond.append(StickerDrop.channel_id == channel_id)
     if outcome is not None:
         cond.append(StickerDrop.outcome == outcome)
     async with get_session() as s:
@@ -190,7 +193,8 @@ async def list_sticker_drops(
             StickerDropOut(
                 id=d.id,
                 at=d.at,
-                group_id=d.group_id,
+                channel_id=d.channel_id,
+                guild_id=d.guild_id,
                 outcome=d.outcome,  # pyright: ignore[reportArgumentType]
                 fit=d.fit,
                 confidence=d.confidence,
@@ -216,21 +220,22 @@ async def get_sticker(sticker_id: int) -> StickerDetail:
             raise not_found("表情包")
         rows = (
             await s.execute(
-                select(StickerUsage.group_id, Group.name, StickerUsage.count, StickerUsage.last_seen)
-                .outerjoin(Group, Group.group_id == StickerUsage.group_id)
+                select(StickerUsage.guild_id, Guild.name, StickerUsage.count, StickerUsage.last_seen)
+                .outerjoin(Guild, Guild.guild_id == StickerUsage.guild_id)
                 .where(StickerUsage.sticker_id == sticker_id)
-                .order_by(StickerUsage.count.desc(), StickerUsage.group_id)
+                .order_by(StickerUsage.count.desc(), StickerUsage.guild_id)
             )
         ).all()
-    groups = [StickerGroupUsage(group_id=g, group_name=name or "", count=n, last_seen=at) for g, name, n, at in rows]
+    guilds = [StickerGuildUsage(guild_id=g, guild_name=name or "", count=n, last_seen=at) for g, name, n, at in rows]
+    asset_url = st.ref if st.ref.startswith("http") else ""
     return StickerDetail(
-        **_out(st, len(groups)).model_dump(),
+        **_out(st, len(guilds)).model_dump(),
         ref=st.ref,
         emoji_id=st.emoji_id,
-        package_id=st.package_id,
-        key=st.key,
+        guild_id=st.guild_id,
+        asset_url=asset_url,
         tag_attempts=st.tag_attempts,
-        groups=groups,
+        guilds=guilds,
     )
 
 
@@ -247,7 +252,6 @@ async def sticker_image(sticker_id: int) -> Response:
     if row is None:
         raise not_found("表情包图片")
     data, mime = row
-    # A sticker's image never changes once saved.
     return Response(
         data, media_type=mime or "application/octet-stream", headers={"Cache-Control": "private, max-age=86400"}
     )
@@ -261,7 +265,7 @@ async def set_sticker_enabled(sticker_id: int, body: StickerEnabledIn, actor: Ac
             raise not_found("表情包")
         st.enabled = body.enabled
         c.detail = {"summary": st.summary, "description": st.description}
-        group_count = await c.session.scalar(
+        guild_count = await c.session.scalar(
             select(func.count()).select_from(StickerUsage).where(StickerUsage.sticker_id == sticker_id)
         )
-    return _out(st, group_count or 0)
+    return _out(st, guild_count or 0)

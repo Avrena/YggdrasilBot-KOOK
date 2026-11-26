@@ -1,11 +1,4 @@
-"""Group slang glossary: statistical candidate mining + LLM definitions (task ``memory_glossary``).
-
-Mining (daily) tokenizes new messages with jieba and keeps words outside jieba's
-dictionary and token n-grams whose message frequency spikes against the group's own
-history. The definition step sends the top candidates with example messages to the
-model; accepted terms are upserted into ``glossary_terms`` (``locked`` rows are never
-overwritten).
-"""
+"""Guild-shared slang glossary: statistical candidate mining + LLM definitions (task ``memory_glossary``)."""
 
 import re
 import warnings
@@ -61,8 +54,8 @@ _STOP_CHARS = frozenset("的了是在吗呢吧啊呀哦嗯和就都也还又很"
 @dataclass(slots=True)
 class CandidateStat:
     term: str
-    count: int  # number of recent messages containing it
-    examples: list[int] = field(default_factory=list)  # message ids
+    count: int
+    examples: list[int] = field(default_factory=list)
     oov: bool = False
     spike: float = 0.0
 
@@ -78,7 +71,6 @@ def _jieba() -> Any:
 
 
 def clean(text: str) -> str:
-    """Strip placeholders (``[图片]``), mentions and URLs before tokenizing."""
     return _URL.sub(" ", _MENTION.sub(" ", _PLACEHOLDER.sub(" ", text)))
 
 
@@ -97,15 +89,12 @@ def acceptable(term: str, exclude: Collection[str] = ()) -> bool:
 
 
 def _grams(tokens: list[str], exclude: Collection[str]) -> set[tuple[str, bool]]:
-    """Unigrams outside the dictionary and 2–3 dictionary-word n-grams; ``(term, is_oov_unigram)``."""
     out: set[tuple[str, bool]] = set()
     for n in (1, 2, 3):
         for i in range(len(tokens) - n + 1):
             parts = tokens[i : i + n]
             if not all(_WORDLIKE.match(p) for p in parts):
                 continue
-            # Multi-token n-grams are built from multi-character dictionary words only (single characters
-            # are mostly particles and verbs gluing phrases together); unknown tokens are candidates themselves.
             if n > 1 and (
                 parts[0] in STOPWORDS
                 or parts[-1] in STOPWORDS
@@ -128,12 +117,6 @@ def mine_candidates(
     exclude: Collection[str] = (),
     spike_ratio: float = SPIKE_RATIO,
 ) -> list[CandidateStat]:
-    """Candidate terms from ``recent`` ``(msg_id, text)`` messages against ``history`` texts.
-
-    Counts are per message. Out-of-dictionary words qualify at ``min_count``; multi-token
-    n-grams additionally need their message rate to be ``spike_ratio`` times the history rate.
-    Terms contained in a longer candidate with at least 80% of their count are dropped.
-    """
     if not recent:
         return []
     jieba = _jieba()
@@ -159,47 +142,53 @@ def mine_candidates(
     return kept[:limit]
 
 
-async def _excluded_terms(group_id: int, names: Collection[str]) -> set[str]:
-    snap = snapshot()
-    persona = snap.settings(group_id).persona
+async def _excluded_terms(guild_id: str, names: Collection[str]) -> set[str]:
+    persona = snapshot().settings(guild_id=guild_id).persona
     out = {n.lower() for n in (*names, persona.name, *persona.aliases) if n}
     async with get_session() as session:
         for term, aliases in (
             await session.execute(
-                select(GlossaryTerm.term, GlossaryTerm.aliases).where(GlossaryTerm.group_id == group_id)
+                select(GlossaryTerm.term, GlossaryTerm.aliases).where(GlossaryTerm.guild_id == guild_id)
             )
         ).all():
             out.add(term.lower())
             out.update(a.lower() for a in aliases)
         decided = await session.scalars(
             select(GlossaryCandidate.term).where(
-                GlossaryCandidate.group_id == group_id, GlossaryCandidate.status != "pending"
+                GlossaryCandidate.guild_id == guild_id, GlossaryCandidate.status != "pending"
             )
         )
         out.update(t.lower() for t in decided)
     return out
 
 
-async def mine_group(group_id: int, *, now: datetime | None = None) -> int:
-    """Mine candidates from messages after the watermark, batch after batch until caught up
-    (a group can outgrow one batch a day). Returns candidates upserted."""
-    mem = snapshot().settings(group_id).memory
+async def mine_guild(guild_id: str, *, now: datetime | None = None) -> int:
+    snap = snapshot()
+    shared = snap.shared_channel_ids(guild_id)
+    if not shared:
+        return 0
+    mem = snap.settings(guild_id=guild_id).memory
     now = now or datetime.now(UTC)
     upserted = 0
-    while (batch := await _mine_batch(group_id, mem, now)) is not None:
+    while (batch := await _mine_batch(guild_id, shared, mem, now)) is not None:
         upserted += batch[0]
         if not batch[1]:
             break
     return upserted
 
 
-async def _mine_batch(group_id: int, mem: MemorySettings, now: datetime) -> tuple[int, bool] | None:
-    """One batch after the watermark: (candidates upserted, batch was full). None when fewer than
-    ``MINE_MIN_MESSAGES`` messages wait; they stay for a later run."""
+async def _mine_batch(
+    guild_id: str, shared_channels: list[str], mem: MemorySettings, now: datetime
+) -> tuple[int, bool] | None:
     async with get_session() as session:
-        st = await pipeline_state(session, PIPELINE, group_id)
+        st = await pipeline_state(session, PIPELINE, guild_id)
         watermark = st.last_msg_id
-        visible = (Message.group_id == group_id, Message.recalled.is_(False), Message.is_self.is_(False))
+        visible = (
+            Message.guild_id == guild_id,
+            Message.channel_id.in_(shared_channels),
+            Message.recalled.is_(False),
+            Message.is_self.is_(False),
+        )
         rows = await session.execute(
             select(Message.id, Message.sent_at, Message.sender_name, Message.plain_text)
             .where(*visible, Message.id > watermark)
@@ -220,7 +209,7 @@ async def _mine_batch(group_id: int, mem: MemorySettings, now: datetime) -> tupl
                 )
             ).all()
         )
-    exclude = await _excluded_terms(group_id, {r.sender_name for r in recent})
+    exclude = await _excluded_terms(guild_id, {r.sender_name for r in recent})
     sent_at = {r.id: r.sent_at for r in recent}
     found = mine_candidates(
         [(r.id, r.plain_text) for r in recent],
@@ -233,7 +222,7 @@ async def _mine_batch(group_id: int, mem: MemorySettings, now: datetime) -> tupl
         for c in found:
             seen = [sent_at[i] for i in c.examples]
             stmt = pg_insert(GlossaryCandidate).values(
-                group_id=group_id,
+                guild_id=guild_id,
                 term=c.term,
                 count=c.count,
                 first_seen=min(seen),
@@ -243,7 +232,7 @@ async def _mine_batch(group_id: int, mem: MemorySettings, now: datetime) -> tupl
             )
             await session.execute(
                 stmt.on_conflict_do_update(
-                    index_elements=["group_id", "term"],
+                    index_elements=["guild_id", "term"],
                     set_={
                         "count": GlossaryCandidate.count + stmt.excluded.count,
                         "last_seen": stmt.excluded.last_seen,
@@ -253,16 +242,15 @@ async def _mine_batch(group_id: int, mem: MemorySettings, now: datetime) -> tupl
                     where=GlossaryCandidate.status == "pending",
                 )
             )
-        # Candidates that never reached the threshold fade out.
         await session.execute(
             delete(GlossaryCandidate).where(
-                GlossaryCandidate.group_id == group_id,
+                GlossaryCandidate.guild_id == guild_id,
                 GlossaryCandidate.status == "pending",
                 GlossaryCandidate.count < mem.glossary_min_count,
                 GlossaryCandidate.last_seen < now - STALE_AFTER,
             )
         )
-        st = await pipeline_state(session, PIPELINE, group_id)
+        st = await pipeline_state(session, PIPELINE, guild_id)
         st.last_msg_id = loaded[-1].id
     return len(found), len(loaded) == MINE_BATCH
 
@@ -280,7 +268,6 @@ class GlossaryDecisions(BaseModel):
 
 
 def valid_decisions(decisions: Sequence[TermDecision], candidates: Collection[str]) -> list[TermDecision]:
-    """Keep one decision per known candidate; accepted ones need a definition."""
     known, seen = set(candidates), set()
     out = []
     for d in decisions:
@@ -293,19 +280,19 @@ def valid_decisions(decisions: Sequence[TermDecision], candidates: Collection[st
     return out
 
 
-async def define_group(group_id: int) -> dict[str, int]:
-    """Ask the model about the top pending candidates; upsert accepted terms."""
-    mem = snapshot().settings(group_id).memory
+async def define_guild(guild_id: str) -> dict[str, int]:
+    snap = snapshot()
+    mem = snap.settings(guild_id=guild_id).memory
     stats = {"accepted": 0, "rejected": 0, "skipped_locked": 0}
     if not llm.available(TASK):
-        LOGGER.debug("group {}: task {} not configured", group_id, TASK)
+        LOGGER.debug("guild {}: task {} not configured", guild_id, TASK)
         return stats
     async with get_session() as session:
         cands = (
             await session.scalars(
                 select(GlossaryCandidate)
                 .where(
-                    GlossaryCandidate.group_id == group_id,
+                    GlossaryCandidate.guild_id == guild_id,
                     GlossaryCandidate.status == "pending",
                     GlossaryCandidate.count >= mem.glossary_min_count,
                 )
@@ -320,20 +307,20 @@ async def define_group(group_id: int) -> dict[str, int]:
             r[0]: MessageView(*r)
             for r in await session.execute(
                 select(*VIEW_COLUMNS).where(
-                    Message.group_id == group_id, Message.id.in_(ids), Message.recalled.is_(False)
+                    Message.guild_id == guild_id, Message.id.in_(ids), Message.recalled.is_(False)
                 )
             )
         }
         existing = (
             await session.execute(
                 select(GlossaryTerm.term, GlossaryTerm.definition)
-                .where(GlossaryTerm.group_id == group_id)
+                .where(GlossaryTerm.guild_id == guild_id)
                 .order_by(GlossaryTerm.hits.desc(), GlossaryTerm.id)
                 .limit(MAX_EXISTING_IN_PROMPT)
             )
         ).all()
-    bot_name = snapshot().settings(group_id).persona.name
-    people = await people_for(group_id, examples.values(), bot_name=bot_name)
+    bot_name = snap.settings(guild_id=guild_id).persona.name
+    people = await people_for(guild_id, examples.values(), bot_name=bot_name)
     prompt = render(
         TASK,
         bot_name=bot_name,
@@ -342,7 +329,9 @@ async def define_group(group_id: int) -> dict[str, int]:
                 "term": llm.fence(c.term),
                 "count": c.count,
                 "examples": [
-                    llm.fence(format_line(examples[i], people)[:300])
+                    llm.fence(
+                        format_line(examples[i], people, channel_tag=snap.channel_name(examples[i].channel_id))[:300]
+                    )
                     for i in c.example_msg_ids[:PROMPT_EXAMPLES]
                     if i in examples
                 ],
@@ -354,20 +343,20 @@ async def define_group(group_id: int) -> dict[str, int]:
     result = await llm.run_structured(TASK, GlossaryDecisions, prompt)
     by_term = {c.term: c for c in cands}
     decisions = valid_decisions(result.decisions, by_term.keys())
-    embed: list[tuple[int, int, str]] = []
+    embed = []
     async with get_session() as session:
         for d in decisions:
             cand = by_term[d.term]
             await session.execute(
                 update(GlossaryCandidate)
-                .where(GlossaryCandidate.group_id == group_id, GlossaryCandidate.term == d.term)
+                .where(GlossaryCandidate.guild_id == guild_id, GlossaryCandidate.term == d.term)
                 .values(status="accepted" if d.accept else "rejected")
             )
             if not d.accept:
                 stats["rejected"] += 1
                 continue
             row = await session.scalar(
-                select(GlossaryTerm).where(GlossaryTerm.group_id == group_id, GlossaryTerm.term == d.term)
+                select(GlossaryTerm).where(GlossaryTerm.guild_id == guild_id, GlossaryTerm.term == d.term)
             )
             if row is not None and row.locked:
                 stats["skipped_locked"] += 1
@@ -378,13 +367,13 @@ async def define_group(group_id: int) -> dict[str, int]:
                 if i in examples
             ]
             if row is None:
-                row = GlossaryTerm(group_id=group_id, term=d.term, first_seen=cand.first_seen, source="auto")
+                row = GlossaryTerm(guild_id=guild_id, term=d.term, first_seen=cand.first_seen, source="auto")
                 session.add(row)
             row.definition, row.aliases, row.confidence = d.definition, d.aliases, d.confidence
             row.examples, row.last_seen = sample, cand.last_seen
             await session.flush()
             await delete_vectors(session, "glossary", [row.id])
-            embed.append((row.id, group_id, glossary_text(row.term, row.aliases, row.definition)))
+            embed.append((row.id, guild_id, None, glossary_text(row.term, row.aliases, row.definition)))
             stats["accepted"] += 1
     await try_embed("glossary", embed)
     return stats

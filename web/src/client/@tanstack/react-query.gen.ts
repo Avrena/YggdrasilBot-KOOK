@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { activatePromptVersion, addAdmin, archiveSmallTopics, archiveTopic, backfillGroup, cancelJob, createEmbedSpace, createGlossaryTerm, createPromptVersion, createProvider, createSearchProvider, createTrigger, decideEvent, decideReview, deleteGlossaryTerm, deleteGroup, deleteProfile, deleteProfileFact, deleteProvider, deleteQqMilky, deleteQqMilkyToken, deleteRoute, deleteSearchProvider, deleteTrigger, destroyAllWorkspaces, destroyWorkspace, getGlobalSettings, getGroupSettings, getInvocation, getInvocationTranscript, getJob, getJobTranscript, getMe, getProfile, getPrompt, getProviderBalance, getQqMilky, getSearchProviderBalance, getSettingsSchema, getStats, getSticker, getTriggerMeta, listAdmins, listDigests, listEmbedSpaces, listEvents, listGlossary, listGroups, listInvocations, listJobs, listPipelines, listProfiles, listPrompts, listProviders, listReviews, listRoutes, listSearchProviders, listStickerDrops, listStickers, listTopics, listTriggers, listWorkspaces, lockGlossaryTerm, type Options, previewPrompt, putGlobalSettings, putGroupSettings, putQqMilky, reembedEmbedSpace, refreshProviderModels, removeAdmin, resetPrompt, restoreProfileFact, setProviderAliases, setStickerEnabled, stickerImage, testProvider, testSearchProvider, testTrigger, transcriptBlob, updateGlossaryTerm, updateProvider, updateSearchProvider, updateTrigger, upsertGroup, upsertRoute } from '../sdk.gen';
-import type { ActivatePromptVersionData, ActivatePromptVersionError, ActivatePromptVersionResponse, AddAdminData, AddAdminError, AddAdminResponse, ArchiveSmallTopicsData, ArchiveSmallTopicsError, ArchiveSmallTopicsResponse, ArchiveTopicData, ArchiveTopicError, ArchiveTopicResponse, BackfillGroupData, BackfillGroupError, BackfillGroupResponse, CancelJobData, CancelJobError, CancelJobResponse, CreateEmbedSpaceData, CreateEmbedSpaceError, CreateEmbedSpaceResponse, CreateGlossaryTermData, CreateGlossaryTermError, CreateGlossaryTermResponse, CreatePromptVersionData, CreatePromptVersionError, CreatePromptVersionResponse, CreateProviderData, CreateProviderError, CreateProviderResponse, CreateSearchProviderData, CreateSearchProviderError, CreateSearchProviderResponse, CreateTriggerData, CreateTriggerError, CreateTriggerResponse, DecideEventData, DecideEventError, DecideEventResponse, DecideReviewData, DecideReviewError, DecideReviewResponse, DeleteGlossaryTermData, DeleteGlossaryTermError, DeleteGlossaryTermResponse, DeleteGroupData, DeleteGroupError, DeleteGroupResponse, DeleteProfileData, DeleteProfileError, DeleteProfileFactData, DeleteProfileFactError, DeleteProfileFactResponse, DeleteProfileResponse, DeleteProviderData, DeleteProviderError, DeleteProviderResponse, DeleteQqMilkyData, DeleteQqMilkyResponse, DeleteQqMilkyTokenData, DeleteQqMilkyTokenResponse, DeleteRouteData, DeleteRouteError, DeleteRouteResponse, DeleteSearchProviderData, DeleteSearchProviderError, DeleteSearchProviderResponse, DeleteTriggerData, DeleteTriggerError, DeleteTriggerResponse, DestroyAllWorkspacesData, DestroyAllWorkspacesResponse, DestroyWorkspaceData, DestroyWorkspaceError, DestroyWorkspaceResponse, GetGlobalSettingsData, GetGlobalSettingsResponse, GetGroupSettingsData, GetGroupSettingsError, GetGroupSettingsResponse, GetInvocationData, GetInvocationError, GetInvocationResponse, GetInvocationTranscriptData, GetInvocationTranscriptError, GetInvocationTranscriptResponse, GetJobData, GetJobError, GetJobResponse, GetJobTranscriptData, GetJobTranscriptError, GetJobTranscriptResponse, GetMeData, GetMeResponse, GetProfileData, GetProfileError, GetProfileResponse, GetPromptData, GetPromptError, GetPromptResponse, GetProviderBalanceData, GetProviderBalanceError, GetProviderBalanceResponse, GetQqMilkyData, GetQqMilkyResponse, GetSearchProviderBalanceData, GetSearchProviderBalanceError, GetSearchProviderBalanceResponse, GetSettingsSchemaData, GetSettingsSchemaResponse, GetStatsData, GetStatsResponse, GetStickerData, GetStickerError, GetStickerResponse, GetTriggerMetaData, GetTriggerMetaResponse, ListAdminsData, ListAdminsResponse, ListDigestsData, ListDigestsError, ListDigestsResponse, ListEmbedSpacesData, ListEmbedSpacesResponse, ListEventsData, ListEventsError, ListEventsResponse, ListGlossaryData, ListGlossaryError, ListGlossaryResponse, ListGroupsData, ListGroupsResponse, ListInvocationsData, ListInvocationsError, ListInvocationsResponse, ListJobsData, ListJobsError, ListJobsResponse, ListPipelinesData, ListPipelinesResponse, ListProfilesData, ListProfilesError, ListProfilesResponse, ListPromptsData, ListPromptsResponse, ListProvidersData, ListProvidersResponse, ListReviewsData, ListReviewsError, ListReviewsResponse, ListRoutesData, ListRoutesResponse, ListSearchProvidersData, ListSearchProvidersResponse, ListStickerDropsData, ListStickerDropsError, ListStickerDropsResponse, ListStickersData, ListStickersError, ListStickersResponse, ListTopicsData, ListTopicsError, ListTopicsResponse, ListTriggersData, ListTriggersResponse, ListWorkspacesData, ListWorkspacesResponse, LockGlossaryTermData, LockGlossaryTermError, LockGlossaryTermResponse, PreviewPromptData, PreviewPromptError, PreviewPromptResponse, PutGlobalSettingsData, PutGlobalSettingsError, PutGlobalSettingsResponse, PutGroupSettingsData, PutGroupSettingsError, PutGroupSettingsResponse, PutQqMilkyData, PutQqMilkyError, PutQqMilkyResponse, ReembedEmbedSpaceData, ReembedEmbedSpaceError, ReembedEmbedSpaceResponse, RefreshProviderModelsData, RefreshProviderModelsError, RefreshProviderModelsResponse, RemoveAdminData, RemoveAdminError, RemoveAdminResponse, ResetPromptData, ResetPromptError, ResetPromptResponse, RestoreProfileFactData, RestoreProfileFactError, RestoreProfileFactResponse, SetProviderAliasesData, SetProviderAliasesError, SetProviderAliasesResponse, SetStickerEnabledData, SetStickerEnabledError, SetStickerEnabledResponse, StickerImageData, StickerImageError, TestProviderData, TestProviderError, TestProviderResponse, TestSearchProviderData, TestSearchProviderError, TestSearchProviderResponse, TestTriggerData, TestTriggerError, TestTriggerResponse, TranscriptBlobData, TranscriptBlobError, UpdateGlossaryTermData, UpdateGlossaryTermError, UpdateGlossaryTermResponse, UpdateProviderData, UpdateProviderError, UpdateProviderResponse, UpdateSearchProviderData, UpdateSearchProviderError, UpdateSearchProviderResponse, UpdateTriggerData, UpdateTriggerError, UpdateTriggerResponse, UpsertGroupData, UpsertGroupError, UpsertGroupResponse, UpsertRouteData, UpsertRouteError, UpsertRouteResponse } from '../types.gen';
+import { activatePromptVersion, addAdmin, archiveSmallTopics, archiveTopic, backfillChannel, cancelJob, createEmbedSpace, createGlossaryTerm, createPromptVersion, createProvider, createSearchProvider, createTrigger, decideReview, deleteChannel, deleteGlossaryTerm, deleteGuild, deleteKookConnection, deleteProfile, deleteProfileFact, deleteProvider, deleteRoute, deleteSearchProvider, deleteTrigger, destroyAllWorkspaces, destroyWorkspace, getChannelTree, getGlobalSettings, getInvocation, getInvocationTranscript, getJob, getJobTranscript, getKookConnection, getMe, getProfile, getPrompt, getProviderBalance, getScopeSettings, getSearchProviderBalance, getSettingsSchema, getStats, getSticker, getTriggerMeta, listAdmins, listChannels, listDigests, listEmbedSpaces, listEvents, listGlossary, listGuilds, listInvocations, listJobs, listKookLiveGuilds, listPipelines, listProfiles, listPrompts, listProviders, listReviews, listRoutes, listSearchProviders, listStickerDrops, listStickers, listTopics, listTriggers, listWorkspaces, lockGlossaryTerm, type Options, previewPrompt, putGlobalSettings, putKookConnection, putScopeSettings, reembedEmbedSpace, refreshProviderModels, removeAdmin, resetPrompt, restoreProfileFact, setProviderAliases, setStickerEnabled, stickerImage, syncKookStructure, testProvider, testSearchProvider, testTrigger, transcriptBlob, updateGlossaryTerm, updateProvider, updateSearchProvider, updateTrigger, upsertChannel, upsertGuild, upsertRoute } from '../sdk.gen';
+import type { ActivatePromptVersionData, ActivatePromptVersionError, ActivatePromptVersionResponse, AddAdminData, AddAdminError, AddAdminResponse, ArchiveSmallTopicsData, ArchiveSmallTopicsError, ArchiveSmallTopicsResponse, ArchiveTopicData, ArchiveTopicError, ArchiveTopicResponse, BackfillChannelData, BackfillChannelError, BackfillChannelResponse, CancelJobData, CancelJobError, CancelJobResponse, CreateEmbedSpaceData, CreateEmbedSpaceError, CreateEmbedSpaceResponse, CreateGlossaryTermData, CreateGlossaryTermError, CreateGlossaryTermResponse, CreatePromptVersionData, CreatePromptVersionError, CreatePromptVersionResponse, CreateProviderData, CreateProviderError, CreateProviderResponse, CreateSearchProviderData, CreateSearchProviderError, CreateSearchProviderResponse, CreateTriggerData, CreateTriggerError, CreateTriggerResponse, DecideReviewData, DecideReviewError, DecideReviewResponse, DeleteChannelData, DeleteChannelError, DeleteChannelResponse, DeleteGlossaryTermData, DeleteGlossaryTermError, DeleteGlossaryTermResponse, DeleteGuildData, DeleteGuildError, DeleteGuildResponse, DeleteKookConnectionData, DeleteKookConnectionResponse, DeleteProfileData, DeleteProfileError, DeleteProfileFactData, DeleteProfileFactError, DeleteProfileFactResponse, DeleteProfileResponse, DeleteProviderData, DeleteProviderError, DeleteProviderResponse, DeleteRouteData, DeleteRouteError, DeleteRouteResponse, DeleteSearchProviderData, DeleteSearchProviderError, DeleteSearchProviderResponse, DeleteTriggerData, DeleteTriggerError, DeleteTriggerResponse, DestroyAllWorkspacesData, DestroyAllWorkspacesResponse, DestroyWorkspaceData, DestroyWorkspaceError, DestroyWorkspaceResponse, GetChannelTreeData, GetChannelTreeResponse, GetGlobalSettingsData, GetGlobalSettingsResponse, GetInvocationData, GetInvocationError, GetInvocationResponse, GetInvocationTranscriptData, GetInvocationTranscriptError, GetInvocationTranscriptResponse, GetJobData, GetJobError, GetJobResponse, GetJobTranscriptData, GetJobTranscriptError, GetJobTranscriptResponse, GetKookConnectionData, GetKookConnectionResponse, GetMeData, GetMeResponse, GetProfileData, GetProfileError, GetProfileResponse, GetPromptData, GetPromptError, GetPromptResponse, GetProviderBalanceData, GetProviderBalanceError, GetProviderBalanceResponse, GetScopeSettingsData, GetScopeSettingsError, GetScopeSettingsResponse, GetSearchProviderBalanceData, GetSearchProviderBalanceError, GetSearchProviderBalanceResponse, GetSettingsSchemaData, GetSettingsSchemaResponse, GetStatsData, GetStatsResponse, GetStickerData, GetStickerError, GetStickerResponse, GetTriggerMetaData, GetTriggerMetaResponse, ListAdminsData, ListAdminsResponse, ListChannelsData, ListChannelsError, ListChannelsResponse, ListDigestsData, ListDigestsError, ListDigestsResponse, ListEmbedSpacesData, ListEmbedSpacesResponse, ListEventsData, ListEventsError, ListEventsResponse, ListGlossaryData, ListGlossaryError, ListGlossaryResponse, ListGuildsData, ListGuildsResponse, ListInvocationsData, ListInvocationsError, ListInvocationsResponse, ListJobsData, ListJobsError, ListJobsResponse, ListKookLiveGuildsData, ListKookLiveGuildsResponse, ListPipelinesData, ListPipelinesResponse, ListProfilesData, ListProfilesError, ListProfilesResponse, ListPromptsData, ListPromptsResponse, ListProvidersData, ListProvidersResponse, ListReviewsData, ListReviewsError, ListReviewsResponse, ListRoutesData, ListRoutesResponse, ListSearchProvidersData, ListSearchProvidersResponse, ListStickerDropsData, ListStickerDropsError, ListStickerDropsResponse, ListStickersData, ListStickersError, ListStickersResponse, ListTopicsData, ListTopicsError, ListTopicsResponse, ListTriggersData, ListTriggersResponse, ListWorkspacesData, ListWorkspacesResponse, LockGlossaryTermData, LockGlossaryTermError, LockGlossaryTermResponse, PreviewPromptData, PreviewPromptError, PreviewPromptResponse, PutGlobalSettingsData, PutGlobalSettingsError, PutGlobalSettingsResponse, PutKookConnectionData, PutKookConnectionError, PutKookConnectionResponse, PutScopeSettingsData, PutScopeSettingsError, PutScopeSettingsResponse, ReembedEmbedSpaceData, ReembedEmbedSpaceError, ReembedEmbedSpaceResponse, RefreshProviderModelsData, RefreshProviderModelsError, RefreshProviderModelsResponse, RemoveAdminData, RemoveAdminError, RemoveAdminResponse, ResetPromptData, ResetPromptError, ResetPromptResponse, RestoreProfileFactData, RestoreProfileFactError, RestoreProfileFactResponse, SetProviderAliasesData, SetProviderAliasesError, SetProviderAliasesResponse, SetStickerEnabledData, SetStickerEnabledError, SetStickerEnabledResponse, StickerImageData, StickerImageError, SyncKookStructureData, SyncKookStructureResponse, TestProviderData, TestProviderError, TestProviderResponse, TestSearchProviderData, TestSearchProviderError, TestSearchProviderResponse, TestTriggerData, TestTriggerError, TestTriggerResponse, TranscriptBlobData, TranscriptBlobError, UpdateGlossaryTermData, UpdateGlossaryTermError, UpdateGlossaryTermResponse, UpdateProviderData, UpdateProviderError, UpdateProviderResponse, UpdateSearchProviderData, UpdateSearchProviderError, UpdateSearchProviderResponse, UpdateTriggerData, UpdateTriggerError, UpdateTriggerResponse, UpsertChannelData, UpsertChannelError, UpsertChannelResponse, UpsertGuildData, UpsertGuildError, UpsertGuildResponse, UpsertRouteData, UpsertRouteError, UpsertRouteResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -484,14 +484,14 @@ export const putGlobalSettingsMutation = (options?: Partial<Options<PutGlobalSet
     return mutationOptions;
 };
 
-export const getGroupSettingsQueryKey = (options: Options<GetGroupSettingsData>) => createQueryKey('getGroupSettings', options);
+export const getScopeSettingsQueryKey = (options: Options<GetScopeSettingsData>) => createQueryKey('getScopeSettings', options);
 
 /**
- * Get Group Settings
+ * Get Scope Settings
  */
-export const getGroupSettingsOptions = (options: Options<GetGroupSettingsData>) => queryOptions<GetGroupSettingsResponse, GetGroupSettingsError, GetGroupSettingsResponse, ReturnType<typeof getGroupSettingsQueryKey>>({
+export const getScopeSettingsOptions = (options: Options<GetScopeSettingsData>) => queryOptions<GetScopeSettingsResponse, GetScopeSettingsError, GetScopeSettingsResponse, ReturnType<typeof getScopeSettingsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await getGroupSettings({
+        const { data } = await getScopeSettings({
             ...options,
             ...queryKey[0],
             signal,
@@ -499,16 +499,16 @@ export const getGroupSettingsOptions = (options: Options<GetGroupSettingsData>) 
         });
         return data;
     },
-    queryKey: getGroupSettingsQueryKey(options)
+    queryKey: getScopeSettingsQueryKey(options)
 });
 
 /**
- * Put Group Settings
+ * Put Scope Settings
  */
-export const putGroupSettingsMutation = (options?: Partial<Options<PutGroupSettingsData>>): UseMutationOptions<PutGroupSettingsResponse, PutGroupSettingsError, Options<PutGroupSettingsData>> => {
-    const mutationOptions: UseMutationOptions<PutGroupSettingsResponse, PutGroupSettingsError, Options<PutGroupSettingsData>> = {
+export const putScopeSettingsMutation = (options?: Partial<Options<PutScopeSettingsData>>): UseMutationOptions<PutScopeSettingsResponse, PutScopeSettingsError, Options<PutScopeSettingsData>> => {
+    const mutationOptions: UseMutationOptions<PutScopeSettingsResponse, PutScopeSettingsError, Options<PutScopeSettingsData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await putGroupSettings({
+            const { data } = await putScopeSettings({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -520,14 +520,12 @@ export const putGroupSettingsMutation = (options?: Partial<Options<PutGroupSetti
 };
 
 /**
- * Delete Qq Milky
- *
- * Forget URL and token; the bot disconnects.
+ * Delete Kook Connection
  */
-export const deleteQqMilkyMutation = (options?: Partial<Options<DeleteQqMilkyData>>): UseMutationOptions<DeleteQqMilkyResponse, DefaultError, Options<DeleteQqMilkyData>> => {
-    const mutationOptions: UseMutationOptions<DeleteQqMilkyResponse, DefaultError, Options<DeleteQqMilkyData>> = {
+export const deleteKookConnectionMutation = (options?: Partial<Options<DeleteKookConnectionData>>): UseMutationOptions<DeleteKookConnectionResponse, DefaultError, Options<DeleteKookConnectionData>> => {
+    const mutationOptions: UseMutationOptions<DeleteKookConnectionResponse, DefaultError, Options<DeleteKookConnectionData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await deleteQqMilky({
+            const { data } = await deleteKookConnection({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -538,14 +536,14 @@ export const deleteQqMilkyMutation = (options?: Partial<Options<DeleteQqMilkyDat
     return mutationOptions;
 };
 
-export const getQqMilkyQueryKey = (options?: Options<GetQqMilkyData>) => createQueryKey('getQqMilky', options);
+export const getKookConnectionQueryKey = (options?: Options<GetKookConnectionData>) => createQueryKey('getKookConnection', options);
 
 /**
- * Get Qq Milky
+ * Get Kook Connection
  */
-export const getQqMilkyOptions = (options?: Options<GetQqMilkyData>) => queryOptions<GetQqMilkyResponse, DefaultError, GetQqMilkyResponse, ReturnType<typeof getQqMilkyQueryKey>>({
+export const getKookConnectionOptions = (options?: Options<GetKookConnectionData>) => queryOptions<GetKookConnectionResponse, DefaultError, GetKookConnectionResponse, ReturnType<typeof getKookConnectionQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await getQqMilky({
+        const { data } = await getKookConnection({
             ...options,
             ...queryKey[0],
             signal,
@@ -553,18 +551,16 @@ export const getQqMilkyOptions = (options?: Options<GetQqMilkyData>) => queryOpt
         });
         return data;
     },
-    queryKey: getQqMilkyQueryKey(options)
+    queryKey: getKookConnectionQueryKey(options)
 });
 
 /**
- * Put Qq Milky
- *
- * Set the URL and, when given, the token; the bot reconnects.
+ * Put Kook Connection
  */
-export const putQqMilkyMutation = (options?: Partial<Options<PutQqMilkyData>>): UseMutationOptions<PutQqMilkyResponse, PutQqMilkyError, Options<PutQqMilkyData>> => {
-    const mutationOptions: UseMutationOptions<PutQqMilkyResponse, PutQqMilkyError, Options<PutQqMilkyData>> = {
+export const putKookConnectionMutation = (options?: Partial<Options<PutKookConnectionData>>): UseMutationOptions<PutKookConnectionResponse, PutKookConnectionError, Options<PutKookConnectionData>> => {
+    const mutationOptions: UseMutationOptions<PutKookConnectionResponse, PutKookConnectionError, Options<PutKookConnectionData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await putQqMilky({
+            const { data } = await putKookConnection({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -575,33 +571,14 @@ export const putQqMilkyMutation = (options?: Partial<Options<PutQqMilkyData>>): 
     return mutationOptions;
 };
 
-/**
- * Delete Qq Milky Token
- *
- * Forget the token; the bot reconnects without one.
- */
-export const deleteQqMilkyTokenMutation = (options?: Partial<Options<DeleteQqMilkyTokenData>>): UseMutationOptions<DeleteQqMilkyTokenResponse, DefaultError, Options<DeleteQqMilkyTokenData>> => {
-    const mutationOptions: UseMutationOptions<DeleteQqMilkyTokenResponse, DefaultError, Options<DeleteQqMilkyTokenData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await deleteQqMilkyToken({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const listGroupsQueryKey = (options?: Options<ListGroupsData>) => createQueryKey('listGroups', options);
+export const listKookLiveGuildsQueryKey = (options?: Options<ListKookLiveGuildsData>) => createQueryKey('listKookLiveGuilds', options);
 
 /**
- * List Groups
+ * List Kook Live Guilds
  */
-export const listGroupsOptions = (options?: Options<ListGroupsData>) => queryOptions<ListGroupsResponse, DefaultError, ListGroupsResponse, ReturnType<typeof listGroupsQueryKey>>({
+export const listKookLiveGuildsOptions = (options?: Options<ListKookLiveGuildsData>) => queryOptions<ListKookLiveGuildsResponse, DefaultError, ListKookLiveGuildsResponse, ReturnType<typeof listKookLiveGuildsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await listGroups({
+        const { data } = await listKookLiveGuilds({
             ...options,
             ...queryKey[0],
             signal,
@@ -609,16 +586,91 @@ export const listGroupsOptions = (options?: Options<ListGroupsData>) => queryOpt
         });
         return data;
     },
-    queryKey: listGroupsQueryKey(options)
+    queryKey: listKookLiveGuildsQueryKey(options)
 });
 
 /**
- * Delete Group
+ * Sync Kook Structure
+ *
+ * Pull Guild -> Category -> Text Channel structure from KOOK into DB without clobbering overrides.
  */
-export const deleteGroupMutation = (options?: Partial<Options<DeleteGroupData>>): UseMutationOptions<DeleteGroupResponse, DeleteGroupError, Options<DeleteGroupData>> => {
-    const mutationOptions: UseMutationOptions<DeleteGroupResponse, DeleteGroupError, Options<DeleteGroupData>> = {
+export const syncKookStructureMutation = (options?: Partial<Options<SyncKookStructureData>>): UseMutationOptions<SyncKookStructureResponse, DefaultError, Options<SyncKookStructureData>> => {
+    const mutationOptions: UseMutationOptions<SyncKookStructureResponse, DefaultError, Options<SyncKookStructureData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await deleteGroup({
+            const { data } = await syncKookStructure({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const listGuildsQueryKey = (options?: Options<ListGuildsData>) => createQueryKey('listGuilds', options);
+
+/**
+ * List Guilds
+ */
+export const listGuildsOptions = (options?: Options<ListGuildsData>) => queryOptions<ListGuildsResponse, DefaultError, ListGuildsResponse, ReturnType<typeof listGuildsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await listGuilds({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: listGuildsQueryKey(options)
+});
+
+export const listChannelsQueryKey = (options?: Options<ListChannelsData>) => createQueryKey('listChannels', options);
+
+/**
+ * List Channels
+ */
+export const listChannelsOptions = (options?: Options<ListChannelsData>) => queryOptions<ListChannelsResponse, ListChannelsError, ListChannelsResponse, ReturnType<typeof listChannelsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await listChannels({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: listChannelsQueryKey(options)
+});
+
+export const getChannelTreeQueryKey = (options?: Options<GetChannelTreeData>) => createQueryKey('getChannelTree', options);
+
+/**
+ * Get Channel Tree
+ *
+ * Collapsible 3-level tree: Guild -> Category -> Channel.
+ */
+export const getChannelTreeOptions = (options?: Options<GetChannelTreeData>) => queryOptions<GetChannelTreeResponse, DefaultError, GetChannelTreeResponse, ReturnType<typeof getChannelTreeQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getChannelTree({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getChannelTreeQueryKey(options)
+});
+
+/**
+ * Delete Guild
+ */
+export const deleteGuildMutation = (options?: Partial<Options<DeleteGuildData>>): UseMutationOptions<DeleteGuildResponse, DeleteGuildError, Options<DeleteGuildData>> => {
+    const mutationOptions: UseMutationOptions<DeleteGuildResponse, DeleteGuildError, Options<DeleteGuildData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await deleteGuild({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -630,12 +682,12 @@ export const deleteGroupMutation = (options?: Partial<Options<DeleteGroupData>>)
 };
 
 /**
- * Upsert Group
+ * Upsert Guild
  */
-export const upsertGroupMutation = (options?: Partial<Options<UpsertGroupData>>): UseMutationOptions<UpsertGroupResponse, UpsertGroupError, Options<UpsertGroupData>> => {
-    const mutationOptions: UseMutationOptions<UpsertGroupResponse, UpsertGroupError, Options<UpsertGroupData>> = {
+export const upsertGuildMutation = (options?: Partial<Options<UpsertGuildData>>): UseMutationOptions<UpsertGuildResponse, UpsertGuildError, Options<UpsertGuildData>> => {
+    const mutationOptions: UseMutationOptions<UpsertGuildResponse, UpsertGuildError, Options<UpsertGuildData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await upsertGroup({
+            const { data } = await upsertGuild({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -647,12 +699,46 @@ export const upsertGroupMutation = (options?: Partial<Options<UpsertGroupData>>)
 };
 
 /**
- * Backfill Group
+ * Delete Channel
  */
-export const backfillGroupMutation = (options?: Partial<Options<BackfillGroupData>>): UseMutationOptions<BackfillGroupResponse, BackfillGroupError, Options<BackfillGroupData>> => {
-    const mutationOptions: UseMutationOptions<BackfillGroupResponse, BackfillGroupError, Options<BackfillGroupData>> = {
+export const deleteChannelMutation = (options?: Partial<Options<DeleteChannelData>>): UseMutationOptions<DeleteChannelResponse, DeleteChannelError, Options<DeleteChannelData>> => {
+    const mutationOptions: UseMutationOptions<DeleteChannelResponse, DeleteChannelError, Options<DeleteChannelData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await backfillGroup({
+            const { data } = await deleteChannel({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Upsert Channel
+ */
+export const upsertChannelMutation = (options?: Partial<Options<UpsertChannelData>>): UseMutationOptions<UpsertChannelResponse, UpsertChannelError, Options<UpsertChannelData>> => {
+    const mutationOptions: UseMutationOptions<UpsertChannelResponse, UpsertChannelError, Options<UpsertChannelData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await upsertChannel({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Backfill Channel
+ */
+export const backfillChannelMutation = (options?: Partial<Options<BackfillChannelData>>): UseMutationOptions<BackfillChannelResponse, BackfillChannelError, Options<BackfillChannelData>> => {
+    const mutationOptions: UseMutationOptions<BackfillChannelResponse, BackfillChannelError, Options<BackfillChannelData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await backfillChannel({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -753,7 +839,7 @@ export const updateTriggerMutation = (options?: Partial<Options<UpdateTriggerDat
 /**
  * Test Trigger
  *
- * Run the exact runtime index against the currently loaded snapshot.
+ * Run the exact runtime 4-level index against the currently loaded snapshot.
  */
 export const testTriggerMutation = (options?: Partial<Options<TestTriggerData>>): UseMutationOptions<TestTriggerResponse, TestTriggerError, Options<TestTriggerData>> => {
     const mutationOptions: UseMutationOptions<TestTriggerResponse, TestTriggerError, Options<TestTriggerData>> = {
@@ -1069,23 +1155,6 @@ export const listEventsInfiniteOptions = (options?: Options<ListEventsData>) => 
     return opts as Omit<typeof opts, 'initialData'>;
 };
 
-/**
- * Decide Event
- */
-export const decideEventMutation = (options?: Partial<Options<DecideEventData>>): UseMutationOptions<DecideEventResponse, DecideEventError, Options<DecideEventData>> => {
-    const mutationOptions: UseMutationOptions<DecideEventResponse, DecideEventError, Options<DecideEventData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await decideEvent({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
 export const listTopicsQueryKey = (options?: Options<ListTopicsData>) => createQueryKey('listTopics', options);
 
 /**
@@ -1136,8 +1205,6 @@ export const listTopicsInfiniteOptions = (options?: Options<ListTopicsData>) => 
 
 /**
  * Archive Topic
- *
- * Archive (hide from the agent) or restore one finished topic.
  */
 export const archiveTopicMutation = (options?: Partial<Options<ArchiveTopicData>>): UseMutationOptions<ArchiveTopicResponse, ArchiveTopicError, Options<ArchiveTopicData>> => {
     const mutationOptions: UseMutationOptions<ArchiveTopicResponse, ArchiveTopicError, Options<ArchiveTopicData>> = {
@@ -1155,8 +1222,6 @@ export const archiveTopicMutation = (options?: Partial<Options<ArchiveTopicData>
 
 /**
  * Archive Small Topics
- *
- * Apply the group's current archive thresholds (size and curation weight) to its finished topics.
  */
 export const archiveSmallTopicsMutation = (options?: Partial<Options<ArchiveSmallTopicsData>>): UseMutationOptions<ArchiveSmallTopicsResponse, ArchiveSmallTopicsError, Options<ArchiveSmallTopicsData>> => {
     const mutationOptions: UseMutationOptions<ArchiveSmallTopicsResponse, ArchiveSmallTopicsError, Options<ArchiveSmallTopicsData>> = {
@@ -1438,8 +1503,6 @@ export const deleteProfileFactMutation = (options?: Partial<Options<DeleteProfil
 
 /**
  * Restore Profile Fact
- *
- * Bring an archived fact back; it is locked, so curation never archives it again.
  */
 export const restoreProfileFactMutation = (options?: Partial<Options<RestoreProfileFactData>>): UseMutationOptions<RestoreProfileFactResponse, RestoreProfileFactError, Options<RestoreProfileFactData>> => {
     const mutationOptions: UseMutationOptions<RestoreProfileFactResponse, RestoreProfileFactError, Options<RestoreProfileFactData>> = {
@@ -1609,8 +1672,6 @@ export const listStickerDropsQueryKey = (options?: Options<ListStickerDropsData>
 
 /**
  * List Sticker Drops
- *
- * Sticker-drop decisions, newest first: every call to the decision model, sent or not.
  */
 export const listStickerDropsOptions = (options?: Options<ListStickerDropsData>) => queryOptions<ListStickerDropsResponse, ListStickerDropsError, ListStickerDropsResponse, ReturnType<typeof listStickerDropsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
@@ -1629,8 +1690,6 @@ export const listStickerDropsInfiniteQueryKey = (options?: Options<ListStickerDr
 
 /**
  * List Sticker Drops
- *
- * Sticker-drop decisions, newest first: every call to the decision model, sent or not.
  */
 export const listStickerDropsInfiniteOptions = (options?: Options<ListStickerDropsData>) => {
     const opts = infiniteQueryOptions<ListStickerDropsResponse, ListStickerDropsError, InfiniteData<ListStickerDropsResponse>, QueryKey<Options<ListStickerDropsData>>, number | Pick<QueryKey<Options<ListStickerDropsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
@@ -1714,9 +1773,6 @@ export const listWorkspacesQueryKey = (options?: Options<ListWorkspacesData>) =>
 
 /**
  * List Workspaces
- *
- * Every group's workspaces, grouped by group (most recently used group first), each group's most recently
- * used first.
  */
 export const listWorkspacesOptions = (options?: Options<ListWorkspacesData>) => queryOptions<ListWorkspacesResponse, DefaultError, ListWorkspacesResponse, ReturnType<typeof listWorkspacesQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
@@ -1733,8 +1789,6 @@ export const listWorkspacesOptions = (options?: Options<ListWorkspacesData>) => 
 
 /**
  * Destroy Workspace
- *
- * Destroy one workspace now (its files, links and record), even while an invocation or job is using it.
  */
 export const destroyWorkspaceMutation = (options?: Partial<Options<DestroyWorkspaceData>>): UseMutationOptions<DestroyWorkspaceResponse, DestroyWorkspaceError, Options<DestroyWorkspaceData>> => {
     const mutationOptions: UseMutationOptions<DestroyWorkspaceResponse, DestroyWorkspaceError, Options<DestroyWorkspaceData>> = {
@@ -1771,8 +1825,6 @@ export const listJobsQueryKey = (options?: Options<ListJobsData>) => createQuery
 
 /**
  * List Jobs
- *
- * Background jobs of every group, newest first: those still running (or reporting) first, then the archive.
  */
 export const listJobsOptions = (options?: Options<ListJobsData>) => queryOptions<ListJobsResponse, ListJobsError, ListJobsResponse, ReturnType<typeof listJobsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
@@ -1791,8 +1843,6 @@ export const listJobsInfiniteQueryKey = (options?: Options<ListJobsData>): Query
 
 /**
  * List Jobs
- *
- * Background jobs of every group, newest first: those still running (or reporting) first, then the archive.
  */
 export const listJobsInfiniteOptions = (options?: Options<ListJobsData>) => {
     const opts = infiniteQueryOptions<ListJobsResponse, ListJobsError, InfiniteData<ListJobsResponse>, QueryKey<Options<ListJobsData>>, number | Pick<QueryKey<Options<ListJobsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
@@ -1841,9 +1891,6 @@ export const getJobTranscriptQueryKey = (options: Options<GetJobTranscriptData>)
 
 /**
  * Get Job Transcript
- *
- * The job as a conversation: omp's messages for agent jobs (live while it runs), the script, the bot tools its
- * code called and its output for command jobs.
  */
 export const getJobTranscriptOptions = (options: Options<GetJobTranscriptData>) => queryOptions<GetJobTranscriptResponse, GetJobTranscriptError, GetJobTranscriptResponse, ReturnType<typeof getJobTranscriptQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
@@ -1860,8 +1907,6 @@ export const getJobTranscriptOptions = (options: Options<GetJobTranscriptData>) 
 
 /**
  * Cancel Job
- *
- * Stop a running job; the poller ends it within seconds and the group still gets its report.
  */
 export const cancelJobMutation = (options?: Partial<Options<CancelJobData>>): UseMutationOptions<CancelJobResponse, CancelJobError, Options<CancelJobData>> => {
     const mutationOptions: UseMutationOptions<CancelJobResponse, CancelJobError, Options<CancelJobData>> = {

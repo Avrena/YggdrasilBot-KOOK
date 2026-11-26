@@ -1,6 +1,9 @@
-"""Read API over group memory, used by the bot's agent tools and context assembly.
+"""Read API over channel history and guild-shared memory.
 
-Every query is scoped to one group and excludes recalled messages.
+- Live conversation readers (``recent_messages``, ``messages_after``, ``find_by_msg_id``) stay isolated per channel.
+- Long-term memory (``search_history``, ``messages_around``, ``message_segments``, ``open_topics``,
+  ``lookup_glossary``, ``profiles``) is shared across all ``share_in_guild=True`` channels of the same KOOK guild,
+  carrying ``channel_id`` so the model can cite and expand messages from sibling channels.
 """
 
 import math
@@ -29,32 +32,32 @@ VECTOR_TOP = 30
 RERANK_POOL = 40
 RERANK_MAX_CHARS = 1200
 RECENT_CAP = 300
-QQ_ID_LOOKBACK = timedelta(days=7)
+MSG_ID_LOOKBACK = timedelta(days=30)
 GLOSSARY_MAX_DISTANCE = 0.45
 PROFILE_FACTS = 10
-# Vector hits that share no word with the query need this cosine similarity (qwen3-embedding-0.6b on prod data:
-# unrelated chunks top out around 0.52, related ones without the query's words start near 0.62).
 SEMANTIC_MIN_SIMILARITY = 0.6
-HIT_MAX_CHARS = 800  # what one hit shows the model
-EXCERPT_MESSAGE_CHARS = 300  # one chat line inside a chunk excerpt
-_CHUNK_LINE = re.compile(r"^\[\d{2}-\d{2} \d{2}:\d{2}\] ", re.MULTILINE)  # a message's first line in chunk text
-# Topic hits rank by similarity × (1 + TOPIC_WEIGHT_SPREAD · log2(curation weight with decay / pivot)): of two
-# topics matching about as well, the more important one goes first. Unscored topics are neutral.
-TOPIC_WEIGHT_PIVOT = 5.0  # an average topic (50 messages, 9 people) of importance 3
+HIT_MAX_CHARS = 800
+EXCERPT_MESSAGE_CHARS = 300
+_CHUNK_LINE = re.compile(r"^\[\d{2}-\d{2} \d{2}:\d{2}\] ", re.MULTILINE)
+TOPIC_WEIGHT_PIVOT = 5.0
 TOPIC_WEIGHT_SPREAD = 0.05
+# Subtle boost for hits from the active channel during guild-wide search.
+SAME_CHANNEL_BOOST = 1.05
 
 
 @dataclass(frozen=True, slots=True)
 class MessageView:
     id: int
-    qq_message_id: int
+    channel_id: str
+    guild_id: str
+    kook_message_id: str
     sent_at: datetime
-    user_id: int
+    user_id: str
     sender_name: str
     text: str
-    reply_to_qq_id: int | None
+    reply_to_msg_id: str | None
     is_self: bool
-    segments: list[dict[str, Any]] | None = None  # loaded by the chat-history readers (CHAT_COLUMNS) only
+    segments: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,22 +67,22 @@ class HistoryHit:
     text: str
     when: datetime
     score: float
+    channel_id: str | None = None
     msg_id: int | None = None
-    user_id: int | None = None
+    user_id: str | None = None
     sender_name: str | None = None
     media: bool = False
-    """A message with images, files, forwards or cards: only its own hit gives them handles."""
     span: tuple[int, int, datetime, datetime] | None = None
-    """A chunk's first and last message id and its start and end time."""
 
 
 @dataclass(frozen=True, slots=True)
 class TopicView:
     id: int
+    channel_id: str
     title: str
     summary: str
     keywords: list[str]
-    participants: list[int]
+    participants: list[str]
     start_at: datetime
     end_at: datetime
     msg_count: int
@@ -97,7 +100,7 @@ class GlossaryEntry:
 
 @dataclass(frozen=True, slots=True)
 class ProfileView:
-    user_id: int
+    user_id: str
     display_name: str
     summary: str
     interests: list[str]
@@ -108,15 +111,16 @@ class ProfileView:
 
 VIEW_COLUMNS = (
     Message.id,
-    Message.qq_message_id,
+    Message.channel_id,
+    Message.guild_id,
+    Message.kook_message_id,
     Message.sent_at,
     Message.user_id,
     Message.sender_name,
     Message.plain_text,
-    Message.reply_to_qq_id,
+    Message.reply_to_msg_id,
     Message.is_self,
 )
-# Readers whose output the agent sees: the raw segments too, so attachments can get handles.
 CHAT_COLUMNS = (*VIEW_COLUMNS, Message.segments)
 
 
@@ -124,17 +128,35 @@ def _view(row: Row[Any] | Sequence[Any]) -> MessageView:
     return MessageView(*row)
 
 
-def _visible(group_id: int) -> tuple[Any, ...]:
-    return (Message.group_id == group_id, Message.recalled.is_(False))
+def _visible_channel(channel_id: str) -> tuple[Any, ...]:
+    return (Message.channel_id == channel_id, Message.recalled.is_(False))
 
 
-# --- raw messages -----------------------------------------------------------------------------
+def accessible_channels(guild_id: str, channel_id: str | None, *, current_channel_only: bool = False) -> list[str]:
+    """Channel IDs visible to a memory query originating from ``(guild_id, channel_id)``.
+
+    Respects ``memory.share_in_guild``: a private/non-sharing channel only reads itself, and other channels never
+    read from a channel whose ``share_in_guild`` is False.
+    """
+    snap = snapshot()
+    if current_channel_only and channel_id:
+        return [channel_id]
+    if channel_id and not snap.settings(channel_id=channel_id, guild_id=guild_id).memory.share_in_guild:
+        return [channel_id]
+    shared = set(snap.shared_channel_ids(guild_id))
+    if channel_id:
+        shared.add(channel_id)
+    return sorted(shared)
 
 
-async def recent_messages(group_id: int, *, limit: int = 40, minutes: int = 0) -> list[MessageView]:
-    """The last ``limit`` messages, extended to everything from the last ``minutes`` minutes
-    (capped at 300). Chronological."""
-    newest_first = select(*CHAT_COLUMNS).where(*_visible(group_id)).order_by(Message.sent_at.desc(), Message.id.desc())
+# --- raw messages -----------------------------------------------------------------------------------------------
+
+
+async def recent_messages(channel_id: str, *, limit: int = 40, minutes: int = 0) -> list[MessageView]:
+    """The last ``limit`` messages in ``channel_id``, extended to the last ``minutes`` minutes (capped at 300)."""
+    newest_first = (
+        select(*CHAT_COLUMNS).where(*_visible_channel(channel_id)).order_by(Message.sent_at.desc(), Message.id.desc())
+    )
     async with get_session() as session:
         rows = list((await session.execute(newest_first.limit(limit))).all()) if limit > 0 else []
         if minutes > 0:
@@ -146,33 +168,44 @@ async def recent_messages(group_id: int, *, limit: int = 40, minutes: int = 0) -
     return views[-max(limit, RECENT_CAP) :]
 
 
-async def messages_around(group_id: int, message_id: int, before: int = 10, after: int = 10) -> list[MessageView]:
-    """Context window around a message (included unless recalled). Chronological."""
+async def messages_around(
+    guild_id: str,
+    message_id: int,
+    before: int = 10,
+    after: int = 10,
+    *,
+    allowed_channels: Sequence[str] | None = None,
+) -> tuple[str | None, list[MessageView]]:
+    """Context window around ``#message_id`` inside its own channel (must belong to ``guild_id`` and
+    ``allowed_channels``). Returns ``(source_channel_id, messages)``."""
     async with get_session() as session:
-        anchor = await session.scalar(
-            select(Message.sent_at).where(Message.id == message_id, Message.group_id == group_id)
+        anchor_q = select(Message.sent_at, Message.channel_id).where(
+            Message.id == message_id, Message.guild_id == guild_id
         )
+        if allowed_channels is not None:
+            anchor_q = anchor_q.where(Message.channel_id.in_(list(allowed_channels)))
+        anchor = (await session.execute(anchor_q)).first()
         if anchor is None:
-            return []
+            return None, []
+        sent_at, source_channel = anchor
         key = tuple_(Message.sent_at, Message.id)
-        base = select(*CHAT_COLUMNS).where(*_visible(group_id))
+        base = select(*CHAT_COLUMNS).where(*_visible_channel(source_channel))
         older = await session.execute(
-            base.where(key < tuple_(anchor, message_id))
+            base.where(key < tuple_(sent_at, message_id))
             .order_by(Message.sent_at.desc(), Message.id.desc())
             .limit(before)
         )
         newer = await session.execute(
-            base.where(key >= tuple_(anchor, message_id)).order_by(Message.sent_at, Message.id).limit(after + 1)
+            base.where(key >= tuple_(sent_at, message_id)).order_by(Message.sent_at, Message.id).limit(after + 1)
         )
         rows = [*reversed(older.all()), *newer.all()]
-    return [_view(r) for r in rows]
+    return source_channel, [_view(r) for r in rows]
 
 
 async def messages_after(
-    group_id: int, after_id: int | None, since: datetime, *, limit: int = RECENT_CAP
+    channel_id: str, after_id: int | None, since: datetime, *, limit: int = RECENT_CAP
 ) -> list[MessageView]:
-    """The newest ``limit`` messages sent since ``since`` and newer than ``#after_id`` (when given). Chronological."""
-    query = select(*CHAT_COLUMNS).where(*_visible(group_id), Message.sent_at >= since)
+    query = select(*CHAT_COLUMNS).where(*_visible_channel(channel_id), Message.sent_at >= since)
     if after_id is not None:
         query = query.where(Message.id > after_id)
     async with get_session() as session:
@@ -180,14 +213,17 @@ async def messages_after(
     return sorted(map(_view, rows), key=lambda v: (v.sent_at, v.id))
 
 
-async def find_by_qq_id(group_id: int, qq_message_id: int) -> MessageView | None:
-    """Resolve a QQ message id (OneBot ids are hashes that repeat over time, so only the last 7 days are searched)."""
-    since = datetime.now(UTC) - QQ_ID_LOOKBACK
+async def find_by_msg_id(channel_id: str, kook_message_id: str) -> MessageView | None:
+    since = datetime.now(UTC) - MSG_ID_LOOKBACK
     async with get_session() as session:
         row = (
             await session.execute(
                 select(*CHAT_COLUMNS)
-                .where(*_visible(group_id), Message.qq_message_id == qq_message_id, Message.sent_at >= since)
+                .where(
+                    *_visible_channel(channel_id),
+                    Message.kook_message_id == kook_message_id,
+                    Message.sent_at >= since,
+                )
                 .order_by(Message.sent_at.desc())
                 .limit(1)
             )
@@ -195,39 +231,43 @@ async def find_by_qq_id(group_id: int, qq_message_id: int) -> MessageView | None
     return _view(row) if row else None
 
 
-async def find_by_qq_ids(group_id: int, qq_message_ids: Collection[int]) -> dict[int, MessageView]:
-    """:func:`find_by_qq_id` for many ids in one query: the newest message for each id found."""
-    if not qq_message_ids:
+async def find_by_msg_ids(channel_id: str, kook_message_ids: Collection[str]) -> dict[str, MessageView]:
+    if not kook_message_ids:
         return {}
-    since = datetime.now(UTC) - QQ_ID_LOOKBACK
+    since = datetime.now(UTC) - MSG_ID_LOOKBACK
     async with get_session() as session:
         rows = await session.execute(
             select(*CHAT_COLUMNS)
-            .where(*_visible(group_id), Message.qq_message_id.in_(list(qq_message_ids)), Message.sent_at >= since)
+            .where(
+                *_visible_channel(channel_id),
+                Message.kook_message_id.in_(list(kook_message_ids)),
+                Message.sent_at >= since,
+            )
             .order_by(Message.sent_at)
         )
-    return {v.qq_message_id: v for v in map(_view, rows)}  # ascending, so the newest wins
+    return {v.kook_message_id: v for v in map(_view, rows)}
 
 
-async def message_segments(group_id: int, ids: Sequence[int]) -> dict[int, list[dict[str, Any]]]:
-    """Raw segments of these messages (recalled ones left out)."""
+async def message_segments(
+    guild_id: str, ids: Sequence[int], *, allowed_channels: Sequence[str] | None = None
+) -> dict[int, list[dict[str, Any]]]:
+    """Raw segments of messages belonging to ``guild_id`` (and ``allowed_channels`` when given)."""
     if not ids:
         return {}
+    q = select(Message.id, Message.segments).where(
+        Message.guild_id == guild_id, Message.recalled.is_(False), Message.id.in_(list(ids))
+    )
+    if allowed_channels is not None:
+        q = q.where(Message.channel_id.in_(list(allowed_channels)))
     async with get_session() as session:
-        rows = await session.execute(
-            select(Message.id, Message.segments).where(*_visible(group_id), Message.id.in_(list(ids)))
-        )
+        rows = await session.execute(q)
     return {r[0]: r[1] for r in rows}
 
 
-# --- hybrid history search --------------------------------------------------------------------
+# --- hybrid history search --------------------------------------------------------------------------------------
 
 
 def rrf_fuse[K: Hashable](rankings: Sequence[Sequence[K]], k: int = RRF_K) -> list[tuple[K, float]]:
-    """Reciprocal rank fusion: ``score(d) = Σ 1 / (k + rank)`` with 1-based ranks.
-
-    Duplicates within one ranking count once (best rank). Ties keep first-seen order.
-    """
     scores: dict[K, float] = {}
     for ranking in rankings:
         seen: set[K] = set()
@@ -239,23 +279,24 @@ def rrf_fuse[K: Hashable](rankings: Sequence[Sequence[K]], k: int = RRF_K) -> li
     return sorted(scores.items(), key=lambda kv: -kv[1])
 
 
-# Segments that become handles (normalize's attachments).
 _MEDIA_PATH = (
-    '$[*] ? (@.type == "image" || @.type == "file" || @.type == "forward" || @.type == "light_app"'
-    ' || @.type == "video" || @.type == "record")'
+    '$[*] ? (@.type == "image" || @.type == "file" || @.type == "card" || @.type == "video" || @.type == "audio")'
 )
 
 
 async def _bm25(
     session: AsyncSession,
-    group_id: int,
+    guild_id: str,
+    channels: Sequence[str],
     query: str,
     since: datetime | None,
     until: datetime | None,
-    user_id: int | None,
+    user_id: str | None,
 ) -> list[HistoryHit]:
-    conds = ["plain_text ||| :q", "group_id = :g", "recalled = false"]
-    params: dict[str, Any] = {"q": query, "g": group_id, "lim": BM25_TOP}
+    if not channels:
+        return []
+    conds = ["plain_text ||| :q", "guild_id = :g", "channel_id = ANY(:chs)", "recalled = false"]
+    params: dict[str, Any] = {"q": query, "g": guild_id, "chs": list(channels), "lim": BM25_TOP}
     if since is not None:
         conds.append("sent_at >= :since")
         params["since"] = since
@@ -266,14 +307,23 @@ async def _bm25(
         conds.append("user_id = :u")
         params["u"] = user_id
     sql = (
-        "SELECT id, sent_at, user_id, sender_name, plain_text, pdb.score(id) AS score, "
+        "SELECT id, channel_id, sent_at, user_id, sender_name, plain_text, pdb.score(id) AS score, "
         f"jsonb_path_exists(segments, '{_MEDIA_PATH}') AS media FROM messages "
         f"WHERE {' AND '.join(conds)} ORDER BY score DESC, id DESC LIMIT :lim"
     )
     rows = (await session.execute(text(sql), params)).all()
     return [
         HistoryHit(
-            "message", r.id, r.plain_text, r.sent_at, float(r.score), r.id, r.user_id, r.sender_name, bool(r.media)
+            kind="message",
+            ref_id=r.id,
+            text=r.plain_text,
+            when=r.sent_at,
+            score=float(r.score),
+            channel_id=r.channel_id,
+            msg_id=r.id,
+            user_id=r.user_id,
+            sender_name=r.sender_name,
+            media=bool(r.media),
         )
         for r in rows
     ]
@@ -288,7 +338,7 @@ async def _query_vector(query: str) -> tuple[int, list[float]] | None:
 
 
 _VECTOR_SQL = """
-SELECT v.kind, v.ref_id, v.embedding <=> CAST(:qv AS halfvec) AS dist,
+SELECT v.kind, v.ref_id, v.channel_id, v.embedding <=> CAST(:qv AS halfvec) AS dist,
        COALESCE(c.text, t.title || E'\\n' || t.summary, d.summary) AS body,
        COALESCE(c.start_at, t.start_at, d.day::timestamp AT TIME ZONE 'Asia/Shanghai') AS at,
        t.weight, c.first_msg_id, c.last_msg_id, c.end_at
@@ -296,31 +346,44 @@ FROM memory_vectors v
 LEFT JOIN message_chunks c ON v.kind = 'chunk' AND c.id = v.ref_id
 LEFT JOIN topics t ON v.kind = 'topic' AND t.id = v.ref_id AND t.status <> 'archived'
 LEFT JOIN daily_digests d ON v.kind = 'digest' AND d.id = v.ref_id
-WHERE v.group_id = :g AND v.space_id = :s AND v.kind IN ('chunk', 'topic', 'digest')
+WHERE v.guild_id = :g AND v.space_id = :s AND v.kind IN ('chunk', 'topic', 'digest')
+  AND (v.channel_id = ANY(:chs) OR (v.kind = 'digest' AND :include_digests))
   AND COALESCE(c.id, t.id, d.id) IS NOT NULL
 """
 
 
 async def _vector(
     session: AsyncSession,
-    group_id: int,
+    guild_id: str,
+    channels: Sequence[str],
+    include_digests: bool,
     space_id: int,
     vec: list[float],
     since: datetime | None,
     until: datetime | None,
-    user_id: int | None,
+    user_id: str | None,
 ) -> list[HistoryHit]:
+    if not channels and not include_digests:
+        return []
     conds: list[str] = []
-    params: dict[str, Any] = {"qv": vec, "g": group_id, "s": space_id, "lim": VECTOR_TOP}
+    params: dict[str, Any] = {
+        "qv": vec,
+        "g": guild_id,
+        "chs": list(channels),
+        "include_digests": include_digests,
+        "s": space_id,
+        "lim": VECTOR_TOP,
+    }
     if since is not None:
         conds.append("COALESCE(c.end_at, t.end_at, (d.day + 1)::timestamp AT TIME ZONE 'Asia/Shanghai') >= :since")
         params["since"] = since
-    if until is not None:  # a chunk must have ended before it: one running past it holds the asking message
+    if until is not None:
         conds.append("COALESCE(c.end_at, t.start_at, d.day::timestamp AT TIME ZONE 'Asia/Shanghai') < :until")
         params["until"] = until
     if user_id is not None:
         conds.append(
-            "((v.kind = 'chunk' AND EXISTS (SELECT 1 FROM messages m WHERE m.group_id = :g AND m.user_id = :u"
+            "((v.kind = 'chunk' AND EXISTS (SELECT 1 FROM messages m"
+            " WHERE m.channel_id = c.channel_id AND m.user_id = :u"
             " AND NOT m.recalled AND m.id BETWEEN c.first_msg_id AND c.last_msg_id"
             " AND m.sent_at BETWEEN c.start_at AND c.end_at))"
             " OR (v.kind = 'topic' AND :u = ANY(t.participants)))"
@@ -330,21 +393,21 @@ async def _vector(
     await session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
     stmt = text(sql).bindparams(bindparam("qv", type_=HALFVEC(EMBED_DIM)))
     rows = (await session.execute(stmt, params)).all()
-    half_life = snapshot().settings(group_id).memory.weight_half_life_days
+    half_life = snapshot().settings(guild_id=guild_id).memory.weight_half_life_days
     now = datetime.now(UTC)
     hits = [
         HistoryHit(
-            r.kind,
-            r.ref_id,
-            r.body,
-            r.at,
-            1.0 - float(r.dist),
+            kind=r.kind,
+            ref_id=r.ref_id,
+            text=r.body,
+            when=r.at,
+            score=1.0 - float(r.dist),
+            channel_id=r.channel_id,
             span=(r.first_msg_id, r.last_msg_id, r.at, r.end_at) if r.kind == "chunk" else None,
         )
         for r in rows
     ]
     factors = [_topic_factor(r.weight, now - r.at, half_life) for r in rows]
-    # Scores stay plain similarities (SEMANTIC_MIN_SIMILARITY applies to them); only the order counts the weight.
     order = sorted(range(len(hits)), key=lambda i: -hits[i].score * factors[i])
     return [hits[i] for i in order]
 
@@ -367,7 +430,6 @@ async def _rerank(query: str, hits: list[HistoryHit], top_k: int) -> list[Histor
     return [replace(hits[i], score=score) for i, score in ranked[:top_k] if 0 <= i < len(hits)]
 
 
-# Asking words: they say what kind of answer is wanted, not what was said, and match unrelated lines.
 _QUESTION_WORDS = frozenset(
     "是谁 谁 谁说 什么 啥 怎么 怎么样 怎样 咋 为什么 为啥 为何 哪个 哪些 哪里 哪儿 多少 几 吗 呢 吧 啊 呀 了 的"
     " 是 有 有没有 没有 说 说过 提过 提到 讲 讲过 过 一下 知道 记得 有人 谁提".split()
@@ -375,28 +437,23 @@ _QUESTION_WORDS = frozenset(
 
 
 async def _query_words(session: AsyncSession, query: str) -> list[str]:
-    """The query's words as the BM25 index tokenizes them (jieba, lowercased), without punctuation and, unless
-    nothing else is left, without asking words."""
     rows = await session.scalars(text("SELECT unnest(CAST(CAST(:q AS pdb.jieba) AS text[]))"), {"q": query})
     words = list(dict.fromkeys(w for w in rows if any(c.isalnum() for c in w)))
     return [w for w in words if w not in _QUESTION_WORDS] or words
 
 
 def _terms(words: Sequence[str]) -> list[str]:
-    """The words that excerpts are cut around: one-character words only when there is nothing else."""
     return [w for w in words if len(w) > 1] or list(words)
 
 
 def _covered(hits: list[HistoryHit]) -> list[HistoryHit]:
-    """``hits`` without the message hits that a chunk hit among them shows whole, as one of its excerpt lines (ids
-    and times both inside the chunk: backfilled messages get newer ids). Messages with attachments stay: only their
-    own hit gives the attachments handles and the message its ``#id``."""
-    chunks = [(h.span, {line[_said(line) :] for line in h.text.split("\n")}) for h in hits if h.span]
+    chunks = [(h.channel_id, h.span, {line[_said(line) :] for line in h.text.split("\n")}) for h in hits if h.span]
 
     def shown(m: HistoryHit) -> bool:
         said = m.text.strip()
         return any(
-            lo <= m.ref_id <= hi and start <= m.when <= end and said in lines for (lo, hi, start, end), lines in chunks
+            ch == m.channel_id and lo <= m.ref_id <= hi and start <= m.when <= end and said in lines
+            for ch, (lo, hi, start, end), lines in chunks
         )
 
     return [h for h in hits if h.kind != "message" or h.media or not shown(h)]
@@ -407,13 +464,11 @@ def _clip(s: str, limit: int) -> str:
 
 
 def _around(s: str, terms: Sequence[str], limit: int, start: int = 0) -> str:
-    """``s`` within ``limit`` characters, showing its first query word from ``start`` on (``s[:start]``, e.g. a chat
-    line's time and sender, always stays), ``…`` marking the cuts."""
     if len(s) <= limit:
         return s
     low = s.lower()
     found = [(i, len(w)) for w in terms if (i := low.find(w, start)) >= 0]
-    room = limit - start - 2  # what is left between the head and the two ``…``
+    room = limit - start - 2
     if not found or room < 20 or sum(min(found)) <= limit - 1:
         return _clip(s, limit)
     pos = min(found)[0]
@@ -423,18 +478,14 @@ def _around(s: str, terms: Sequence[str], limit: int, start: int = 0) -> str:
 
 
 def _said(line: str) -> int:
-    """Where what was said starts in a chat line (after ``[time] who: ``)."""
     return line.find(": ") + 2 if ": " in line else 0
 
 
 def _excerpt(chunk: str, terms: Sequence[str]) -> str | None:
-    """The chunk's chat lines that contain query words, each with the lines next to it and ``…`` for the gaps,
-    within ``HIT_MAX_CHARS``; the lines with the most distinct words go in first. None: no line has one."""
     starts = [m.start() for m in _CHUNK_LINE.finditer(chunk)]
     if not starts or starts[0] != 0:
         starts.insert(0, 0)
     full = [chunk[a:b].strip() for a, b in zip(starts, [*starts[1:], len(chunk)])]
-    # Words count over whole messages (what was said, not who said it); long ones are cut around their match.
     words = [sum(w in line[_said(line) :].lower() for w in terms) for line in full]
     lines = [_around(line, terms, EXCERPT_MESSAGE_CHARS, _said(line)) for line in full]
     ranked = sorted((i for i, n in enumerate(words) if n), key=lambda i: -words[i])
@@ -458,8 +509,6 @@ def _excerpt(chunk: str, terms: Sequence[str]) -> str | None:
 
 
 def _shown(hit: HistoryHit, terms: Sequence[str]) -> HistoryHit | None:
-    """A vector hit as the model sees it: a chunk cut down to its lines with query words, topics and digests as is.
-    Hits without any query word stay only when the vectors are close (None: dropped)."""
     if hit.kind == "chunk":
         excerpt = _excerpt(hit.text, terms)
         if excerpt is not None:
@@ -472,21 +521,26 @@ def _shown(hit: HistoryHit, terms: Sequence[str]) -> HistoryHit | None:
 
 
 async def search_history(
-    group_id: int,
+    guild_id: str,
     query: str,
     *,
+    channel_id: str | None = None,
+    current_channel_only: bool = False,
     since: datetime | None = None,
     until: datetime | None = None,
-    user_id: int | None = None,
+    user_id: str | None = None,
     top_k: int = 12,
 ) -> list[HistoryHit]:
-    """BM25 over messages + vectors over chunks/topics/digests, RRF-fused, then reranked if a rerank route exists.
-
-    ``until`` excludes messages from then on and chunks running past it (pass the asking message's time).
-    """
+    """Hybrid BM25 + vector search over guild-shared memory (honoring ``memory.share_in_guild``)."""
     query = query.strip()
     if not query or top_k <= 0:
         return []
+    channels = accessible_channels(guild_id, channel_id, current_channel_only=current_channel_only)
+    if not channels:
+        return []
+    include_digests = not current_channel_only and (
+        channel_id is None or snapshot().settings(channel_id=channel_id, guild_id=guild_id).memory.share_in_guild
+    )
     try:
         qv = await _query_vector(query)
     except Exception as e:
@@ -494,71 +548,95 @@ async def search_history(
         qv = None
     async with get_session() as session:
         words = await _query_words(session, query)
-        # BM25 gets the content words only: "XX 是谁" must not match every line that asks who someone is.
-        lexical = await _bm25(session, group_id, " ".join(words) or query, since, until, user_id)
+        lexical = await _bm25(session, guild_id, channels, " ".join(words) or query, since, until, user_id)
         terms = _terms(words)
-        semantic = await _vector(session, group_id, *qv, since, until, user_id) if qv else []
+        semantic = await _vector(session, guild_id, channels, include_digests, *qv, since, until, user_id) if qv else []
     lexical = [replace(h, text=_around(h.text, terms, HIT_MAX_CHARS)) for h in lexical]
     semantic = [s for h in semantic if (s := _shown(h, terms))]
     by_key = {(h.kind, h.ref_id): h for h in (*semantic, *lexical)}
     fused = rrf_fuse([[(h.kind, h.ref_id) for h in lexical], [(h.kind, h.ref_id) for h in semantic]])
-    pool = [replace(by_key[key], score=score) for key, score in fused[: max(RERANK_POOL, top_k)]]
+    scored = []
+    for key, score in fused:
+        hit = by_key[key]
+        if channel_id and hit.channel_id == channel_id and not current_channel_only:
+            score *= SAME_CHANNEL_BOOST
+        scored.append(replace(hit, score=score))
+    scored.sort(key=lambda h: -h.score)
+    pool = scored[: max(RERANK_POOL, top_k)]
     if len(pool) > 1:
         reranked = await _rerank(query, pool, top_k)
         if reranked is not None:
             return _covered(reranked)
-    # Only a chunk that is returned may stand in for a message.
     return _covered(pool[:top_k])
 
 
-# --- topics, glossary, profiles ---------------------------------------------------------------
+# --- topics, glossary, profiles ---------------------------------------------------------------------------------
 
 
 def _topic_view(t: Topic) -> TopicView:
     return TopicView(
-        t.id, t.title, t.summary, list(t.keywords), list(t.participants), t.start_at, t.end_at, t.msg_count
+        t.id,
+        t.channel_id,
+        t.title,
+        t.summary,
+        list(t.keywords),
+        list(t.participants),
+        t.start_at,
+        t.end_at,
+        t.msg_count,
     )
 
 
-async def open_topics(group_id: int, limit: int = 5) -> list[TopicView]:
-    """Open topics, most recently active first."""
+async def open_topics(
+    guild_id: str,
+    *,
+    channel_id: str | None = None,
+    limit: int = 5,
+    include_other_channels: bool = True,
+) -> list[TopicView]:
+    """Open topics: current channel first, optionally followed by sibling shared channels in the guild."""
+    channels = accessible_channels(guild_id, channel_id, current_channel_only=not include_other_channels)
+    if not channels:
+        return []
     async with get_session() as session:
-        rows = await session.scalars(
-            select(Topic)
-            .where(Topic.group_id == group_id, Topic.status == "open")
-            .order_by(Topic.end_at.desc())
-            .limit(limit)
+        rows = list(
+            (
+                await session.scalars(
+                    select(Topic)
+                    .where(Topic.guild_id == guild_id, Topic.channel_id.in_(channels), Topic.status == "open")
+                    .order_by(Topic.end_at.desc())
+                    .limit(limit * 2)
+                )
+            ).all()
         )
-        return [_topic_view(t) for t in rows]
+    if channel_id:
+        rows.sort(key=lambda t: (t.channel_id != channel_id, -t.end_at.timestamp()))
+    return [_topic_view(t) for t in rows[:limit]]
 
 
 def _entry(g: GlossaryTerm) -> GlossaryEntry:
     return GlossaryEntry(g.id, g.term, list(g.aliases), g.definition, g.confidence, g.locked)
 
 
-async def glossary_terms(group_id: int) -> list[GlossaryEntry]:
+async def glossary_terms(guild_id: str) -> list[GlossaryEntry]:
     async with get_session() as session:
-        rows = await session.scalars(select(GlossaryTerm).where(GlossaryTerm.group_id == group_id))
+        rows = await session.scalars(select(GlossaryTerm).where(GlossaryTerm.guild_id == guild_id))
         return [_entry(g) for g in rows]
 
 
 def _contains(column: Any, term: str) -> Any:
-    """``column`` contains ``term``, case-insensitively. A Latin-letter term must be a whole word: "CA" does not match
-    "Calling". Chinese has no word boundaries, and number slang ("233" for "2333") is written longer, so other terms
-    match anywhere."""
     if term.isascii() and any(c.isalpha() for c in term):
         return column.regexp_match(rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])", flags="i")
     return column.ilike(f"%{term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%")
 
 
-async def lookup_glossary(group_id: int, term: str, limit: int = 3) -> list[GlossaryEntry]:
-    """Exact term/alias match (case-insensitive); else a match inside a term or definition; else nearest vectors."""
+async def lookup_glossary(guild_id: str, term: str, limit: int = 3) -> list[GlossaryEntry]:
     term = term.strip()
     if not term:
         return []
     lowered = term.lower()
     async with get_session() as session:
-        scoped = select(GlossaryTerm).where(GlossaryTerm.group_id == group_id)
+        scoped = select(GlossaryTerm).where(GlossaryTerm.guild_id == guild_id)
         exact = (
             await session.scalars(
                 scoped.where(
@@ -593,7 +671,7 @@ async def lookup_glossary(group_id: int, term: str, limit: int = 3) -> list[Glos
     async with get_session() as session:
         await session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
         stmt = text(
-            "SELECT v.ref_id FROM memory_vectors v WHERE v.group_id = :g AND v.space_id = :s"
+            "SELECT v.ref_id FROM memory_vectors v WHERE v.guild_id = :g AND v.space_id = :s"
             " AND v.kind = 'glossary' AND (v.embedding <=> CAST(:qv AS halfvec)) <= :maxd"
             " ORDER BY v.embedding <=> CAST(:qv AS halfvec) LIMIT :lim"
         ).bindparams(bindparam("qv", type_=HALFVEC(EMBED_DIM)))
@@ -601,7 +679,7 @@ async def lookup_glossary(group_id: int, term: str, limit: int = 3) -> list[Glos
             (
                 await session.scalars(
                     stmt,
-                    {"g": group_id, "s": space_id, "qv": vec, "maxd": GLOSSARY_MAX_DISTANCE, "lim": limit},
+                    {"g": guild_id, "s": space_id, "qv": vec, "maxd": GLOSSARY_MAX_DISTANCE, "lim": limit},
                 )
             ).all()
         )
@@ -611,16 +689,14 @@ async def lookup_glossary(group_id: int, term: str, limit: int = 3) -> list[Glos
     return [_entry(rows[i]) for i in ids if i in rows]
 
 
-async def profiles(group_id: int, user_ids: Sequence[int]) -> dict[int, ProfileView]:
-    """Profiles of the given users (missing and opted-out users are absent), each with its ``PROFILE_FACTS``
-    highest-ranked active facts (weight with recency decay; archived facts never show)."""
+async def profiles(guild_id: str, user_ids: Sequence[str]) -> dict[str, ProfileView]:
     if not user_ids:
         return {}
     async with get_session() as session:
         rows = (
             await session.scalars(
                 select(UserProfile).where(
-                    UserProfile.group_id == group_id,
+                    UserProfile.guild_id == guild_id,
                     UserProfile.user_id.in_(set(user_ids)),
                     UserProfile.opted_out.is_(False),
                 )
@@ -628,7 +704,7 @@ async def profiles(group_id: int, user_ids: Sequence[int]) -> dict[int, ProfileV
         ).all()
         if not rows:
             return {}
-        half_life = snapshot().settings(group_id).memory.weight_half_life_days
+        half_life = snapshot().settings(guild_id=guild_id).memory.weight_half_life_days
         ranked = (
             select(
                 UserProfileFact.user_id,
@@ -641,13 +717,13 @@ async def profiles(group_id: int, user_ids: Sequence[int]) -> dict[int, ProfileV
                 .label("rn"),
             )
             .where(
-                UserProfileFact.group_id == group_id,
+                UserProfileFact.guild_id == guild_id,
                 UserProfileFact.user_id.in_([p.user_id for p in rows]),
                 UserProfileFact.archived_at.is_(None),
             )
             .subquery()
         )
-        facts: dict[int, list[str]] = {}
+        facts: dict[str, list[str]] = {}
         for uid, fact in (
             await session.execute(
                 select(ranked.c.user_id, ranked.c.fact).where(ranked.c.rn <= PROFILE_FACTS).order_by(ranked.c.rn)
@@ -668,6 +744,5 @@ async def profiles(group_id: int, user_ids: Sequence[int]) -> dict[int, ProfileV
     }
 
 
-async def get_profile(group_id: int, user_id: int) -> ProfileView | None:
-    """None when the user has no profile or opted out."""
-    return (await profiles(group_id, [user_id])).get(user_id)
+async def get_profile(guild_id: str, user_id: str) -> ProfileView | None:
+    return (await profiles(guild_id, [user_id])).get(user_id)

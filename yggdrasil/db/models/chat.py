@@ -1,7 +1,6 @@
-"""Raw chat history. ``messages`` is range-partitioned by month on ``sent_at``.
+"""Raw chat history, guild member aliases, and KOOK sticker tables.
 
-Partitions are created by the migration baseline and kept ahead by the
-``maintain_partitions`` worker job; autogenerate ignores them (see migration/env.py).
+``messages`` is range-partitioned by month on ``sent_at``.
 """
 
 from datetime import datetime
@@ -29,21 +28,21 @@ class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
         PrimaryKeyConstraint("id", "sent_at"),
-        Index("ix_messages_group_sent", "group_id", text("sent_at DESC")),
-        Index("ix_messages_group_qq", "group_id", "qq_message_id"),
-        Index("ix_messages_group_user_sent", "group_id", "user_id", text("sent_at DESC")),
+        Index("ix_messages_channel_sent", "channel_id", text("sent_at DESC")),
+        Index("ix_messages_guild_sent", "guild_id", text("sent_at DESC")),
+        Index("ix_messages_channel_kook", "channel_id", "kook_message_id"),
+        Index("ix_messages_guild_user_sent", "guild_id", "user_id", text("sent_at DESC")),
         {"postgresql_partition_by": "RANGE (sent_at)"},
     )
 
     id: Mapped[int] = mapped_column(Identity(always=True))
     sent_at: Mapped[datetime]
-    group_id: Mapped[int]
-    user_id: Mapped[int]
-    # The protocol's own id (Milky: the group seq; OneBot/SnowLuma: a 32-bit hash that repeats over time), so only use
-    # it for recent lookups within one group. ``message_seq`` is the group seq when known.
-    qq_message_id: Mapped[int]
-    message_seq: Mapped[int | None]
-    reply_to_qq_id: Mapped[int | None]
+    channel_id: Mapped[str] = mapped_column(Text)
+    guild_id: Mapped[str] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(Text)
+    # KOOK globally unique message UUID.
+    kook_message_id: Mapped[str] = mapped_column(Text)
+    reply_to_msg_id: Mapped[str | None] = mapped_column(Text)
     sender_name: Mapped[str] = mapped_column(Text, default="")
     plain_text: Mapped[str] = mapped_column(Text, default="")
     segments: Mapped[list[Any]]
@@ -53,50 +52,48 @@ class Message(Base):
 
 
 class UserAlias(Base):
-    """Nickname / group card history, so old messages can be attributed after renames."""
+    """Guild-level nickname history so old messages stay attributable across renames."""
 
     __tablename__ = "user_aliases"
-    __table_args__ = (PrimaryKeyConstraint("group_id", "user_id", "name"),)
+    __table_args__ = (PrimaryKeyConstraint("guild_id", "user_id", "name"),)
 
-    group_id: Mapped[int]
-    user_id: Mapped[int]
+    guild_id: Mapped[str] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
     first_seen: Mapped[datetime] = mapped_column(server_default=func.now())
     last_seen: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class Sticker(Base):
-    """A sticker seen in groups, one row per distinct sticker.
+    """A KOOK sticker seen in chat, one row per distinct sticker.
 
-    ``kind = 'image'``: a custom sticker (an ``image`` segment with ``sticker`` set). ``ref`` is the content sha1 QQ
-    embeds in the NT file id (``image.sha1``); the image is saved on first sight (QQ links die when the rkey rotates)
-    and the ``sticker`` task describes, tags and moderates it. ``kind = 'mface'``: a QQ market face,
-    ``ref`` = ``"<package_id>:<emoji_id>"``, sent by id.
+    ``kind = 'emoji'``: a KOOK guild custom emoji (``(emj)name(emj)[id]``); ``ref`` is the emoji id, ``guild_id``
+    records the owning guild so same-guild drops can send the native emoji directly and cross-guild drops can send
+    its cached image blob.
+    ``kind = 'image'``: an animated GIF/WebP or small sticker-like image sent in chat; ``ref`` is content sha256.
     """
 
     __tablename__ = "stickers"
     __table_args__ = (UniqueConstraint("kind", "ref"), Index("ix_stickers_status", "status"))
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
-    kind: Mapped[str] = mapped_column(Text)  # image | mface
+    kind: Mapped[str] = mapped_column(Text)  # emoji | image
     ref: Mapped[str] = mapped_column(Text)
-    emoji_id: Mapped[str | None] = mapped_column(Text)  # mface only
-    package_id: Mapped[str | None] = mapped_column(Text)
-    key: Mapped[str] = mapped_column(Text, default="")
-    summary: Mapped[str] = mapped_column(Text, default="")  # QQ's own label: the market face name, "动画表情"
-    # fetching -> untagged -> ready, or failed (see ``error``); market faces are ready at once.
-    status: Mapped[str] = mapped_column(Text, default="ready")
+    guild_id: Mapped[str | None] = mapped_column(Text)  # owning guild for kind='emoji'
+    emoji_id: Mapped[str | None] = mapped_column(Text)  # KOOK emoji id when kind='emoji'
+    summary: Mapped[str] = mapped_column(Text, default="")  # KOOK emoji name or filename
+    status: Mapped[str] = mapped_column(Text, default="fetching")  # fetching | untagged | ready | failed
     error: Mapped[str] = mapped_column(Text, default="")
     mime: Mapped[str] = mapped_column(Text, default="")
     size_bytes: Mapped[int | None]
     width: Mapped[int | None]
     height: Mapped[int | None]
-    frames: Mapped[int | None]  # > 1: animated
+    frames: Mapped[int | None]
     description: Mapped[str] = mapped_column(Text, default="")
-    usage: Mapped[str] = mapped_column(Text, default="")  # when it fits to send
+    usage: Mapped[str] = mapped_column(Text, default="")
     ocr_text: Mapped[str] = mapped_column(Text, default="")
     emotions: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
-    unsafe_category: Mapped[str] = mapped_column(Text, default="")  # moderation flag from tagging; "" = safe
+    unsafe_category: Mapped[str] = mapped_column(Text, default="")
     tag_attempts: Mapped[int] = mapped_column(default=0)
     tagged_at: Mapped[datetime | None]
     seen_count: Mapped[int] = mapped_column(default=1)
@@ -106,7 +103,7 @@ class Sticker(Base):
 
 
 class StickerBlob(Base):
-    """The original image of a custom sticker (kept as sent, GIFs included); separate so listings stay light."""
+    """Original image bytes of a sticker (for vision tagging and image drops)."""
 
     __tablename__ = "sticker_blobs"
 
@@ -115,32 +112,33 @@ class StickerBlob(Base):
 
 
 class StickerUsage(Base):
-    """How often each group sends a sticker."""
+    """How often each guild sends a sticker (guild-shared popularity)."""
 
     __tablename__ = "sticker_usage"
-    __table_args__ = (PrimaryKeyConstraint("sticker_id", "group_id"),)
+    __table_args__ = (PrimaryKeyConstraint("sticker_id", "guild_id"),)
 
     sticker_id: Mapped[int] = mapped_column(ForeignKey("stickers.id", ondelete="CASCADE"))
-    group_id: Mapped[int]
+    guild_id: Mapped[str] = mapped_column(Text)
     count: Mapped[int] = mapped_column(default=1)
     last_seen: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class StickerDrop(Base):
-    """One sticker-drop decision (``stickers.drop``): every call to the decision model, whether it sent or not."""
+    """One per-channel sticker-drop decision (``stickers.drop``)."""
 
     __tablename__ = "sticker_drops"
-    __table_args__ = (Index("ix_sticker_drops_group_at", "group_id", text("at DESC")),)
+    __table_args__ = (Index("ix_sticker_drops_channel_at", "channel_id", text("at DESC")),)
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     at: Mapped[datetime] = mapped_column(server_default=func.now())
-    group_id: Mapped[int]
-    outcome: Mapped[str] = mapped_column(Text)  # sent | dice | unfit | refused
-    fit: Mapped[float | None]  # the model's probability that a sticker fits now
+    channel_id: Mapped[str] = mapped_column(Text)
+    guild_id: Mapped[str] = mapped_column(Text)
+    outcome: Mapped[str] = mapped_column(Text)
+    fit: Mapped[float | None]
     sticker_id: Mapped[int | None] = mapped_column(ForeignKey("stickers.id", ondelete="SET NULL"))
-    confidence: Mapped[float | None]  # the model's confidence in its pick
+    confidence: Mapped[float | None]
     candidates: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
-    last_message_id: Mapped[int]  # the newest message the model saw
+    last_message_id: Mapped[int]
     model: Mapped[str] = mapped_column(Text)
     input_tokens: Mapped[int] = mapped_column(default=0)
-    cost: Mapped[float | None]  # USD, when the provider reports it
+    cost: Mapped[float | None]

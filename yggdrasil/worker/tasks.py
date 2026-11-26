@@ -1,9 +1,7 @@
 """Registered worker tasks and their schedules (cron, Asia/Shanghai).
 
-Per-group steps are isolated: one group's failure is logged and the rest still run;
-the job then fails as a whole so ``ygg.job.runs{outcome="error"}`` reflects it. A Redis
-lock per (job, group) keeps overlapping runs (slow LLM, several workers) from
-processing the same group twice.
+- Channel-scoped steps: chunking & topic segmentation (isolated per channel) and sticker drops.
+- Guild-scoped steps: daily digests, curation, user profiles, and glossary (shared across the guild).
 """
 
 from collections.abc import Awaitable, Callable
@@ -18,13 +16,13 @@ from yggdrasil.db.partitions import ensure_partitions
 from yggdrasil.db.session import engine
 from yggdrasil.kv import redis_client
 from yggdrasil.memory import vectors
-from yggdrasil.memory.chunking import chunk_group
-from yggdrasil.memory.common import memory_groups
-from yggdrasil.memory.curation import curate_group
-from yggdrasil.memory.digest import digest_group
-from yggdrasil.memory.glossary import define_group, mine_group
-from yggdrasil.memory.profiles import update_group
-from yggdrasil.memory.topics import consolidate_group
+from yggdrasil.memory.chunking import chunk_channel
+from yggdrasil.memory.common import memory_channels, memory_guilds
+from yggdrasil.memory.curation import curate_guild
+from yggdrasil.memory.digest import digest_guild
+from yggdrasil.memory.glossary import define_guild, mine_guild
+from yggdrasil.memory.profiles import update_guild
+from yggdrasil.memory.topics import consolidate_channel
 from yggdrasil.runtime import snapshot
 from yggdrasil.stickers.drop import maybe_drop
 from yggdrasil.stickers.tagging import tag_pending
@@ -35,45 +33,50 @@ def _cron(expr: str) -> list[dict[str, str]]:
     return [{"cron": expr, "cron_offset": TIMEZONE}]
 
 
-class GroupFailures(RuntimeError):
-    def __init__(self, job: str, groups: list[int]) -> None:
-        super().__init__(f"{job} failed for groups {groups}")
-        self.groups = groups
+class ScopeFailures(RuntimeError):
+    def __init__(self, job: str, scopes: list[str]) -> None:
+        super().__init__(f"{job} failed for scopes {scopes}")
+        self.scopes = scopes
 
 
-async def for_each_group(job: str, step: Callable[[int], Awaitable[Any]], *, lock_ttl: int = 1800) -> dict[int, Any]:
-    """Run ``step`` for every memory-enabled group, isolating failures."""
-    results: dict[int, Any] = {}
-    failed: list[int] = []
-    for group_id in memory_groups(snapshot()):
-        lock = redis_client().lock(f"ygg:job:{job}:{group_id}", timeout=lock_ttl, blocking=False)
+async def _for_each(
+    job: str, kind: str, scopes: list[str], step: Callable[[str], Awaitable[Any]], *, lock_ttl: int = 1800
+) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    failed: list[str] = []
+    for sid in scopes:
+        lock = redis_client().lock(f"ygg:job:{job}:{sid}", timeout=lock_ttl, blocking=False)
         if not await lock.acquire():
-            LOGGER.info("{}: group {} is still being processed; skipped", job, group_id)
+            LOGGER.info("{}: {} {} is still being processed; skipped", job, kind, sid)
             continue
         try:
-            with TRACER.start_as_current_span(f"{job} group", attributes={"ygg.group_id": group_id}):
-                results[group_id] = await step(group_id)
+            with TRACER.start_as_current_span(f"{job} {kind}", attributes={f"ygg.{kind}_id": sid}):
+                results[sid] = await step(sid)
         except Exception:
-            failed.append(group_id)
-            LOGGER.exception("{}: group {} failed", job, group_id)
+            failed.append(sid)
+            LOGGER.exception("{}: {} {} failed", job, kind, sid)
         finally:
             try:
                 await lock.release()
             except LockError:
-                LOGGER.warning("{}: lock for group {} expired before release", job, group_id)
+                LOGGER.warning("{}: lock for {} {} expired before release", job, kind, sid)
     LOGGER.info("{}: {}", job, results)
     if failed:
-        raise GroupFailures(job, failed)
+        raise ScopeFailures(job, failed)
     return results
 
 
-# Hourly at an odd minute, away from the */5 and */15 jobs; partitions are made three months ahead, so a run that gives
-# up on the lock just tries again an hour later.
+async def for_each_channel(job: str, step: Callable[[str], Awaitable[Any]], *, lock_ttl: int = 1800) -> dict[str, Any]:
+    return await _for_each(job, "channel", memory_channels(snapshot()), step, lock_ttl=lock_ttl)
+
+
+async def for_each_guild(job: str, step: Callable[[str], Awaitable[Any]], *, lock_ttl: int = 1800) -> dict[str, Any]:
+    return await _for_each(job, "guild", memory_guilds(snapshot()), step, lock_ttl=lock_ttl)
+
+
 @broker.task(task_name="maintain_partitions", schedule=_cron("47 * * * *"))
 async def maintain_partitions() -> list[str]:
     async with engine().begin() as conn:
-        # Attaching a partition needs an exclusive lock on messages, and every later query on messages queues behind
-        # the waiting DDL: give up quickly instead of stalling ingest and replies (2026-11-01: 90 minutes).
         await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
         names = await ensure_partitions(conn, ahead=3)
     LOGGER.info("message partitions ensured: {}", names)
@@ -89,46 +92,47 @@ async def sweep_bot_events() -> dict[str, int]:
     return stats
 
 
-async def _chunk_and_embed(group_id: int) -> dict[str, int]:
-    stats = await chunk_group(group_id)
+async def _chunk_and_embed(channel_id: str) -> dict[str, int]:
+    stats = await chunk_channel(channel_id)
     space = await vectors.resolve_space()
     if space is not None:
-        stats |= await vectors.embed_missing(space, group_id)
+        stats |= await vectors.embed_missing(space, channel_id=channel_id)
     return stats
 
 
 @broker.task(task_name="chunk_and_embed", schedule=_cron("*/5 * * * *"))
-async def chunk_and_embed() -> dict[int, Any]:
-    return await for_each_group("chunk_and_embed", _chunk_and_embed, lock_ttl=900)
+async def chunk_and_embed() -> dict[str, Any]:
+    return await for_each_channel("chunk_and_embed", _chunk_and_embed, lock_ttl=900)
 
 
 @broker.task(task_name="consolidate_topics", schedule=_cron("*/15 * * * *"))
-async def consolidate_topics() -> dict[int, Any]:
-    return await for_each_group("consolidate_topics", consolidate_group, lock_ttl=3600)
+async def consolidate_topics() -> dict[str, Any]:
+    return await for_each_channel("consolidate_topics", consolidate_channel, lock_ttl=3600)
 
 
-# A minute after the other */5 jobs.
 @broker.task(task_name="drop_stickers", schedule=_cron("1-59/5 * * * *"))
-async def drop_stickers() -> dict[int, str]:
-    """Maybe a sticker in each enabled group with ``sticker_drop.enabled`` (``stickers.drop``)."""
+async def drop_stickers() -> dict[str, str]:
     lock = redis_client().lock("ygg:job:drop_stickers", timeout=240, blocking=False)
     if not await lock.acquire():
         LOGGER.info("drop_stickers: previous run still going; skipped")
         return {}
     snap = snapshot()
-    results: dict[int, str] = {}
-    failed: list[int] = []
+    results: dict[str, str] = {}
+    failed: list[str] = []
     try:
-        for group_id in sorted(snap.groups):
-            if not (snap.group_enabled(group_id) and snap.settings(group_id).sticker_drop.enabled):
+        for cid in sorted(snap.channels):
+            ch = snap.channels[cid]
+            if ch.is_category or not snap.channel_enabled(cid):
+                continue
+            if not snap.settings(channel_id=cid, guild_id=ch.guild_id).sticker_drop.enabled:
                 continue
             try:
-                drop = await maybe_drop(group_id)
+                drop = await maybe_drop(cid)
             except Exception:
-                failed.append(group_id)
-                LOGGER.exception("drop_stickers: group {} failed", group_id)
+                failed.append(cid)
+                LOGGER.exception("drop_stickers: channel {} failed", cid)
                 continue
-            results[group_id] = drop.outcome if drop.fit is None else f"{drop.outcome} fit={drop.fit:.2f}"
+            results[cid] = drop.outcome if drop.fit is None else f"{drop.outcome} fit={drop.fit:.2f}"
     finally:
         try:
             await lock.release()
@@ -137,39 +141,37 @@ async def drop_stickers() -> dict[int, str]:
     if any(outcome != "quiet" for outcome in results.values()):
         LOGGER.info("drop_stickers: {}", results)
     if failed:
-        raise GroupFailures("drop_stickers", failed)
+        raise ScopeFailures("drop_stickers", failed)
     return results
 
 
 @broker.task(task_name="daily_digest", schedule=_cron("5 * * * *"))
-async def daily_digest() -> dict[int, Any]:
-    return await for_each_group("daily_digest", digest_group)
+async def daily_digest() -> dict[str, Any]:
+    return await for_each_guild("daily_digest", digest_guild)
 
 
-# Before update_profiles, so topics closed by then are scored and the low ones archived before profiles read them.
 @broker.task(task_name="curate_memory", schedule=_cron("20 * * * *"))
-async def curate_memory() -> dict[int, Any]:
-    return await for_each_group("curate_memory", curate_group, lock_ttl=3600)
+async def curate_memory() -> dict[str, Any]:
+    return await for_each_guild("curate_memory", curate_guild, lock_ttl=3600)
 
 
 @broker.task(task_name="update_profiles", schedule=_cron("25 * * * *"))
-async def update_profiles() -> dict[int, Any]:
-    return await for_each_group("update_profiles", update_group, lock_ttl=3600)
+async def update_profiles() -> dict[str, Any]:
+    return await for_each_guild("update_profiles", update_guild, lock_ttl=3600)
 
 
 @broker.task(task_name="mine_glossary", schedule=_cron("30 4 * * *"))
-async def mine_glossary() -> dict[int, Any]:
-    return await for_each_group("mine_glossary", mine_group)
+async def mine_glossary() -> dict[str, Any]:
+    return await for_each_guild("mine_glossary", mine_guild)
 
 
 @broker.task(task_name="define_glossary", schedule=_cron("0 5 * * *"))
-async def define_glossary() -> dict[int, Any]:
-    return await for_each_group("define_glossary", define_group)
+async def define_glossary() -> dict[str, Any]:
+    return await for_each_guild("define_glossary", define_guild)
 
 
 @broker.task(task_name="tag_stickers", schedule=_cron("*/5 * * * *"))
 async def tag_stickers() -> dict[str, int]:
-    """Describe, tag and moderate newly collected stickers (task ``sticker``)."""
     lock = redis_client().lock("ygg:job:tag_stickers", timeout=1800, blocking=False)
     if not await lock.acquire():
         LOGGER.info("tag_stickers: previous run still going; skipped")
@@ -187,7 +189,6 @@ async def tag_stickers() -> dict[str, int]:
 
 @broker.task(task_name="reembed_space")
 async def reembed_space(space_id: int) -> dict[str, int]:
-    """On demand (dashboard): embed all memory into ``space_id`` and switch to it."""
     lock = redis_client().lock("ygg:job:reembed_space", timeout=6 * 3600, blocking=False)
     if not await lock.acquire():
         raise RuntimeError("another re-embedding is running")

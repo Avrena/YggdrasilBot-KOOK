@@ -53,12 +53,12 @@ def events_key(job_id: str) -> str:
     return f"{JOB_KEY_PREFIX}{job_id}:events"
 
 
-def running_key(group_id: int) -> str:
-    return f"{RUNNING_PREFIX}{group_id}"
+def running_key(channel_id: str) -> str:
+    return f"{RUNNING_PREFIX}{channel_id}"
 
 
-def group_key(group_id: int) -> str:
-    return f"{GROUP_PREFIX}{group_id}"
+def channel_key(channel_id: str) -> str:
+    return f"{GROUP_PREFIX}{channel_id}"
 
 
 def keep_field(job_id: str) -> str:
@@ -79,9 +79,10 @@ class Requester:
     """Who started a job, from where: the report replies to ``trigger_message_id``. ``handles`` (``Handles.dump``) and
     ``tools`` are the requesting run's handles and tool bridge tools, so the job's code can use both."""
 
-    group_id: int
-    user_id: int
-    trigger_message_id: int | None
+    channel_id: str
+    guild_id: str | None
+    user_id: str
+    trigger_message_id: str | None
     invocation_id: str | None
     request_text: str
     handles: dict[str, Any] = field(default_factory=dict)
@@ -92,14 +93,15 @@ class Requester:
 class Job:
     id: str
     kind: JobKind
-    group_id: int
-    user_id: int
-    trigger_message_id: int | None
+    channel_id: str
+    guild_id: str | None
+    user_id: str
+    trigger_message_id: str | None
     invocation_id: str | None
     request_text: str
     title: str
     spec: str  # the script (command) or the task (agent)
-    workspace: str  # the workspace's name in its group
+    workspace: str  # the workspace's name in its channel
     claim: str
     created_at: float
     deadline: float
@@ -117,7 +119,7 @@ class Job:
     usage: dict[str, int] = field(default_factory=dict)  # relay usage (agent jobs)
     handles: dict[str, Any] = field(default_factory=dict)  # the requesting run's handles (Handles.dump)
     renewed_at: float = 0.0
-    cancel: str = ""  # who asked to cancel: "chat:<qq>" / "admin:<email>"; written only by ``cancel``
+    cancel: str = ""  # who asked to cancel: "chat:<uid>" / "admin:<email>"; written only by ``cancel``
     report: ReportState = ""
     report_at: float = 0.0
     report_attempts: int = 0
@@ -151,17 +153,25 @@ class Job:
             raw = data.get(key, "")
             return int(raw) if raw not in ("", "None") else None
 
+        def opt_str(key: str) -> str | None:
+            raw = data.get(key, "")
+            return raw if raw not in ("", "None") else None
+
         def opt_float(key: str) -> float | None:
             raw = data.get(key, "")
             return float(raw) if raw not in ("", "None") else None
 
         try:
+            cid = data.get("channel_id") or data.get("group_id")
+            if not cid:
+                return None
             return cls(
                 id=data["id"],
                 kind=cast(JobKind, data.get("kind", "command")),
-                group_id=int(data["group_id"]),
-                user_id=int(data.get("user_id") or 0),
-                trigger_message_id=opt_int("trigger_message_id"),
+                channel_id=str(cid),
+                guild_id=opt_str("guild_id"),
+                user_id=str(data.get("user_id") or ""),
+                trigger_message_id=opt_str("trigger_message_id"),
                 invocation_id=data.get("invocation_id") or None,
                 request_text=data.get("request_text", ""),
                 title=data.get("title", ""),

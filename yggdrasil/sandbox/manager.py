@@ -1,8 +1,8 @@
 """Per-topic workspaces of a group: SandboxClaims from the warm pool, their Redis records, the per-group and
 global caps, renewal, links, sessions.
 
-A workspace is ``(group_id, name)`` with a one-line description; a group has at most
-``sandbox_max_workspaces_per_group`` of them and the deployment at most ``sandbox_max_workspaces`` pods. An
+A workspace is ``(channel_id, name)`` with a one-line description; a group has at most
+``sandbox_max_workspaces_per_channel`` of them and the deployment at most ``sandbox_max_workspaces`` pods. An
 invocation selects one (``Session.open``), attaches lazily on first use and may switch to another.
 
 This module decides; the Kubernetes objects are in ``cluster``, the Redis records and locks in ``records`` and the
@@ -200,7 +200,7 @@ class WorkspaceManager:
         self._endpoint = endpoint
         # Whether sandboxd on a pod IP answers /v1/health; tests that have no sandboxd pass their own.
         self._healthy = healthy or self._sandboxd_healthy
-        self._local_locks: defaultdict[tuple[int, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._local_locks: defaultdict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
     @property
     def configured(self) -> bool:
@@ -215,17 +215,17 @@ class WorkspaceManager:
     # --- public API ---------------------------------------------------------------------------------------
 
     def session(
-        self, group_id: int, *, invocation_id: str | None, cfg: ToolSettings, workspace: str | None = None
+        self, channel_id: str, *, invocation_id: str | None, cfg: ToolSettings, workspace: str | None = None
     ) -> Session:
         """A lazy per-invocation handle (no I/O until the model first uses a workspace). ``workspace``
         pre-selects one (a job's report); otherwise the model selects with ``open_workspace``."""
         if not self.configured:
             raise SandboxNotConfigured("工作区未配置（没有设置 YGG_SANDBOX_TOKEN）")
-        return Session(self, group_id, invocation_id=invocation_id, cfg=cfg, workspace=workspace)
+        return Session(self, channel_id, invocation_id=invocation_id, cfg=cfg, workspace=workspace)
 
-    async def get(self, group_id: int, name: str) -> WorkspaceInfo | None:
+    async def get(self, channel_id: str, name: str) -> WorkspaceInfo | None:
         """One workspace; ``None`` when there is none by that name (a record whose claim is gone is dropped)."""
-        m = await self.records.load(group_id, name)
+        m = await self.records.load(channel_id, name)
         if m is None:
             return None
         if not m.pending and await self._cluster.claim(m.claim) is None:
@@ -233,11 +233,11 @@ class WorkspaceManager:
             return None
         return m.info(await self.records.job_ids(m))
 
-    async def workspaces(self, group_id: int) -> list[WorkspaceInfo]:
+    async def workspaces(self, channel_id: str) -> list[WorkspaceInfo]:
         """The group's workspaces (pending ones included), most recently used first; records whose claim is gone
         are dropped."""
-        mappings = await self.records.group(group_id)
-        live = await self._cluster.live_claims(group_id) if any(not m.pending for m in mappings) else set()
+        mappings = await self.records.channel(channel_id)
+        live = await self._cluster.live_claims(channel_id) if any(not m.pending for m in mappings) else set()
         out: list[WorkspaceInfo] = []
         for m in mappings:
             if not m.pending and m.claim not in live:
@@ -252,9 +252,9 @@ class WorkspaceManager:
         live = await self._cluster.live_claims()
         return [m.info(await self.records.job_ids(m)) for m in mappings if m.pending or m.claim in live]
 
-    async def listing(self, group_id: int, *, current: str | None = None) -> str:
+    async def listing(self, channel_id: str, *, current: str | None = None) -> str:
         """The group's workspaces as text for the model ("" when it has none)."""
-        infos = await self.workspaces(group_id)
+        infos = await self.workspaces(channel_id)
         return format_workspaces(
             infos,
             now=time.time(),
@@ -267,17 +267,17 @@ class WorkspaceManager:
         titles = await self.records.job_titles(info.jobs)
         return format_workspaces([info], now=time.time(), titles=titles, current=current)
 
-    async def describe(self, group_id: int, name: str) -> str | None:
+    async def describe(self, channel_id: str, name: str) -> str | None:
         """Files and the head of NOTES.md of a live workspace; ``None`` when pending, gone or unreadable."""
         try:
-            return await self._describe(group_id, name)
+            return await self._describe(channel_id, name)
         except Exception:
-            LOGGER.exception("sandbox describe failed for group {} workspace {}", group_id, name)
+            LOGGER.exception("sandbox describe failed for channel {} workspace {}", channel_id, name)
             return None
 
     async def reserve(
         self,
-        group_id: int,
+        channel_id: str,
         name: str,
         description: str,
         cfg: ToolSettings,
@@ -294,11 +294,11 @@ class WorkspaceManager:
             raise SandboxError(why)
         if not description:
             raise SandboxError("新建工作区要写 description：一句话说明放什么、属于哪个话题")
-        cap = cfg.sandbox_max_workspaces_per_group
-        async with self.records.group_lock(group_id, wait=_GROUP_LOCK_WAIT) as got:
+        cap = cfg.sandbox_max_workspaces_per_channel
+        async with self.records.channel_lock(channel_id, wait=_GROUP_LOCK_WAIT) as got:
             if not got:
-                raise SandboxToolError("本群正有别的请求在新建工作区，等太久了，稍后再试。")
-            current = await self.workspaces(group_id)
+                raise SandboxToolError("本频道正有别的请求在新建工作区，等太久了，稍后再试。")
+            current = await self.workspaces(channel_id)
             if existing := next((w for w in current if w.name == name), None):
                 raise SandboxError(
                     f"已经有叫「{name}」的工作区了（{existing.description}）：要继续用它就不要传 new=True，"
@@ -313,10 +313,10 @@ class WorkspaceManager:
                 if w.jobs or w.active > (1 if mine is not None and w.name == mine[0] else 0):
                     continue
                 # Holding the workspace's lock keeps a create / attach / release from running while it goes.
-                async with self.records.ws_lock(group_id, w.name, wait=0) as got:
+                async with self.records.ws_lock(channel_id, w.name, wait=0) as got:
                     if not got:
                         continue
-                    m = await self.records.load(group_id, w.name)
+                    m = await self.records.load(channel_id, w.name)
                     if m is None:
                         excess -= 1
                         continue
@@ -332,14 +332,14 @@ class WorkspaceManager:
                 )
                 made = "、".join(f"「{w.name}」" for w in evicted)
                 raise SandboxError(
-                    f"本群已经有 {len(left)} 个工作区（上限 {cap} 个），而且都在使用中或有后台任务，没法回收"
+                    f"本频道已经有 {len(left)} 个工作区（上限 {cap} 个），而且都在使用中或有后台任务，没法回收"
                     + (f"（已经回收了 {made}，还不够）" if made else "")
                     + f"：\n{listing}\n"
                     '这次先用 open_workspace(name="名字") 继续用其中话题最接近的一个，或者等它们空闲后再新建。'
                 )
             now = time.time()
             record = Mapping(
-                group_id=group_id,
+                channel_id=channel_id,
                 name=name,
                 description=description,
                 claim="",
@@ -351,12 +351,12 @@ class WorkspaceManager:
                 max_until=0.0,
             )
             await self.records.add_pending(record)
-        self._audit(group_id, "reserve", workspace=name, evicted=[w.name for w in evicted])
+        self._audit(channel_id, "reserve", workspace=name, evicted=[w.name for w in evicted])
         return evicted
 
-    async def destroy(self, group_id: int, name: str, *, reason: str) -> bool:
+    async def destroy(self, channel_id: str, name: str, *, reason: str) -> bool:
         """Destroy one workspace now (its pod and record), even while invocations or jobs use it."""
-        m = await self.records.load(group_id, name)
+        m = await self.records.load(channel_id, name)
         if m is None:
             return False
         await self._destroy_mapping(m, reason=reason)
@@ -392,11 +392,11 @@ class WorkspaceManager:
         except Exception:
             LOGGER.exception("sandbox reconcile failed")
 
-    async def backend_for(self, group_id: int, name: str) -> tuple[SandboxdWorkspace, str] | None:
+    async def backend_for(self, channel_id: str, name: str) -> tuple[SandboxdWorkspace, str] | None:
         """A backend bound to the workspace's current pod plus its claim name, for work outside an invocation
         (background jobs): no ``active`` counting, never creates a pod. ``None`` when the workspace has no live
         pod. The caller closes it with ``aclose()``."""
-        m = await self.records.load(group_id, name)
+        m = await self.records.load(channel_id, name)
         if m is None or m.pending:
             return None
         claim = await self._cluster.claim(m.claim)
@@ -415,13 +415,13 @@ class WorkspaceManager:
             resolver=StaticResolver(self._endpoint(ip or m.pod_ip), claim_id, alive=alive),
             token=self.token,
             ref=WorkspaceRef(provider=PROVIDER, id=claim_id),
-            audit={"group": group_id, "workspace": name},
+            audit={"channel": channel_id, "workspace": name},
         )
         return backend, claim_id
 
-    async def renew(self, group_id: int, name: str, cfg: ToolSettings) -> bool:
+    async def renew(self, channel_id: str, name: str, cfg: ToolSettings) -> bool:
         """Renew the workspace's claim (as an invocation's use would); False when it has none or it is gone."""
-        m = await self.records.load(group_id, name)
+        m = await self.records.load(channel_id, name)
         if m is None or m.pending:
             return False
         if await self._renew(m, cfg):
@@ -429,18 +429,18 @@ class WorkspaceManager:
         await self._drop(m, reason="claim gone")
         return False
 
-    async def extend(self, group_id: int, name: str, claim: str, until: float, cfg: ToolSettings) -> float | None:
+    async def extend(self, channel_id: str, name: str, claim: str, until: float, cfg: ToolSettings) -> float | None:
         """Push the workspace's hard cap (``max_until``) out to at least ``until`` so a background job fits, and
         renew its claim; the resulting cap, or ``None`` when the workspace no longer runs ``claim``."""
-        if not await self.records.extend(group_id, name, claim, until):
+        if not await self.records.extend(channel_id, name, claim, until):
             return None
-        m = await self.records.load(group_id, name)
+        m = await self.records.load(channel_id, name)
         if m is None or m.claim != claim or not await self._renew(m, cfg):
             return None
-        self._audit(group_id, "extend", workspace=name, claim=claim, max_until=round(m.max_until))
+        self._audit(channel_id, "extend", workspace=name, claim=claim, max_until=round(m.max_until))
         return m.max_until
 
-    async def publish(self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> Link:
+    async def publish(self, channel_id: str, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> Link:
         """Give ``port`` of the workspace a public link. The listener must already run on all interfaces; it and
         its process tree are spared by the reap while the link lives, and the workspace then lives to its hard
         cap. Publishing a port that already has a link returns that link."""
@@ -449,18 +449,18 @@ class WorkspaceManager:
             raise SandboxError("没有配置公开链接域名，不能公开端口")
         if (reason := validate_port(port)) is not None:
             raise SandboxError(reason)
-        async with self._local_locks[group_id, name], _errors("公开端口"):
-            m = await self.records.load(group_id, name)
+        async with self._local_locks[channel_id, name], _errors("公开端口"):
+            m = await self.records.load(channel_id, name)
             if m is None or m.pending:
                 raise SandboxError("工作区已经被重置或回收，没法公开端口。")
             if existing := next((x for x in m.links if x.port == port), None):
                 return existing.public()
             if len(m.links) >= cfg.sandbox_max_links:
                 raise SandboxError(f"每个工作区最多 {cfg.sandbox_max_links} 个公开链接，先 unpublish 一个")
-            listener = await self._listener(group_id, name, port)
+            listener = await self._listener(channel_id, name, port)
             rid = link_id()
             await self._cluster.create_link(
-                group_id=m.group_id,
+                channel_id=m.channel_id,
                 workspace=m.name,
                 claim_id=m.claim,
                 sandbox=m.sandbox,
@@ -481,7 +481,7 @@ class WorkspaceManager:
             await self.records.save(m, "links")
             await self._renew(m, cfg)
         self._audit(
-            group_id,
+            channel_id,
             "publish",
             workspace=name,
             claim=m.claim,
@@ -494,10 +494,12 @@ class WorkspaceManager:
         )
         return link.public()
 
-    async def unpublish(self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> bool:
+    async def unpublish(
+        self, channel_id: str, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
+    ) -> bool:
         """Remove the public link of ``port`` (the process keeps running); False when it has none."""
-        async with self._local_locks[group_id, name], _errors("撤销链接"):
-            m = await self.records.load(group_id, name)
+        async with self._local_locks[channel_id, name], _errors("撤销链接"):
+            m = await self.records.load(channel_id, name)
             link = next((x for x in m.links if x.port == port), None) if m else None
             if m is None or link is None:
                 return False
@@ -505,11 +507,11 @@ class WorkspaceManager:
             m.links = [x for x in m.links if x.port != port]
             await self.records.save(m, "links")
             await self._renew(m, cfg)
-        self._audit(group_id, "unpublish", workspace=name, claim=m.claim, port=port, url=link.url, **audit)
+        self._audit(channel_id, "unpublish", workspace=name, claim=m.claim, port=port, url=link.url, **audit)
         return True
 
-    async def _listener(self, group_id: int, name: str, port: int) -> Listener:
-        found = await self.backend_for(group_id, name)
+    async def _listener(self, channel_id: str, name: str, port: int) -> Listener:
+        found = await self.backend_for(channel_id, name)
         if found is None:
             raise SandboxError("工作区已经被回收，没法公开端口。")
         backend, _ = found
@@ -524,14 +526,14 @@ class WorkspaceManager:
     async def _drop(self, m: Mapping, *, reason: str) -> None:
         """Remove the record (expired or destroyed) if it still names ``m.claim``."""
         if await self.records.drop(m):
-            self._audit(m.group_id, "drop_mapping", workspace=m.name, claim=m.claim, reason=reason)
+            self._audit(m.channel_id, "drop_mapping", workspace=m.name, claim=m.claim, reason=reason)
 
-    async def _drop_unused(self, group_id: int, name: str) -> None:
+    async def _drop_unused(self, channel_id: str, name: str) -> None:
         """Remove a reservation nobody created a pod for (the invocation that made it ended without using it)."""
-        async with self.records.ws_lock(group_id, name, wait=_CLOSE_LOCK_WAIT) as got:
+        async with self.records.ws_lock(channel_id, name, wait=_CLOSE_LOCK_WAIT) as got:
             if not got:
                 return  # someone is creating its pod right now
-            m = await self.records.load(group_id, name)
+            m = await self.records.load(channel_id, name)
             if m is not None and m.pending:
                 await self._drop(m, reason="reservation unused")
 
@@ -543,7 +545,7 @@ class WorkspaceManager:
                 await self._cluster.delete_claim(m.claim)
         finally:
             await self._drop(m, reason=reason)
-        self._audit(m.group_id, "destroy", workspace=m.name, claim=m.claim, reason=reason)
+        self._audit(m.channel_id, "destroy", workspace=m.name, claim=m.claim, reason=reason)
 
     async def _destroy_if_idle(
         self,
@@ -564,7 +566,7 @@ class WorkspaceManager:
             m, max_active=max_active, mark_recreate=mark_recreate, check_jobs=check_jobs, keep_record=keep_record
         )
         if result == 1:
-            self._audit(m.group_id, "destroy", workspace=m.name, claim=m.claim, reason=reason, kept=keep_record)
+            self._audit(m.channel_id, "destroy", workspace=m.name, claim=m.claim, reason=reason, kept=keep_record)
             if not m.pending:
                 await self._cluster.delete_claim(m.claim)
         return result
@@ -573,7 +575,7 @@ class WorkspaceManager:
         """Make the record pending (a fresh pod on next use) whatever uses its current pod; the pod itself is left
         alone (gone already, or expiring on its own under the invocations still using it)."""
         await self.records.retire(m)
-        self._audit(m.group_id, "retire", workspace=m.name, claim=m.claim, reason=reason)
+        self._audit(m.channel_id, "retire", workspace=m.name, claim=m.claim, reason=reason)
 
     async def _replace(self, m: Mapping, *, reason: str) -> None:
         """Delete a broken pod and make the record pending."""
@@ -618,14 +620,16 @@ class WorkspaceManager:
     async def _evict_for(self, m: Mapping, cfg: ToolSettings) -> None:
         """Make room under the deployment-wide cap of pods for ``m``'s new one: evict the least recently used
         idle workspaces of any group (their records go too)."""
-        others = [x for x in await self.records.all() if not x.pending and (x.group_id, x.name) != (m.group_id, m.name)]
+        others = [
+            x for x in await self.records.all() if not x.pending and (x.channel_id, x.name) != (m.channel_id, m.name)
+        ]
         excess = len(others) - cfg.sandbox_max_workspaces + 1
         # `active` in this snapshot may be stale: the destroy re-checks it atomically and skips a workspace an
         # invocation attached to meanwhile.
         for x in sorted((x for x in others if x.active <= 0), key=lambda x: x.last_used):
             if excess <= 0:
                 break
-            reason = f"evicted (LRU) for group {m.group_id} workspace {m.name}"
+            reason = f"evicted (LRU) for group {m.channel_id} workspace {m.name}"
             if await self._destroy_if_idle(x, reason=reason, check_jobs=True) == 1:
                 excess -= 1
         if excess > 0:
@@ -638,21 +642,21 @@ class WorkspaceManager:
         caller in ``active`` (atomically with the claim, so no eviction sees it unused in between)."""
         await self._evict_for(m, cfg)
         now = time.time()
-        if not await self.records.touch_pending(m.group_id, m.name, now):
+        if not await self.records.touch_pending(m.channel_id, m.name, now):
             raise WorkspaceMissing(f"工作区「{m.name}」已经不存在了。")
-        claim = claim_name(m.group_id, m.name)
+        claim = claim_name(m.channel_id, m.name)
         max_until = now + cfg.sandbox_max_age_min * 60
         expires = shutdown_at(now=now, max_until=max_until, idle_s=cfg.sandbox_idle_min * 60, has_links=False)
         started = time.monotonic()
         try:
-            await self._cluster.create_claim(claim, m.group_id, m.name, shutdown=expires)
+            await self._cluster.create_claim(claim, m.channel_id, m.name, shutdown=expires)
         except KubeError as e:
-            LOGGER.error("creating sandbox claim for group {} workspace {} failed: {}", m.group_id, m.name, e)
+            LOGGER.error("creating sandbox claim for channel {} workspace {} failed: {}", m.channel_id, m.name, e)
             raise SandboxToolError("创建工作区失败（集群拒绝了请求），稍后再试。") from e
         try:
             ip, sandbox = await self._wait_ready(claim, started + READY_TIMEOUT)
             new = Mapping(
-                group_id=m.group_id,
+                channel_id=m.channel_id,
                 name=m.name,
                 description=m.description,
                 claim=claim,
@@ -673,7 +677,12 @@ class WorkspaceManager:
                 LOGGER.exception("deleting failed sandbox claim {} failed", claim)
             raise
         self._audit(
-            m.group_id, "create", workspace=m.name, claim=claim, pod_ip=ip, ready_s=round(time.monotonic() - started, 2)
+            m.channel_id,
+            "create",
+            workspace=m.name,
+            claim=claim,
+            pod_ip=ip,
+            ready_s=round(time.monotonic() - started, 2),
         )
         return new
 
@@ -715,7 +724,7 @@ class WorkspaceManager:
             await self.records.save(m, "pod_ip", "sandbox")
         return m, notice
 
-    async def _provide(self, group_id: int, name: str, cfg: ToolSettings) -> tuple[Mapping, str | None]:
+    async def _provide(self, channel_id: str, name: str, cfg: ToolSettings) -> tuple[Mapping, str | None]:
         """The workspace's pod, attached or created, with ``active`` already incremented for the caller. Raises
         ``WorkspaceMissing`` when the record is gone.
 
@@ -724,10 +733,10 @@ class WorkspaceManager:
         notice: str | None = None
         deadline = time.monotonic() + _ATTACH_LOCK_WAIT
         while True:
-            async with self.records.ws_lock(group_id, name, wait=max(0.0, deadline - time.monotonic())) as got:
+            async with self.records.ws_lock(channel_id, name, wait=max(0.0, deadline - time.monotonic())) as got:
                 if not got:
                     raise SandboxToolError("工作区正忙（另一个请求正在创建或收尾），等太久了，稍后再试。")
-                m = await self.records.load(group_id, name)
+                m = await self.records.load(channel_id, name)
                 if m is None:
                     raise WorkspaceMissing(f"工作区「{name}」已经不存在了（过期、被回收或被删除），里面的文件都没了。")
                 if m.pending:
@@ -753,8 +762,8 @@ class WorkspaceManager:
 
     # --- describe -------------------------------------------------------------------------------------------
 
-    async def _describe(self, group_id: int, name: str) -> str | None:
-        m = await self.records.load(group_id, name)
+    async def _describe(self, channel_id: str, name: str) -> str | None:
+        m = await self.records.load(channel_id, name)
         if m is None or m.pending:
             return None
         claim = await self._cluster.claim(m.claim)
@@ -791,9 +800,9 @@ class WorkspaceManager:
         return "\n\n".join(parts)
 
     @staticmethod
-    def _audit(group_id: int | None, action: str, **fields: Any) -> None:
-        LOGGER.bind(audit="sandbox", action=action, group=group_id, **fields).info(
-            "sandbox {} group={} {}", action, group_id, fields
+    def _audit(channel_id: str | None, action: str, **fields: Any) -> None:
+        LOGGER.bind(audit="sandbox", action=action, channel=channel_id, **fields).info(
+            "sandbox {} channel={} {}", action, channel_id, fields
         )
 
 
@@ -804,14 +813,14 @@ class Session:
     def __init__(
         self,
         mgr: WorkspaceManager,
-        group_id: int,
+        channel_id: str,
         *,
         invocation_id: str | None,
         cfg: ToolSettings,
         workspace: str | None = None,
     ) -> None:
         self._mgr = mgr
-        self._group_id = group_id
+        self._channel_id = channel_id
         self._invocation_id = invocation_id
         self._cfg = cfg
         self._name = workspace
@@ -823,7 +832,7 @@ class Session:
             resolver=self,
             token=mgr.token,
             limits=CommandLimits.from_settings(cfg),
-            audit={"group": group_id, "invocation": invocation_id},
+            audit={"channel": channel_id, "invocation": invocation_id},
         )
 
     @property
@@ -840,12 +849,12 @@ class Session:
 
     async def listing(self) -> str:
         """The group's workspaces and how to choose, for ``open_workspace()`` without a name."""
-        text = await self._mgr.listing(self._group_id, current=self._name)
+        text = await self._mgr.listing(self._channel_id, current=self._name)
         if not text:
-            return "本群还没有工作区。" + _CREATE_HINT
-        cap = self._cfg.sandbox_max_workspaces_per_group
+            return "本频道还没有工作区。" + _CREATE_HINT
+        cap = self._cfg.sandbox_max_workspaces_per_channel
         return (
-            f"本群的工作区（每群最多 {cap} 个）：\n{text}\n{_CHOOSE_HINT}"
+            f"本频道的工作区（每频道最多 {cap} 个）：\n{text}\n{_CHOOSE_HINT}"
             "满了再新建时，会回收最久没用、没有后台任务的那个。"
         )
 
@@ -857,13 +866,13 @@ class Session:
 
     async def _unselected(self) -> str:
         try:
-            text = await self._mgr.listing(self._group_id)
+            text = await self._mgr.listing(self._channel_id)
         except Exception:
-            LOGGER.exception("listing workspaces failed for group {}", self._group_id)
+            LOGGER.exception("listing workspaces failed for channel {}", self._channel_id)
             text = ""
         if not text:
-            return "还没有选工作区，本群也还没有工作区。先" + _CREATE_HINT + "然后再调用这个工具。"
-        return f"还没有选工作区：先调用 open_workspace 选一个，再调用这个工具。本群的工作区：\n{text}\n{_CHOOSE_HINT}"
+            return "还没有选工作区，本频道也还没有工作区。先" + _CREATE_HINT + "然后再调用这个工具。"
+        return f"还没有选工作区：先调用 open_workspace 选一个，再调用这个工具。本频道的工作区：\n{text}\n{_CHOOSE_HINT}"
 
     async def open(self, name: str, *, new: bool = False, description: str = "") -> Opened:
         """Select workspace ``name`` for the rest of the invocation: an existing one (``description`` updates its
@@ -877,22 +886,22 @@ class Session:
         updated = False
         if new:
             mine = (self._mapping.name, self._mapping.claim) if self._counted and self._mapping is not None else None
-            evicted = await self._mgr.reserve(self._group_id, name, description, self._cfg, mine=mine)
+            evicted = await self._mgr.reserve(self._channel_id, name, description, self._cfg, mine=mine)
             self._reserved.add(name)
             if mine is not None and any((w.name, w.claim) == mine for w in evicted):
                 # This invocation's own workspace made room: there is nothing left to release or reap.
                 self._counted, self._mapping = False, None
                 await self.backend.detach()
         else:
-            info = await self._mgr.get(self._group_id, name)
+            info = await self._mgr.get(self._channel_id, name)
             if info is None:
-                raise SandboxError(f"本群没有叫「{name}」的工作区（可能已经过期回收了）。\n{await self.listing()}")
+                raise SandboxError(f"本频道没有叫「{name}」的工作区（可能已经过期回收了）。\n{await self.listing()}")
             if description and description != info.description:
-                updated = await self._mgr.records.set_description(self._group_id, name, description)
+                updated = await self._mgr.records.set_description(self._channel_id, name, description)
         left = await self._switch(name)
         if left is not None and any(w.name == left for w in evicted):
             left = None  # it made room for the new one; nothing of it is left
-        info = await self._mgr.get(self._group_id, name)
+        info = await self._mgr.get(self._channel_id, name)
         if info is None:
             self._name = None
             raise SandboxError(f"工作区「{name}」刚被回收了。\n{await self.listing()}")
@@ -909,7 +918,7 @@ class Session:
                 "公开链接都还在。"
             )
         for e in opened.evicted:
-            gone = f"本群工作区满了，回收了最久没用的「{e.name}」（{e.description}），里面的文件都没了"
+            gone = f"本频道工作区满了，回收了最久没用的「{e.name}」（{e.description}），里面的文件都没了"
             if e.links:
                 gone += "，它的公开链接也随之失效：" + "、".join(x.url for x in e.links)
             lines.append(gone + "。")
@@ -924,7 +933,7 @@ class Session:
             f"已选中工作区「{w.name}」{updated}；之后的 sh、py 等都在这个工作区里。",
             await self._mgr.status(w, current=w.name),
         ]
-        if files and (described := await self._mgr.describe(self._group_id, w.name)):
+        if files and (described := await self._mgr.describe(self._channel_id, w.name)):
             lines.append(described)
         return "\n".join(lines)
 
@@ -952,7 +961,7 @@ class Session:
         if ref is not None and (self._mapping is None or ref.id != self._mapping.claim):
             raise WorkspaceUnavailableError("工作区已失效（沙箱已不存在），里面的文件都没了。")
         try:
-            m, notice = await self._mgr._provide(self._group_id, name, self._cfg)
+            m, notice = await self._mgr._provide(self._channel_id, name, self._cfg)
         except WorkspaceMissing as e:
             if self._name == name:
                 self._name = None
@@ -960,7 +969,7 @@ class Session:
         except (SandboxError, WorkspaceError):
             raise
         except Exception as e:
-            LOGGER.exception("sandbox acquisition failed for group {} workspace {}", self._group_id, name)
+            LOGGER.exception("sandbox acquisition failed for channel {} workspace {}", self._channel_id, name)
             raise SandboxToolError("工作区暂时不可用（内部错误），稍后再试。") from e
         self._mapping = m
         self._counted = True
@@ -991,7 +1000,7 @@ class Session:
         if not self._counted or self._mapping is None or now - self._renewed_at < self._cfg.sandbox_idle_min * 60 / 4:
             return
         self._renewed_at = now
-        m = await self._mgr.records.load(self._group_id, self._mapping.name)
+        m = await self._mgr.records.load(self._channel_id, self._mapping.name)
         if m is None or m.claim != ref.id:
             return
         await self._mgr._renew(m, self._cfg)
@@ -1026,26 +1035,26 @@ class Session:
     async def publish(self, port: int) -> Link:
         name = await self.require()
         audit = {"invocation": self._invocation_id}
-        return await self._mgr.publish(self._group_id, name, port, self._cfg, audit=audit)
+        return await self._mgr.publish(self._channel_id, name, port, self._cfg, audit=audit)
 
     async def unpublish(self, port: int) -> bool:
         name = await self.require()
         audit = {"invocation": self._invocation_id}
-        return await self._mgr.unpublish(self._group_id, name, port, self._cfg, audit=audit)
+        return await self._mgr.unpublish(self._channel_id, name, port, self._cfg, audit=audit)
 
     async def keep_kernel(self, pid: int | None) -> None:
         """Record the workspace's IPython kernel from a ``py`` result so the end-of-invocation reap spares it;
         ``None`` (the kernel died) forgets it."""
         if self._mapping is None:
             return
-        await self._mgr.records.set_kernel(self._group_id, self._mapping.name, pid)
+        await self._mgr.records.set_kernel(self._channel_id, self._mapping.name, pid)
 
     async def reset(self) -> str:
         """Empty the selected workspace: its pod is destroyed and a fresh one is created on next use, under the
         same name and description."""
         name = await self.require()
-        async with self._mgr._local_locks[self._group_id, name]:
-            m = await self._mgr.records.load(self._group_id, name)
+        async with self._mgr._local_locks[self._channel_id, name]:
+            m = await self._mgr.records.load(self._channel_id, name)
             if m is None:
                 self._name = None
                 raise SandboxError(f"工作区「{name}」已经不存在了。\n{await self.listing()}")
@@ -1062,7 +1071,7 @@ class Session:
                 raise SandboxError("有后台任务在运行，先用 cancel_job 取消")
             if destroyed == 0:
                 self._mgr._audit(
-                    self._group_id, "reset_deferred", workspace=name, invocation=self._invocation_id, claim=m.claim
+                    self._channel_id, "reset_deferred", workspace=name, invocation=self._invocation_id, claim=m.claim
                 )
                 return f"有其他请求正在使用工作区「{name}」，等它们结束后会重建；这次请求里文件还在。"
             await self.backend.detach()
@@ -1080,9 +1089,9 @@ class Session:
             if self._counted and self._mapping is not None:
                 await self._release(self._mapping)
             for name in sorted(self._reserved):
-                await self._mgr._drop_unused(self._group_id, name)
+                await self._mgr._drop_unused(self._channel_id, name)
         except Exception:
-            LOGGER.exception("sandbox session close failed for group {}", self._group_id)
+            LOGGER.exception("sandbox session close failed for channel {}", self._channel_id)
         finally:
             self._counted = False
             self._reserved.clear()
@@ -1092,16 +1101,16 @@ class Session:
                 LOGGER.exception("closing sandbox connections failed")
 
     async def _release(self, mine: Mapping) -> None:
-        async with self._mgr.records.ws_lock(self._group_id, mine.name, wait=_RELEASE_LOCK_WAIT) as locked:
+        async with self._mgr.records.ws_lock(self._channel_id, mine.name, wait=_RELEASE_LOCK_WAIT) as locked:
             remaining = await self._mgr.records.incr_active(mine, -1)
             if remaining < 0:
                 return  # record gone or given a new pod meanwhile
-            m = await self._mgr.records.load(self._group_id, mine.name)
+            m = await self._mgr.records.load(self._channel_id, mine.name)
             if m is None or m.claim != mine.claim:
                 return
             if remaining == 0 and not locked:
                 # Reaping without the lock could kill an invocation attaching right now; leave the leftovers.
-                LOGGER.warning("sandbox workspace {}/{} lock busy; skipping reap on release", self._group_id, m.name)
+                LOGGER.warning("sandbox workspace {}/{} lock busy; skipping reap on release", self._channel_id, m.name)
             elif remaining == 0:
                 await self._reap(m)
                 if m.recreate and (
@@ -1112,7 +1121,7 @@ class Session:
             await self._mgr._renew(m, self._cfg)
 
     async def _reap(self, m: Mapping) -> None:
-        keep = await self._mgr.records.keep(self._group_id, m.name)
+        keep = await self._mgr.records.keep(self._channel_id, m.name)
         try:
             result = await self.backend.exec(reap_argv(keep, m.links), seconds=30)
             if result.exit_code != 0:
@@ -1120,7 +1129,7 @@ class Session:
         except WorkspaceUnavailableError:
             pass  # the sandbox is gone; nothing left to reap
         except Exception:
-            LOGGER.exception("sandbox reap failed for group {} workspace {}", self._group_id, m.name)
+            LOGGER.exception("sandbox reap failed for channel {} workspace {}", self._channel_id, m.name)
 
 
 @asynccontextmanager

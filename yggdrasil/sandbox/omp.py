@@ -165,12 +165,12 @@ def models_yaml(base_url: str, models: list[ModelSpec]) -> str:
     return json.dumps({"providers": {PROVIDER: provider}}, ensure_ascii=False, indent=2) + "\n"
 
 
-def session_dir(group_id: int) -> str:
-    return f"{SESSIONS_ROOT}/{group_id}"
+def session_dir(channel_id: str) -> str:
+    return f"{SESSIONS_ROOT}/{channel_id}"
 
 
 def launch(
-    *, group_id: int, model: str, rules_path: str, max_time_s: int, token: str, bridge_url: str | None = None
+    *, channel_id: str, model: str, rules_path: str, max_time_s: int, token: str, bridge_url: str | None = None
 ) -> tuple[list[str], dict[str, str]]:
     """argv and environment of the omp process (docs/SANDBOX.md §0.7). With ``bridge_url`` its code may call the bot's
     tools: the relay token doubles as the tool bridge token (``yggdrasil.agent.bridge``)."""
@@ -185,7 +185,7 @@ def launch(
         "--config",
         OMP_OVERLAY,
         "--session-dir",
-        session_dir(group_id),
+        session_dir(channel_id),
         "--model",
         f"{PROVIDER}/{model}",
         "--tools",

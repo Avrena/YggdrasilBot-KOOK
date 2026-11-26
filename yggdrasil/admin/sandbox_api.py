@@ -1,5 +1,4 @@
-"""Sandbox workspaces (a few per QQ group, one per topic): list them, destroy one or all; background jobs: list,
-details and cancel (running ones from Redis, finished ones from the permanent archive)."""
+"""Sandbox workspaces (per KOOK channel, one per topic) and background jobs."""
 
 from datetime import UTC, datetime
 from typing import Literal
@@ -31,10 +30,10 @@ class LinkOut(BaseModel):
 
 
 class WorkspaceOut(BaseModel):
-    group_id: int
+    channel_id: str
     name: str
     description: str
-    pending: bool  # reserved or reset: no pod yet, created on first use
+    pending: bool
     claim: str | None
     sandbox: str | None
     pod_ip: str
@@ -45,7 +44,7 @@ class WorkspaceOut(BaseModel):
     active: int
     recreate: bool
     links: list[LinkOut]
-    jobs: list[str]  # ids of the background jobs running in it
+    jobs: list[str]
 
 
 class DestroyedOut(BaseModel):
@@ -72,9 +71,10 @@ class JobLinkOut(BaseModel):
 class JobOut(BaseModel):
     id: str
     kind: str
-    group_id: int
+    channel_id: str
+    guild_id: str | None
     workspace: str
-    user_id: int
+    user_id: str
     title: str
     status: str
     created_at: datetime
@@ -90,11 +90,11 @@ class JobOut(BaseModel):
 
 
 class JobDetail(JobOut):
-    spec: str  # the script (command) or the task (agent)
+    spec: str
     result: str
     images: list[str]
     report_invocation: str | None
-    events: list[JobEventOut]  # oldest first
+    events: list[JobEventOut]
 
 
 def _ts(epoch: float) -> datetime:
@@ -103,7 +103,7 @@ def _ts(epoch: float) -> datetime:
 
 def _out(w: WorkspaceInfo) -> WorkspaceOut:
     return WorkspaceOut(
-        group_id=w.group_id,
+        channel_id=w.channel_id,
         name=w.name,
         description=w.description,
         pending=w.pending,
@@ -128,7 +128,8 @@ def _job_out(job: Job) -> JobOut:
     return JobOut(
         id=job.id,
         kind=job.kind,
-        group_id=job.group_id,
+        channel_id=job.channel_id,
+        guild_id=job.guild_id,
         workspace=job.workspace,
         user_id=job.user_id,
         title=job.title,
@@ -173,22 +174,19 @@ def _manager() -> WorkspaceManager:
 
 @router.get("/workspaces")
 async def list_workspaces() -> Page[WorkspaceOut]:
-    """Every group's workspaces, grouped by group (most recently used group first), each group's most recently
-    used first."""
     items = await _manager().list()
-    latest: dict[int, float] = {}
+    latest: dict[str, float] = {}
     for w in items:
-        latest[w.group_id] = max(latest.get(w.group_id, 0.0), w.last_used)
-    items.sort(key=lambda w: (-latest[w.group_id], w.group_id, -w.last_used))
+        latest[w.channel_id] = max(latest.get(w.channel_id, 0.0), w.last_used)
+    items.sort(key=lambda w: (-latest[w.channel_id], w.channel_id, -w.last_used))
     return Page[WorkspaceOut](items=[_out(w) for w in items], total=len(items))
 
 
-@router.delete("/workspaces/{group_id}/{name}")
-async def destroy_workspace(group_id: int, name: str, actor: Actor) -> Ok:
-    """Destroy one workspace now (its files, links and record), even while an invocation or job is using it."""
+@router.delete("/workspaces/{channel_id}/{name}")
+async def destroy_workspace(channel_id: str, name: str, actor: Actor) -> Ok:
     mgr = _manager()
-    async with change(actor, "sandbox", "destroy", f"{group_id}/{name}"):
-        if not await mgr.destroy(group_id, name, reason=f"admin {actor}"):
+    async with change(actor, "sandbox", "destroy", f"{channel_id}/{name}"):
+        if not await mgr.destroy(channel_id, name, reason=f"admin {actor}"):
             raise not_found("工作区")
     return Ok()
 
@@ -204,27 +202,26 @@ async def destroy_all_workspaces(actor: Actor) -> DestroyedOut:
 
 @router.get("/jobs")
 async def list_jobs(
-    group_id: int | None = None,
+    channel_id: str | None = None,
     status: JobStatusFilter | None = None,
     kind: Literal["command", "agent"] | None = None,
     q: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> Page[JobOut]:
-    """Background jobs of every group, newest first: those still running (or reporting) first, then the archive."""
     statuses = _STATUSES.get(status, (status,)) if status else None
     active = await runner().active()
     live = [
         j
         for j in active
-        if (group_id is None or j.group_id == group_id)
+        if (not channel_id or j.channel_id == channel_id)
         and (statuses is None or j.status in statuses)
         and (kind is None or j.kind == kind)
         and (not q or archive.matches(j, q))
     ]
     shown = live[offset : offset + limit]
     archived, archived_total = await archive.search(
-        group_id=group_id,
+        channel_id=channel_id,
         statuses=statuses,
         kind=kind,
         q=q,
@@ -261,8 +258,6 @@ def _ending(job: Job) -> list[Entry]:
 
 @router.get("/jobs/{job_id}/transcript")
 async def get_job_transcript(job_id: str) -> transcripts.TranscriptOut:
-    """The job as a conversation: omp's messages for agent jobs (live while it runs), the script, the bot tools its
-    code called and its output for command jobs."""
     r = runner()
     job = await r.get(job_id)
     if job is not None:
@@ -283,7 +278,7 @@ async def get_job_transcript(job_id: str) -> transcripts.TranscriptOut:
             duration_ms=int((job.ended_at - job.created_at) * 1000) if job.ended_at is not None else None,
             parts=[_text(job.result)] if job.result else [],
         )
-        row = await store.for_job(job_id)  # a command job's transcript holds only its tool bridge calls
+        row = await store.for_job(job_id)
         bridged = [Entry.model_validate(e) for e in row.entries] if row is not None else []
         items = [Entry(kind="user", at=started, parts=[_text(job.spec)]), *bridged]
         if not job.running:
@@ -301,7 +296,6 @@ async def get_job_transcript(job_id: str) -> transcripts.TranscriptOut:
 
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, actor: Actor) -> JobOut:
-    """Stop a running job; the poller ends it within seconds and the group still gets its report."""
     _manager()
     r = runner()
     if await r.get(job_id) is None:

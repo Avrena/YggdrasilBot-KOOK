@@ -12,7 +12,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from yggdrasil.transcript.capture import TranscriptRecorder, entries
 from yggdrasil.transcript.notes import TraceNotes, blob_id
-from yggdrasil.transcript.schema import Entry, ImagePart, QQContextDisplay, QQMessage
+from yggdrasil.transcript.schema import ChatContextDisplay, ChatMessage, Entry, ImagePart
 from yggdrasil.transcript.schema import ToolCallPart as TcPart
 
 PNG = b"\x89PNG\r\n\x1a\n-fake-image"
@@ -67,8 +67,8 @@ async def test_a_run_reads_as_a_conversation() -> None:
 
     recorder = TranscriptRecorder()
     notes = TraceNotes()
-    trigger = QQMessage(user_id=10001, segments=[{"type": "text", "data": {"text": "这是什么"}}])
-    notes.context = QQContextDisplay(trigger=trigger)
+    trigger = ChatMessage(user_id="10001", segments=[{"type": "text", "data": {"text": "这是什么"}}])
+    notes.context = ChatContextDisplay(trigger=trigger)
     result = await _agent(respond, recorder).run("看看 #7 是什么", deps=notes)
     assert result.output == "鹈鹕是一种鸟。"
 
@@ -96,7 +96,7 @@ async def test_a_run_reads_as_a_conversation() -> None:
     assert isinstance(image, ImagePart)
     assert image.blob == blob_id(PNG)
     assert notes.blobs[blob_id(PNG)].data == PNG
-    assert notes.image_keys == {"abc.png": blob_id(PNG)}
+    assert notes.image_keys == {"https://example.com/abc.png": blob_id(PNG)}
     assert "q 不能是 bad" in (items[5].parts[0].text or "")  # pyright: ignore[reportAttributeAccessIssue]
     assert items[-1].model == "function:respond:"  # the name the model reported
     assert all(e.duration_ms is not None for e in items if e.kind == "assistant")
@@ -147,8 +147,8 @@ async def test_metadata_mode_keeps_shapes_without_content() -> None:
     recorder = TranscriptRecorder()
     notes = TraceNotes(full=False)
     # The pipeline sets the prompt's QQ context whatever the mode; none of it may be kept.
-    notes.context = QQContextDisplay(
-        trigger=QQMessage(user_id=10001, segments=[{"type": "text", "data": {"text": "群聊原文"}}])
+    notes.context = ChatContextDisplay(
+        trigger=ChatMessage(user_id="10001", segments=[{"type": "text", "data": {"text": "群聊原文"}}])
     )
     await _agent(respond, recorder).run("看看 #7", deps=notes)
 

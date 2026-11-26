@@ -1,8 +1,4 @@
-"""Persist transcripts and their images.
-
-Invocations are saved once, when the run ends (any outcome). Jobs grow while they run: new entries are appended
-with ``entries || :new``. Saving never raises into the caller: a transcript is a record, not part of the reply.
-"""
+"""Persist transcripts and their images."""
 
 import json
 from typing import Any
@@ -14,20 +10,21 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Message, Transcript, TranscriptBlob
 from yggdrasil.db.session import get_session
-from yggdrasil.people import names_in_groups
+from yggdrasil.people import names_in_guilds
 from yggdrasil.transcript.capture import TranscriptRecorder, entries
 from yggdrasil.transcript.notes import Blob, TraceNotes
-from yggdrasil.transcript.schema import VERSION, Entry, QQForwardDisplay, QQMessage
+from yggdrasil.transcript.schema import VERSION, ChatMessage, Entry
 
 
 def dump(items: list[Entry]) -> list[dict[str, Any]]:
     return [e.model_dump(mode="json", exclude_none=True) for e in items]
 
 
-def qq_from_row(m: Message) -> QQMessage:
-    return QQMessage(
+def msg_from_row(m: Message) -> ChatMessage:
+    return ChatMessage(
         id=m.id,
-        qq_message_id=m.qq_message_id,
+        kook_message_id=m.kook_message_id,
+        channel_id=m.channel_id,
         user_id=m.user_id,
         sender_name=m.sender_name,
         sent_at=m.sent_at,
@@ -37,30 +34,29 @@ def qq_from_row(m: Message) -> QQMessage:
     )
 
 
-async def snapshot_messages(ids: set[int]) -> dict[str, QQMessage]:
+async def snapshot_messages(ids: set[int]) -> dict[str, ChatMessage]:
     if not ids:
         return {}
     async with get_session() as session:
         rows = (await session.scalars(select(Message).where(Message.id.in_(ids)))).all()
-    return {str(m.id): qq_from_row(m) for m in rows}
+    return {str(m.id): msg_from_row(m) for m in rows}
 
 
-def _mentioned(segments: list[dict[str, Any]]) -> set[int]:
-    out: set[int] = set()
+def _mentioned(segments: list[dict[str, Any]]) -> set[str]:
+    out: set[str] = set()
     for seg in segments:
         uid = (seg.get("data") or {}).get("user_id") if seg.get("type") == "mention" else None
-        if isinstance(uid, int) and uid > 0:
-            out.add(uid)
+        if uid:
+            out.add(str(uid))
     return out
 
 
-async def _names(group_id: int | None, messages: list[QQMessage]) -> dict[str, str]:
-    """Latest group card of every sender and @mentioned member, so the console can label them."""
-    if group_id is None:
+async def _names(guild_id: str | None, messages: list[ChatMessage]) -> dict[str, str]:
+    if not guild_id:
         return {}
     uids = {m.user_id for m in messages} | {u for m in messages for u in _mentioned(m.segments)}
-    names = await names_in_groups((group_id, u) for u in uids)
-    return {str(u): n for (_, u), n in names.items()}
+    names = await names_in_guilds((guild_id, u) for u in uids)
+    return {u: n for (_, u), n in names.items()}
 
 
 async def store_blobs(blobs: dict[str, Blob]) -> None:
@@ -71,9 +67,10 @@ async def store_blobs(blobs: dict[str, Blob]) -> None:
         await session.execute(pg_insert(TranscriptBlob).values(rows).on_conflict_do_nothing(index_elements=["sha256"]))
 
 
-async def build_context(notes: TraceNotes, group_id: int | None, items: list[Entry]) -> dict[str, Any]:
-    """What the entries point at: message snapshots, group cards, the image keys whose bytes we kept."""
-    context: dict[str, Any] = {"version": VERSION, "group_id": group_id}
+async def build_context(
+    notes: TraceNotes, channel_id: str | None, guild_id: str | None, items: list[Entry]
+) -> dict[str, Any]:
+    context: dict[str, Any] = {"version": VERSION, "channel_id": channel_id, "guild_id": guild_id}
     if notes.bot:
         context["bot"] = {"user_id": notes.bot[0], "name": notes.bot[1]}
     if not notes.full:
@@ -85,24 +82,25 @@ async def build_context(notes: TraceNotes, group_id: int | None, items: list[Ent
     shown = list(messages.values())
     if notes.context:
         shown += [m for m in (notes.context.trigger, notes.context.quoted) if m is not None]
-    for e in items:
-        if isinstance(e.display, QQForwardDisplay):
-            shown += [QQMessage(user_id=n.user_id, segments=n.segments) for n in e.display.nodes]
     context["messages"] = {k: m.model_dump(mode="json") for k, m in messages.items()}
-    names = await _names(group_id, shown)
+    names = await _names(guild_id, shown)
     if notes.bot:
-        names[str(notes.bot[0])] = notes.bot[1]  # the bot has no group card history; label it with its persona
+        names[notes.bot[0]] = notes.bot[1]
     context["names"] = names
     context["image_keys"] = notes.image_keys
     return context
 
 
 async def save_invocation(
-    invocation_id: UUID, recorder: TranscriptRecorder, notes: TraceNotes, group_id: int | None
+    invocation_id: UUID,
+    recorder: TranscriptRecorder,
+    notes: TraceNotes,
+    channel_id: str | None,
+    guild_id: str | None = None,
 ) -> None:
     try:
         items = entries(recorder, notes)
-        context = await build_context(notes, group_id, items)
+        context = await build_context(notes, channel_id, guild_id, items)
         await store_blobs(notes.blobs)
         payload = dump(items)
         values = {
@@ -128,7 +126,6 @@ async def save_invocation(
 async def append_job(
     job_id: str, items: list[Entry], blobs: dict[str, Blob], *, full: bool, source: str = "omp"
 ) -> None:
-    """Add entries to a job's transcript, creating it on first use."""
     if not items:
         return
     try:

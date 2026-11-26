@@ -1,15 +1,8 @@
-"""Now and then a sticker in the chat (``Settings.sticker_drop``), checked by the worker every five minutes.
+"""Occasional sticker drops in KOOK channels (``Settings.sticker_drop``).
 
-A check goes on once ``min_new_messages`` messages from members came in since the last decision. Cheap gates first
-(daily cap, gap since the last one, the chat still active), then one call to a decision model (route
-``sticker_pick``, e.g. Jev on OpenRouter's Decisions API) with the recent chat and a weighted sample of the collected
-stickers. It answers whether a sticker fits now (a probability, held against ``min_fit``) and which one; a final dice
-roll (``chance``) keeps the bot from replying to every lively stretch. The pick goes to a Redis list that the bot
-process sends from (the worker has no QQ connection).
-
-Sample weights: ``1 + ln(1 + uses)``, so a sticker sent 200 times weighs about 4x one sent once, and each send by the
-bot in the past week multiplies it by ``REPEAT_PENALTY``. Uses are counted across all groups, or only in the group
-(which then picks only from its own stickers) with ``group_only``; the bot's own sends never count.
+Usage popularity is shared per guild; drop cadence and activity checks are isolated per channel.
+Same-guild custom emojis can be sent natively as KMarkdown ``(emj)name(emj)[id]``; images and cross-guild emojis
+are uploaded via ``/asset/create`` and sent as KOOK image messages.
 """
 
 import asyncio
@@ -37,29 +30,23 @@ TASK = "sticker_pick"
 OUTBOX = "ygg:sticker_drop:outbox"
 REPEAT_WINDOW = timedelta(days=7)
 REPEAT_PENALTY = 0.2
-# A pick older than this when the bot gets to it is stale: the chat has moved on.
 MAX_AGE_S = 120
-# How long one BRPOP blocks; redis-py's connections time out reads after 5 s by default.
 POLL_S = 2
-# Short lines and criteria keep the request under ~32 KB of text, past which Jev switches to a slower, less accurate
-# long-context mode (UTF-8 Chinese is 3 bytes a character).
 LINE_MAX_CHARS = 80
 
 
-def sent_key(group_id: int) -> str:
-    """Sorted set of the group's sends: member ``<sticker id>:<ms>``, score the send time (epoch seconds)."""
-    return f"ygg:sticker_drop:sent:{group_id}"
+def sent_key(channel_id: str) -> str:
+    return f"ygg:sticker_drop:sent:{channel_id}"
 
 
-def mark_key(group_id: int) -> str:
-    """The newest message id the last decision saw; messages after it count towards ``min_new_messages``."""
-    return f"ygg:sticker_drop:mark:{group_id}"
+def mark_key(channel_id: str) -> str:
+    return f"ygg:sticker_drop:mark:{channel_id}"
 
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
     id: int
-    uses: int  # sightings across groups, or in the group (``group_only``)
+    uses: int
     description: str
     usage: str
     emotions: list[str]
@@ -76,7 +63,7 @@ class Candidate:
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
-    outcome: str  # off | no_route | capped | gap | quiet | idle | no_stickers | refused | unfit | dice | sent
+    outcome: str
     fit: float | None = None
     sticker_id: int | None = None
 
@@ -86,7 +73,6 @@ def weight(uses: int, recent_sends: int) -> float:
 
 
 def sample[T](items: Sequence[T], weights: Sequence[float], k: int, rng: random.Random) -> list[T]:
-    """``k`` items without replacement, each draw proportional to weight (Efraimidis–Spirakis)."""
     keyed = sorted(((rng.random() ** (1 / w), i) for i, w in enumerate(weights) if w > 0), reverse=True)
     return [items[i] for _, i in keyed[:k]]
 
@@ -95,25 +81,24 @@ def _local_midnight(now: datetime) -> datetime:
     return now.astimezone(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-async def _recent_messages(group_id: int, limit: int) -> list[MessageView]:
+async def _recent_messages(channel_id: str, limit: int) -> list[MessageView]:
     async with get_session() as session:
         rows = await session.execute(
             select(*VIEW_COLUMNS)
-            .where(Message.group_id == group_id, Message.recalled.is_(False))
+            .where(Message.channel_id == channel_id, Message.recalled.is_(False))
             .order_by(Message.id.desc())
             .limit(limit)
         )
         return [MessageView(*r) for r in reversed(rows.all())]
 
 
-async def _new_messages(group_id: int, after_id: int, limit: int, since: datetime) -> int:
-    """Members' messages after ``after_id`` and ``since``, counted up to ``limit``."""
+async def _new_messages(channel_id: str, after_id: int, limit: int, since: datetime) -> int:
     async with get_session() as session:
         ids = (
             select(Message.id)
             .where(
-                Message.group_id == group_id,
-                Message.sent_at > since,  # bounds the scan to recent partitions and the (group, sent_at) index
+                Message.channel_id == channel_id,
+                Message.sent_at > since,
                 Message.recalled.is_(False),
                 Message.is_self.is_(False),
                 Message.id > after_id,
@@ -123,18 +108,15 @@ async def _new_messages(group_id: int, after_id: int, limit: int, since: datetim
         return await session.scalar(select(func.count()).select_from(ids.subquery())) or 0
 
 
-async def _candidates(group_id: int, *, group_only: bool) -> list[Candidate]:
-    """Every sendable sticker (tagged, enabled, image kept) with its use count: everywhere, or with ``group_only``
-    only the group's own stickers and their count there."""
+async def _candidates(guild_id: str, *, guild_only: bool) -> list[Candidate]:
     query = select(Sticker.id).where(
-        Sticker.kind == "image",
         Sticker.status == "ready",
         Sticker.enabled.is_(True),
         exists().where(StickerBlob.sticker_id == Sticker.id),
     )
-    if group_only:
+    if guild_only:
         query = query.join(
-            StickerUsage, (StickerUsage.sticker_id == Sticker.id) & (StickerUsage.group_id == group_id)
+            StickerUsage, (StickerUsage.sticker_id == Sticker.id) & (StickerUsage.guild_id == guild_id)
         ).add_columns(StickerUsage.count)
     else:
         query = query.add_columns(Sticker.seen_count)
@@ -144,9 +126,6 @@ async def _candidates(group_id: int, *, group_only: bool) -> list[Candidate]:
 
 
 def questions(picks: Sequence[Candidate]) -> dict[str, dict[str, Any]]:
-    # Asked about the last few messages, not "would the bot fit in": the broader question scored nearly every
-    # stretch of chat 0.55-0.8 (prod replay, 2026-11-20); this one puts tech talk and fresh bot answers at 0.15-0.4
-    # and banter at 0.8-0.9.
     return {
         "fit": {
             "type": "noul",
@@ -164,33 +143,33 @@ def questions(picks: Sequence[Candidate]) -> dict[str, dict[str, Any]]:
     }
 
 
-async def maybe_drop(group_id: int, *, now: datetime | None = None, rng: random.Random | None = None) -> Outcome:
-    """Decide whether to drop a sticker into the group now and queue it for the bot if so."""
+async def maybe_drop(channel_id: str, *, now: datetime | None = None, rng: random.Random | None = None) -> Outcome:
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
     snap = snapshot()
-    settings = snap.settings(group_id)
+    guild_id = snap.guild_of(channel_id) or ""
+    settings = snap.settings(channel_id=channel_id, guild_id=guild_id)
     cfg = settings.sticker_drop
     if not cfg.enabled or cfg.daily_max == 0:
         return Outcome("off")
     if TASK not in snap.routes:
         return Outcome("no_route")
     r = redis_client()
-    key = sent_key(group_id)
+    key = sent_key(channel_id)
     await r.zremrangebyscore(key, "-inf", (now - REPEAT_WINDOW).timestamp())
     sent = cast("list[tuple[str, float]]", await r.zrange(key, 0, -1, withscores=True))
     if sum(at >= _local_midnight(now).timestamp() for _, at in sent) >= cfg.daily_max:
         return Outcome("capped")
     if sent and now.timestamp() - max(at for _, at in sent) < cfg.min_gap_minutes * 60:
         return Outcome("gap")
-    mark = int(await r.get(mark_key(group_id)) or 0)
+    mark = int(await r.get(mark_key(channel_id)) or 0)
     since = now - timedelta(days=1)
-    if await _new_messages(group_id, mark, cfg.min_new_messages, since) < cfg.min_new_messages:
+    if await _new_messages(channel_id, mark, cfg.min_new_messages, since) < cfg.min_new_messages:
         return Outcome("quiet")
-    recent = await _recent_messages(group_id, cfg.context_messages)
+    recent = await _recent_messages(channel_id, cfg.context_messages)
     if not recent or now - recent[-1].sent_at > timedelta(minutes=cfg.active_within_minutes):
         return Outcome("idle")
-    candidates = await _candidates(group_id, group_only=cfg.group_only)
+    candidates = await _candidates(guild_id, guild_only=cfg.guild_only)
     if not candidates:
         return Outcome("no_stickers")
     repeats: dict[int, int] = {}
@@ -199,22 +178,23 @@ async def maybe_drop(group_id: int, *, now: datetime | None = None, rng: random.
         repeats[sid] = repeats.get(sid, 0) + 1
     picks = sample(candidates, [weight(c.uses, repeats.get(c.id, 0)) for c in candidates], cfg.candidates, rng)
     bot_name = settings.persona.name
-    people = await people_for(group_id, recent, bot_name=bot_name)
+    people = await people_for(guild_id, recent, bot_name=bot_name)
     state = {
-        "群聊最近的消息": "\n".join(format_line(v, people)[:LINE_MAX_CHARS] for v in recent),
-        "发表情的人": f"{bot_name}（群里的 bot，消息里标着「(你)」）",
+        "频道最近的消息": "\n".join(format_line(v, people)[:LINE_MAX_CHARS] for v in recent),
+        "发表情的人": f"{bot_name}（频道里的 bot，消息里标着「(你)」）",
     }
     result = await registry.decide(TASK, state, questions(picks))
-    await r.set(mark_key(group_id), recent[-1].id)
+    await r.set(mark_key(channel_id), recent[-1].id)
     pick = result.answers.get("pick") or {}
     picked = {f"s{c.id}": c.id for c in picks}.get(str(pick.get("choice")))
-    outcome = _judge(group_id, result.answers, picked, cfg.min_fit, cfg.chance, rng)
+    outcome = _judge(channel_id, result.answers, picked, cfg.min_fit, cfg.chance, rng)
     confidence = pick.get("confidence")
     async with get_session() as session:
         session.add(
             StickerDrop(
                 at=now,
-                group_id=group_id,
+                channel_id=channel_id,
+                guild_id=guild_id,
                 outcome=outcome.outcome,
                 fit=outcome.fit,
                 sticker_id=picked,
@@ -229,12 +209,15 @@ async def maybe_drop(group_id: int, *, now: datetime | None = None, rng: random.
     if outcome.outcome == "sent" and outcome.sticker_id is not None:
         sid = outcome.sticker_id
         await r.zadd(key, {f"{sid}:{int(now.timestamp() * 1000)}": now.timestamp()})
-        await r.lpush(OUTBOX, json.dumps({"group_id": group_id, "sticker_id": sid, "at": now.timestamp()}))
+        await r.lpush(
+            OUTBOX,
+            json.dumps({"channel_id": channel_id, "guild_id": guild_id, "sticker_id": sid, "at": now.timestamp()}),
+        )
     return outcome
 
 
 def _judge(
-    group_id: int,
+    channel_id: str,
     answers: dict[str, dict[str, Any]],
     picked: int | None,
     min_fit: float,
@@ -243,7 +226,7 @@ def _judge(
 ) -> Outcome:
     fit_answer, pick_answer = answers.get("fit") or {}, answers.get("pick") or {}
     if fit_answer.get("type") != "noul" or pick_answer.get("type") != "choice":
-        LOGGER.info("sticker drop in {}: the model refused ({}, {})", group_id, fit_answer, pick_answer)
+        LOGGER.info("sticker drop in {}: the model refused ({}, {})", channel_id, fit_answer, pick_answer)
         return Outcome("refused")
     fit = float(fit_answer["noul"])
     if fit < min_fit:
@@ -251,17 +234,18 @@ def _judge(
     if rng.random() >= chance:
         return Outcome("dice", fit)
     if picked is None:
-        LOGGER.warning("sticker drop in {}: the model picked {}, not a candidate", group_id, pick_answer.get("choice"))
+        LOGGER.warning(
+            "sticker drop in {}: the model picked {}, not a candidate", channel_id, pick_answer.get("choice")
+        )
         return Outcome("refused", fit)
     return Outcome("sent", fit, picked)
 
 
 async def deliver_forever() -> None:
-    """Bot process: send the picks the worker queued, while this replica holds the QQ connection."""
-    from yggdrasil.qq import client as qq_client
+    from yggdrasil.kook import client as kook_client
 
     while True:
-        if qq_client.connected() is None:
+        if kook_client.connected() is None:
             await asyncio.sleep(2)
             continue
         try:
@@ -277,25 +261,45 @@ async def deliver_forever() -> None:
 
 async def _deliver(pick: dict[str, Any]) -> None:
     from yggdrasil.bot.state import identity
-    from yggdrasil.delivery.send import send_image
-    from yggdrasil.qq import client as qq_client
+    from yggdrasil.delivery.send import send_image, send_kmarkdown
+    from yggdrasil.kook import client as kook_client
 
-    group_id, sticker_id = int(pick["group_id"]), int(pick["sticker_id"])
+    channel_id, sticker_id = str(pick["channel_id"]), int(pick["sticker_id"])
+    guild_id = str(pick.get("guild_id") or snapshot().guild_of(channel_id) or "")
     if time.time() - float(pick["at"]) > MAX_AGE_S:
-        LOGGER.info("sticker drop in {}: sticker {} is stale; skipped", group_id, sticker_id)
+        LOGGER.info("sticker drop in {}: sticker {} is stale; skipped", channel_id, sticker_id)
         return
-    qq = qq_client.connected()
-    if qq is None or not snapshot().group_enabled(group_id):
+    kook = kook_client.connected()
+    if kook is None or not snapshot().channel_enabled(channel_id):
         return
     async with get_session() as session:
+        sticker = await session.get(Sticker, sticker_id)
         data = await session.scalar(select(StickerBlob.data).where(StickerBlob.sticker_id == sticker_id))
+    if sticker is None:
+        return
+    ident = await identity(kook)
+    # Same-guild KOOK custom emoji can be sent natively as KMarkdown!
+    if sticker.kind == "emoji" and sticker.emoji_id and sticker.guild_id == guild_id:
+        name = sticker.summary or "emoji"
+        await send_kmarkdown(
+            kook,
+            channel_id=channel_id,
+            guild_id=guild_id,
+            user_id="",
+            reply_to=None,
+            content=f"(emj){name}(emj)[{sticker.emoji_id}]",
+            self_id=ident.self_id,
+            nickname=ident.nickname,
+        )
+        LOGGER.info("sticker drop in {}: sent native KOOK emoji {}", channel_id, sticker_id)
+        return
     if data is None:
         return
-    ident = await identity(qq)
     await send_image(
-        qq,
-        group_id=group_id,
-        user_id=0,
+        kook,
+        channel_id=channel_id,
+        guild_id=guild_id,
+        user_id="",
         reply_to=None,
         images=[data],
         text="",
@@ -303,4 +307,4 @@ async def _deliver(pick: dict[str, Any]) -> None:
         nickname=ident.nickname,
         sticker=True,
     )
-    LOGGER.info("sticker drop in {}: sent sticker {}", group_id, sticker_id)
+    LOGGER.info("sticker drop in {}: sent sticker image {}", channel_id, sticker_id)

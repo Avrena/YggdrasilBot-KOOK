@@ -1,5 +1,4 @@
-"""generate_image: the image route's OpenRouter-style /images call, and the picture going to the group as its own
-message (moderated like every image the bot sends)."""
+"""generate_image: OpenRouter-style /images call, KOOK CDN upload, and quote reply."""
 
 import base64
 import io
@@ -10,14 +9,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
-import nonebot
 import pytest
 from PIL import Image
 from pydantic_ai import RunContext
 
 from tests.support.agent import run_ctx
 from tests.support.files import png
-from tests.support.qq import FakeQQ
+from tests.support.kook import FakeKook
 from tests.support.routes import Routes
 from yggdrasil import runtime
 from yggdrasil.agent import media
@@ -27,10 +25,9 @@ from yggdrasil.delivery import send
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.llm import registry
 from yggdrasil.moderation.image import ImageVerdict
-from yggdrasil.qq.model import Message, QQError, Sender, Unconfirmed
 from yggdrasil.settings import Settings
 
-GROUP, TRIGGER, SENT = 10001, 555, 77
+GUILD, CHANNEL, TRIGGER = "g-1", "ch-10001", "trig-555"
 MODEL = "openai/gpt-image-test"
 IMAGES = "https://openrouter.example.com/api/v1/images"
 
@@ -44,7 +41,6 @@ def _ok(picture: bytes, cost: float = 0.04) -> httpx.Response:
 
 @pytest.fixture
 def upstream(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., runtime.Snapshot]) -> Routes:
-    """The image route's provider; ``answers[IMAGES]`` is what it draws."""
     provider = runtime.ProviderInfo(1, "or", "https://openrouter.example.com/api/v1", "sk-test", {}, True, ())
     snapshot(
         providers={1: provider}, routes={"image": runtime.Route("image", 1, MODEL, {"quality": "high"}, None, None, {})}
@@ -58,25 +54,8 @@ def _body(upstream: Routes) -> dict[str, Any]:
     return json.loads(upstream.seen[-1].content)
 
 
-def _qq(*, timeout: bool = False, fetched: bool = True) -> FakeQQ:
-    """QQ confirms the picture as message ``SENT`` (or never does) and, unless ``fetched`` is off, hands it back as
-    it may hand our own pictures back: with a ref but an empty url."""
-    stored = {"type": "image", "data": {"ref": "res-abc", "url": "", "summary": "[图片]", "sticker": False, "sha1": ""}}
-    return FakeQQ(
-        {
-            "send": Unconfirmed("no answer within 120s") if timeout else SENT,
-            "message": (
-                (lambda message_id, **_: Message(message_id, GROUP, Sender(10000, ""), 0, [stored]))
-                if fetched
-                else QQError("message not found")
-            ),
-        }
-    )
-
-
 @pytest.fixture(autouse=True)
 def kept(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
-    """The blob store the bot keeps the pictures it sent in."""
     store: dict[str, bytes] = {}
 
     async def put(blobs: dict[str, Any]) -> None:
@@ -90,31 +69,27 @@ def kept(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
     return store
 
 
-def _sent(qq: FakeQQ) -> list[list[dict[str, Any]]]:
-    return [call["segments"] for call in qq.called("send")]
-
-
-def _ctx(qq: FakeQQ, *, moderated: bool = False) -> RunContext[Deps]:
+def _ctx(kook: FakeKook, *, moderated: bool = False) -> RunContext[Deps]:
     settings = Settings.model_validate({"moderation": {"enabled": moderated, "check_output": moderated}})
     return run_ctx(
-        qq=qq,
-        group_id=GROUP,
-        user_id=20001,
+        kook=kook,
+        channel_id=CHANNEL,
+        guild_id=GUILD,
+        user_id="20001",
         settings=settings,
         tool_call_id="call_1",
         trigger_message_id=TRIGGER,
-        self_id=10000,
+        self_id="10000",
     )
 
 
-async def test_the_picture_is_sent_replying_to_the_trigger(upstream: Routes, recorded: list[IncomingMessage]):
-    qq = _qq()
-    ctx = _ctx(qq)
+async def test_the_picture_is_uploaded_and_sent_quoting_the_trigger(upstream: Routes, recorded: list[IncomingMessage]):
+    kook = FakeKook(bot_id="10000")
+    ctx = _ctx(kook)
     result = await images.generate_image(ctx, "一只戴墨镜的猫", aspect_ratio="16:9", text="画好了")
 
     assert upstream.seen[0].url.path == "/api/v1/images"
     assert upstream.seen[0].headers["authorization"] == "Bearer sk-test"
-    # The route's params go along; "auto" would leave aspect_ratio out.
     assert _body(upstream) == {
         "quality": "high",
         "model": MODEL,
@@ -123,62 +98,35 @@ async def test_the_picture_is_sent_replying_to_the_trigger(upstream: Routes, rec
         "aspect_ratio": "16:9",
     }
 
-    [message] = _sent(qq)
-    assert message[0] == {"type": "reply", "data": {"message_id": TRIGGER}}
-    assert message[1] == {"type": "text", "data": {"text": "画好了"}}
-    assert message[2]["type"] == "image"
-    picture = base64.b64decode(message[2]["data"]["uri"].removeprefix("base64://"))
-    assert Image.open(io.BytesIO(picture)).size == (8, 8)
-
+    assert len(kook.uploaded) == 1
+    assert Image.open(io.BytesIO(kook.uploaded[0][1])).size == (8, 8)
+    assert len(kook.sent) == 2
+    assert kook.sent[0].kind == "kmarkdown"
+    assert kook.sent[0].content == "画好了"
+    assert kook.sent[0].quote == TRIGGER
+    assert kook.sent[1].kind == "image"
     assert "$0.040" in str(result)
-    assert ctx.deps.actions == [f"image {SENT}"]  # lets the run end with mode=done
-    # Our own record keeps the picture, so a later "改一下这张图" can load it again although QQ gave no url for it.
-    [own] = recorded
-    assert own.is_self
-    assert own.qq_message_id == SENT
-    [segment] = own.segments
-    assert (segment["type"], segment["data"]["ref"]) == ("image", "res-abc")
-    again = await media.media_bytes(qq, GROUP, 20001, Handle("img#1", "image", segment["data"]), 1 << 20)
-    assert again == (picture, "file")
+    assert ctx.deps.actions == ["image msg-1"]
 
-
-async def test_a_picture_qq_wont_hand_back_is_still_kept(upstream: Routes, recorded: list[IncomingMessage]):
-    qq = _qq(fetched=False)
-    await images.generate_image(_ctx(qq), "x")
-    [own] = recorded
-    reply, segment = own.segments
-    assert reply == {"type": "reply", "data": {"message_id": TRIGGER}}
-    assert (segment["type"], segment["data"]["ref"], segment["data"]["url"]) == ("image", "", "")
-    sent = base64.b64decode(_sent(qq)[0][1]["data"]["uri"].removeprefix("base64://"))
-    again = await media.media_bytes(qq, GROUP, 20001, Handle("img#1", "image", segment["data"]), 1 << 20)
-    assert again == (sent, "file")
-
-
-async def test_an_unconfirmed_send_counts_as_sent(upstream: Routes, recorded: list[IncomingMessage]):
-    # QQ can take longer than the call's timeout to confirm a picture it did post (the first prod drawing): the run
-    # must end as done, and the model must not post it again.
-    qq = _qq(timeout=True)
-    ctx = _ctx(qq)
-    result = await images.generate_image(ctx, "x")
-    [call] = qq.called("send")
-    assert call["reply_timeout"] > nonebot.get_driver().config.api_timeout
-    assert "不要重发" in str(result)
-    assert ctx.deps.actions == ["image (unconfirmed)"]
-    assert recorded == []  # no message id to record it under
+    assert len(recorded) == 2
+    assert recorded[0].is_self
+    assert recorded[0].kook_message_id == "msg-1"
+    img_seg = next(s for s in recorded[1].segments if s["type"] == "image")
+    again = await media.media_bytes(Handle("img#1", "image", img_seg["data"]), 1 << 20)
+    assert again[0] == kook.uploaded[0][1]
 
 
 async def test_a_large_picture_is_sent_as_jpeg(upstream: Routes, recorded: list[IncomingMessage]):
     noisy = io.BytesIO()
-    Image.frombytes("RGB", (512, 512), os.urandom(512 * 512 * 3)).save(noisy, "PNG")  # over the 600 KB send limit
+    Image.frombytes("RGB", (1200, 1200), os.urandom(1200 * 1200 * 3)).save(noisy, "PNG")
     upstream.answers[IMAGES] = _ok(noisy.getvalue())
-    qq = _qq()
-    await images.generate_image(_ctx(qq), "x")
-    reply, image = _sent(qq)[0]  # no text: the reply to the trigger, then the picture
-    assert reply["type"] == "reply"
-    sent = base64.b64decode(image["data"]["uri"].removeprefix("base64://"))
+    kook = FakeKook(bot_id="10000")
+    await images.generate_image(_ctx(kook), "x")
+    assert len(kook.uploaded) == 1
+    sent = kook.uploaded[0][1]
     assert sent[:2] == b"\xff\xd8"
     assert len(sent) < len(noisy.getvalue())
-    assert Image.open(io.BytesIO(sent)).size == (512, 512)
+    assert Image.open(io.BytesIO(sent)).size == (1200, 1200)
 
 
 async def test_reference_images_go_as_data_urls(upstream: Routes):
@@ -192,11 +140,11 @@ async def test_reference_images_go_as_data_urls(upstream: Routes):
 
 async def test_a_refusal_reaches_the_model_and_nothing_is_sent(upstream: Routes):
     upstream.answers[IMAGES] = httpx.Response(400, json={"error": {"message": "Request rejected by the safety system"}})
-    qq = _qq()
-    ctx = _ctx(qq)
+    kook = FakeKook(bot_id="10000")
+    ctx = _ctx(kook)
     result = await images.generate_image(ctx, "x")
     assert "画图失败：400 Request rejected by the safety system" in str(result)
-    assert _sent(qq) == []
+    assert kook.sent == []
     assert ctx.deps.actions == []
 
 
@@ -205,9 +153,9 @@ async def test_an_unsafe_picture_is_not_sent(upstream: Routes, monkeypatch: pyte
         return ImageVerdict(False, "gore", "vision-model", 10, 2)
 
     monkeypatch.setattr(images, "check_image", unsafe)
-    qq = _qq()
-    ctx = _ctx(qq, moderated=True)
+    kook = FakeKook(bot_id="10000")
+    ctx = _ctx(kook, moderated=True)
     result = await images.generate_image(ctx, "x")
     assert "审核没通过（gore）" in str(result)
-    assert _sent(qq) == []
+    assert kook.sent == []
     assert ctx.deps.actions == []

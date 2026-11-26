@@ -11,7 +11,7 @@ import pytest
 
 from tests.support.agent import run_ctx
 from tests.support.files import png
-from tests.support.qq import FakeQQ
+from tests.support.kook import FakeKook
 from yggdrasil import relay
 from yggdrasil.agent import bridge
 from yggdrasil.agent import media as media_mod
@@ -20,7 +20,7 @@ from yggdrasil.agent.schema import BotReply, Section
 from yggdrasil.agent.tools import attachments, images
 from yggdrasil.agent.tools.sandbox import sh
 from yggdrasil.config import APP_CONFIG
-from yggdrasil.qq import client as qq_client
+from yggdrasil.kook import client as kook_client
 from yggdrasil.relay.grants import ToolScope
 from yggdrasil.relay.server import Relay
 from yggdrasil.runtime import Snapshot
@@ -32,22 +32,22 @@ from yggdrasil.tools.web.model import ImageLink
 from yggdrasil.transcript.capture import ToolRecord, TranscriptRecorder, entries
 from yggdrasil.transcript.schema import Entry
 
-GROUP = 10001
+CHANNEL = "ch-10001"
 URL = "http://relay.test"
 PICTURE = "https://img.example.com/cat.png"
 
 
 @pytest.fixture(autouse=True)
-def runtime(snapshot: Callable[..., Snapshot], monkeypatch: pytest.MonkeyPatch) -> FakeQQ:
+def runtime(snapshot: Callable[..., Snapshot], monkeypatch: pytest.MonkeyPatch) -> FakeKook:
     snapshot()
-    qq = FakeQQ()
-    monkeypatch.setattr(qq_client, "connected", lambda: qq)
+    kook = FakeKook()
+    monkeypatch.setattr(kook_client, "connected", lambda: kook)
 
     async def read(url: str, **_: Any) -> Any:
         raise ImageLink(url)  # read_url registers the picture as an img#N handle
 
     monkeypatch.setattr(web, "read_url", read)
-    return qq
+    return kook
 
 
 @pytest.fixture
@@ -59,9 +59,9 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def _token(job_id: str = "job1", tools: tuple[str, ...] = ("read_url", "view_image"), limit: int = 30) -> str:
-    scope = ToolScope(tools, 20002, "inv-1", limit)
+    scope = ToolScope(tools, "20002", "inv-1", limit)
     return await relay.issue_token(
-        group_id=GROUP, job_id=job_id, models=[], max_input_tokens=0, max_output_tokens=0, ttl_s=600, scope=scope
+        channel_id=CHANNEL, job_id=job_id, models=[], max_input_tokens=0, max_output_tokens=0, ttl_s=600, scope=scope
     )
 
 
@@ -75,7 +75,7 @@ async def test_refusals(client: httpx.AsyncClient) -> None:
     assert bad.status_code == 401
     assert "令牌" in bad.json()["error"]
     llm_only = await relay.issue_token(
-        group_id=GROUP, job_id="job0", models=["m"], max_input_tokens=1, max_output_tokens=1, ttl_s=600
+        channel_id=CHANNEL, job_id="job0", models=["m"], max_input_tokens=1, max_output_tokens=1, ttl_s=600
     )
     assert (await client.get("/v1/tools", headers=_auth(llm_only))).status_code == 403
 
@@ -148,7 +148,7 @@ async def test_a_live_runs_call_lands_in_the_run_and_ends_with_it(
     monkeypatch.setattr(relay, "relay_url", lambda: URL)
     backend = _Backend(client)
     ctx = run_ctx(
-        group_id=GROUP,
+        channel_id=CHANNEL,
         settings=Settings(),
         sandbox=cast(Any, _Session(backend)),
         tool_call_id="call-sh",
@@ -194,19 +194,19 @@ async def test_code_of_a_live_run_renders_a_picture_the_reply_can_embed(
 
     monkeypatch.setattr(images.renderer, "render", render)
     backend = _Backend(client, ("render_markdown", {"markdown": "```python\nx = 1\n```", "caption": "peano.py"}))
-    ctx = run_ctx(group_id=GROUP, settings=Settings(), sandbox=cast(Any, _Session(backend)), tool_call_id="call-sh")
+    ctx = run_ctx(channel_id=CHANNEL, settings=Settings(), sandbox=cast(Any, _Session(backend)), tool_call_id="call-sh")
 
     text = str(await sh(ctx, "python3 render.py"))  # the script doesn't print what the call returned
 
     assert backend.answers[0].status_code == 200
     assert rendered == ["```python\nx = 1\n```"]
     assert text.splitlines()[-1].startswith("render_markdown：已生成 img#1（peano.py）")
-    reply = BotReply(mode="forward", sections=[Section(content="如图", images=["img#1"])])
+    reply = BotReply(mode="reply", sections=[Section(content="如图", images=["img#1"])])
     assert await images.reply_images(ctx.deps, reply) == {"img#1": (png("red"), "peano.py")}
 
     # Not for the jobs a run starts: they have no reply to embed the picture in.
-    assert "render_markdown" in bridge.allowed_tools(Settings(), GROUP, live=True)
-    assert "render_markdown" not in bridge.allowed_tools(Settings(), GROUP)
+    assert "render_markdown" in bridge.allowed_tools(Settings(), CHANNEL, live=True)
+    assert "render_markdown" not in bridge.allowed_tools(Settings(), CHANNEL)
     await bridge.close_run(ctx.deps)
     detached = await _token(job_id="job-x", tools=("render_markdown",))
     refused = await client.post("/v1/tools/render_markdown", headers=_auth(detached), json={"markdown": "x"})
@@ -224,9 +224,10 @@ async def test_a_job_grant_resolves_the_requesting_runs_handles_as_text_and_byte
     job = Job(
         id="job7",
         kind="command",
-        group_id=GROUP,
-        user_id=20002,
-        trigger_message_id=777,
+        channel_id=CHANNEL,
+        guild_id="g-1",
+        user_id="20002",
+        trigger_message_id="777",
         invocation_id="inv-1",
         request_text="",
         title="训练",

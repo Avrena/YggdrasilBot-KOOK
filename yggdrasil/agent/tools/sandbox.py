@@ -406,7 +406,7 @@ async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
     deps = ctx.deps
     cfg = deps.settings.tools
     limit = cfg.file_max_mb * 1024 * 1024
-    blob, _ = await media_bytes(deps.qq, deps.group_id, deps.user_id, h, limit, made=deps.made_images)
+    blob, _ = await media_bytes(h, limit, made=deps.made_images)
     with _sandbox_errors():
         rel = await _free_in_path(session, file_name(handle, h, blob))
         path = await session.put_bytes(rel, blob)

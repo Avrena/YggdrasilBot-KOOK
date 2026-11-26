@@ -90,16 +90,16 @@ class Cluster:
         """The SandboxClaim ``name``; ``None`` when it is gone."""
         return await self._kube().get(self._claim_path(name))
 
-    async def live_claims(self, group_id: int | None = None) -> set[str]:
-        """The names of the bot's claims (of one group)."""
-        selector = _LABEL_SELECTOR if group_id is None else f"{_LABEL_SELECTOR},{_GROUP_LABEL}={group_id}"
+    async def live_claims(self, channel_id: str | None = None) -> set[str]:
+        """The names of the bot's claims (of one channel)."""
+        selector = _LABEL_SELECTOR if channel_id is None else f"{_LABEL_SELECTOR},{_GROUP_LABEL}={channel_id}"
         items = await self._kube().list(self._claim_path(), label_selector=selector)
         return {str(i.get("metadata", {}).get("name")) for i in items}
 
-    async def create_claim(self, name: str, group_id: int, workspace: str, *, shutdown: float) -> None:
-        """Claim a pod for workspace ``workspace`` of ``group_id``; the controller deletes it at ``shutdown``
+    async def create_claim(self, name: str, channel_id: str, workspace: str, *, shutdown: float) -> None:
+        """Claim a pod for workspace ``workspace`` of ``channel_id``; the controller deletes it at ``shutdown``
         unless renewed (``set_shutdown``)."""
-        labels = {**_LABELS, _GROUP_LABEL: str(group_id), _NAME_LABEL: workspace}
+        labels = {**_LABELS, _GROUP_LABEL: str(channel_id), _NAME_LABEL: workspace}
         body = {
             "apiVersion": "extensions.agents.x-k8s.io/v1beta1",
             "kind": "SandboxClaim",
@@ -126,7 +126,7 @@ class Cluster:
     # --- links ------------------------------------------------------------------------------------------
 
     async def create_link(
-        self, *, group_id: int, workspace: str, claim_id: str, sandbox: str | None, rid: str, port: int, domain: str
+        self, *, channel_id: str, workspace: str, claim_id: str, sandbox: str | None, rid: str, port: int, domain: str
     ) -> None:
         """Serve ``port`` of claim ``claim_id``'s pod at ``https://<link_name(rid)>.<domain>``: a Service and an
         IngressRoute owned by the pod's Sandbox (``sandbox``: its name when known), so they go with it."""
@@ -139,7 +139,7 @@ class Cluster:
             raise SandboxError("找不到工作区对应的沙箱对象，没法建立公开链接。")
         owners = _owner(found)
         name = link_name(rid)
-        labels = {**_LABELS, _GROUP_LABEL: str(group_id), _NAME_LABEL: workspace}
+        labels = {**_LABELS, _GROUP_LABEL: str(channel_id), _NAME_LABEL: workspace}
         service = {
             "apiVersion": "v1",
             "kind": "Service",

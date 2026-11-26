@@ -58,17 +58,17 @@ class RelayUsage:
 @dataclass(frozen=True, slots=True)
 class ToolScope:
     """What a token may do through the tool bridge: call ``tools`` and fetch media, ``limit`` times in all, on behalf
-    of ``user_id`` in the grant's group (``invocation_id``: the chat run that asked)."""
+    of ``user_id`` in the grant's channel (``invocation_id``: the chat run that asked)."""
 
     tools: tuple[str, ...]
-    user_id: int
+    user_id: str
     invocation_id: str | None
     limit: int
 
 
 @dataclass(frozen=True, slots=True)
 class Grant:
-    group_id: int
+    channel_id: str
     job_id: str  # the background job, or ``run-<invocation id>`` for a chat run's bridge token
     models: tuple[str, ...]
     max_input_tokens: int
@@ -191,7 +191,7 @@ async def relay_models() -> list[RelayModel]:
 
 async def issue_token(
     *,
-    group_id: int,
+    channel_id: str,
     job_id: str,
     models: list[str],
     max_input_tokens: int,
@@ -208,7 +208,7 @@ async def issue_token(
     token = secrets.token_urlsafe(32)
     key = digest(token)
     grant = Grant(
-        group_id=group_id,
+        channel_id=channel_id,
         job_id=job_id,
         models=tuple(models),
         max_input_tokens=max_input_tokens,

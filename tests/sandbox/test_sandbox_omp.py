@@ -298,10 +298,10 @@ def test_models_yaml_and_launch() -> None:
     assert provider["apiKey"] == omp.TOKEN_ENV
     assert provider["baseUrl"] == "http://10.0.0.1:8090"
     assert provider["models"][0]["input"] == ["text", "image"]
-    argv, env = omp.launch(group_id=10001, model="claude-x", rules_path="/r.md", max_time_s=1320, token="t0k")
+    argv, env = omp.launch(channel_id="ch-10001", model="claude-x", rules_path="/r.md", max_time_s=1320, token="t0k")
     assert argv[:3] == [omp.OMP_BIN, "--mode", "rpc"]
     assert argv[argv.index("--model") + 1] == "ygg/claude-x"
-    assert argv[argv.index("--session-dir") + 1] == "/workspace/.ygg/omp/sessions/10001"
+    assert argv[argv.index("--session-dir") + 1] == "/workspace/.ygg/omp/sessions/ch-10001"
     assert "task" not in argv[argv.index("--tools") + 1].split(",")
     assert "t0k" not in argv
     assert env[omp.TOKEN_ENV] == "t0k"

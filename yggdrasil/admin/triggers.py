@@ -1,4 +1,4 @@
-"""Command trigger rules (``command_triggers``) and the 试匹配 endpoint."""
+"""Command trigger rules (``command_triggers``) with 4-level scope inheritance and 试匹配 endpoint."""
 
 import re
 import string
@@ -28,14 +28,15 @@ HANDLERS: dict[str, str] = {
     "admin.status": "私聊状态查询",
     "admin.ops": "超级管理员用自然语言查询和修改配置（@bot ops <指令>）",
 }
-SCOPES = ("global", "group", "private")
+SCOPES = ("global", "guild", "category", "channel", "private")
+_SCOPED = frozenset({"guild", "category", "channel"})
 _PATTERN_TYPES = ("keyword_prefix", "keyword_exact", "regex")
 
 
 class TriggerFields(BaseModel):
     handler: str
     scope: str = "global"
-    group_id: int | None = None
+    scope_id: str | None = None
     match_type: str
     patterns: list[str] = Field(default_factory=list)
     arg_template: str | None = None
@@ -49,7 +50,7 @@ class TriggerFields(BaseModel):
 
 
 class TriggerIn(TriggerFields):
-    scope: Literal["global", "group", "private"] = "global"
+    scope: Literal["global", "guild", "category", "channel", "private"] = "global"
 
     @field_validator("handler")
     @classmethod
@@ -102,10 +103,12 @@ class TriggerIn(TriggerFields):
 
     @model_validator(mode="after")
     def _consistency(self) -> Self:
-        if self.scope == "group" and self.group_id is None:
-            raise ValueError("群级规则必须指定 group_id")
-        if self.scope != "group" and self.group_id is not None:
-            raise ValueError("只有群级规则可以指定 group_id")
+        if self.scope_id is not None:
+            self.scope_id = self.scope_id.strip() or None
+        if self.scope in _SCOPED and not self.scope_id:
+            raise ValueError(f"{self.scope} 级规则必须指定 scope_id")
+        if self.scope not in _SCOPED and self.scope_id is not None:
+            raise ValueError("只有 guild / category / channel 级规则可以指定 scope_id")
         if self.match_type in _PATTERN_TYPES and not self.patterns:
             raise ValueError(f"{self.match_type} 规则至少需要一个 pattern")
         if self.match_type == "regex":
@@ -128,7 +131,7 @@ def _out(t: CommandTrigger) -> TriggerOut:
         id=t.id,
         handler=t.handler,
         scope=t.scope,
-        group_id=t.group_id,
+        scope_id=t.scope_id,
         match_type=t.match_type,
         patterns=list(t.patterns),
         arg_template=t.arg_template,
@@ -218,8 +221,9 @@ async def delete_trigger(trigger_id: int, actor: Actor) -> Ok:
 
 class TriggerTestIn(BaseModel):
     text: str
-    scope: Literal["group", "private"] = "group"
-    group_id: int | None = None
+    scope: Literal["channel", "private"] = "channel"
+    channel_id: str | None = None
+    guild_id: str | None = None
     to_me: bool = False
     replied_to_bot: bool = False
     role: Literal["member", "admin", "owner", "superuser"] = "member"
@@ -242,12 +246,17 @@ class TriggerTestOut(BaseModel):
 
 @router.post("/test")
 async def test_trigger(body: TriggerTestIn) -> TriggerTestOut:
-    """Run the exact runtime index against the currently loaded snapshot."""
+    """Run the exact runtime 4-level index against the currently loaded snapshot."""
     snap = runtime.snapshot()
+    cid = body.channel_id if body.scope == "channel" else None
+    cat_id = snap.category_of(cid) if cid else None
+    gid = (body.guild_id or (snap.guild_of(cid) if cid else None)) if body.scope == "channel" else None
     hit = TriggerIndex(snap).match(
         MatchInput(
             scope=body.scope,
-            group_id=body.group_id if body.scope == "group" else None,
+            channel_id=cid,
+            category_id=cat_id,
+            guild_id=gid,
             text=body.text,
             to_me=body.to_me or body.scope == "private",
             replied_to_bot=body.replied_to_bot,

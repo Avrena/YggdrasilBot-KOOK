@@ -17,7 +17,7 @@ from yggdrasil.sandbox import SandboxError, SandboxToolError, Session, Workspace
 from yggdrasil.sandbox import records as records_mod
 from yggdrasil.sandbox.backend import ExecResult
 from yggdrasil.sandbox.manager import Listener
-from yggdrasil.sandbox.state import LinkRecord, group_lock_key, index_key, keep_key, links_json, lock_key, ws_key
+from yggdrasil.sandbox.state import LinkRecord, channel_lock_key, index_key, keep_key, links_json, lock_key, ws_key
 from yggdrasil.settings import ToolSettings
 
 WS = "topic"
@@ -86,23 +86,23 @@ def _session(
     *,
     workspace: str | None = WS,
     cfg: ToolSettings = CFG,
-    group: int = GROUP,
+    group: str = GROUP,
 ) -> Session:
     s = mgr.session(group, invocation_id=invocation, cfg=cfg, workspace=workspace)
     s.backend.exec = reaper or Reaper()  # pyright: ignore[reportAttributeAccessIssue]
     return s
 
 
-async def _active(redis: fakeredis.FakeAsyncRedis, name: str = WS, group: int = GROUP) -> int:
+async def _active(redis: fakeredis.FakeAsyncRedis, name: str = WS, group: str = GROUP) -> int:
     return int(await redis.hget(ws_key(group, name), "active") or 0)  # pyright: ignore[reportGeneralTypeIssues]
 
 
-async def _claim(redis: fakeredis.FakeAsyncRedis, name: str = WS, group: int = GROUP) -> str | None:
+async def _claim(redis: fakeredis.FakeAsyncRedis, name: str = WS, group: str = GROUP) -> str | None:
     claim = await redis.hget(ws_key(group, name), "claim")  # pyright: ignore[reportGeneralTypeIssues]
     return str(claim) if claim else None
 
 
-async def _names(mgr: WorkspaceManager, group: int = GROUP) -> list[str]:
+async def _names(mgr: WorkspaceManager, group: str = GROUP) -> list[str]:
     return sorted(w.name for w in await mgr.workspaces(group))
 
 
@@ -444,7 +444,7 @@ async def test_tools_before_selecting_get_the_workspace_list(mgr: WorkspaceManag
     s = mgr.session(GROUP, invocation_id="a", cfg=CFG)
     with pytest.raises(SandboxToolError) as none_yet:
         await s.backend.working_dir()
-    assert "本群也还没有工作区" in str(none_yet.value)
+    assert "本频道也还没有工作区" in str(none_yet.value)
     assert "new=True" in str(none_yet.value)
     await mgr.reserve(GROUP, "pelican-game", "鹈鹕小游戏", CFG)
     await mgr.reserve(GROUP, "errand-site", "跑腿网站", CFG)
@@ -530,7 +530,7 @@ async def test_unused_reservations_are_dropped_when_the_invocation_ends(
 async def test_group_cap_evicts_the_least_recently_used_idle_workspace(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    cfg = ToolSettings(sandbox_max_workspaces_per_group=2)
+    cfg = ToolSettings(sandbox_max_workspaces_per_channel=2)
     holder = _session(mgr, "holder", workspace=None, cfg=cfg)
     await holder.open("busy", new=True, description="一直有人在用")
     await holder.backend.working_dir()
@@ -583,7 +583,7 @@ async def test_concurrent_creates_in_two_replicas_respect_the_group_cap(
     """Two invocations on two bot replicas (separate managers, shared Redis and API server) create a workspace each
     while the group is one below its cap: the per-group lock serializes them, so exactly one eviction happens and
     the cap holds."""
-    cfg = ToolSettings(sandbox_max_workspaces_per_group=2)
+    cfg = ToolSettings(sandbox_max_workspaces_per_channel=2)
     one, two = make_manager(redis=locks), make_manager(redis=locks)
     old = _session(one, "old", workspace=None, cfg=cfg)
     await old.open("old", new=True, description="旧话题")
@@ -593,9 +593,9 @@ async def test_concurrent_creates_in_two_replicas_respect_the_group_cap(
     for m in (one, two):
         original = m.workspaces
 
-        async def held(group_id: int, original: Any = original) -> list[WorkspaceInfo]:
-            seen = await original(group_id)
-            await locks.refused(group_lock_key(group_id))  # held until the other replica is refused the group lock
+        async def held(channel_id: str, original: Any = original) -> list[WorkspaceInfo]:
+            seen = await original(channel_id)
+            await locks.refused(channel_lock_key(channel_id))
             return seen
 
         m.workspaces = held  # pyright: ignore[reportAttributeAccessIssue]
@@ -616,7 +616,7 @@ async def test_concurrent_creates_in_two_replicas_respect_the_group_cap(
 async def test_eviction_skips_a_workspace_an_invocation_attached_to_meanwhile(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = ToolSettings(sandbox_max_workspaces_per_group=1)
+    cfg = ToolSettings(sandbox_max_workspaces_per_channel=1)
     a = _session(mgr, "a", workspace=None, cfg=cfg)
     await a.open("solo", new=True, description="唯一的")
     await a.backend.working_dir()
@@ -626,8 +626,8 @@ async def test_eviction_skips_a_workspace_an_invocation_attached_to_meanwhile(
     await busy.backend.working_dir()
     original = mgr.workspaces
 
-    async def snapshot(group_id: int) -> list[WorkspaceInfo]:
-        await original(group_id)
+    async def snapshot(channel_id: str) -> list[WorkspaceInfo]:
+        await original(channel_id)
         return stale
 
     monkeypatch.setattr(mgr, "workspaces", snapshot)
@@ -672,7 +672,7 @@ async def test_eviction_skips_a_workspace_whose_pod_is_being_created(
 ) -> None:
     """A pending workspace another invocation is creating holds its lock: it is not evicted. And a created one is
     counted in ``active`` together with its claim, never seen unused in between."""
-    cfg = ToolSettings(sandbox_max_workspaces_per_group=1)
+    cfg = ToolSettings(sandbox_max_workspaces_per_channel=1)
     await reserve(mgr, WS, cfg=cfg)
     creating = _session(mgr, "creating", cfg=cfg)
     kube.claim_gate = asyncio.Event()
@@ -702,7 +702,7 @@ async def test_own_allowance_only_covers_the_callers_own_pod(
 ) -> None:
     """The caller attached to a pod that was then replaced under the same name by another invocation: that newer
     pod is in use by someone else and must not be evicted on the caller's allowance."""
-    cfg = ToolSettings(sandbox_max_workspaces_per_group=1)
+    cfg = ToolSettings(sandbox_max_workspaces_per_channel=1)
     await reserve(mgr, WS, cfg=cfg)
     a = _session(mgr, "a", cfg=cfg)
     await a.backend.working_dir()

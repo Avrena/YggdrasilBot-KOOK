@@ -1,10 +1,4 @@
-"""The report of a finished background job: a synthetic chat invocation that replies to the requester.
-
-It runs on the chat route with the chat prompt, tools and skills (the sandbox suite, minus the tools that start or
-cancel jobs), so the model can look into the workspace before answering, and goes through the usual
-moderation, concurrency slots, token budget, delivery and invocation record. The job's images (omp's
-``show``) are attached up front, after image moderation; its public links and result are in the prompt.
-"""
+"""Report of a finished background job: synthetic chat invocation replying directly with a quoted KOOK CardMessage."""
 
 import secrets
 
@@ -20,15 +14,15 @@ from yggdrasil.agent.tools.images import MAX_IMAGES, attach_image
 from yggdrasil.agent.tools.jobs import JOB_CONTROL_TOOLS, jobs
 from yggdrasil.bot.state import identity
 from yggdrasil.core.log import LOGGER
-from yggdrasil.delivery.send import send_text
+from yggdrasil.delivery.send import send_kmarkdown
+from yggdrasil.kook import client as kook_client
+from yggdrasil.kook.client import Kook
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model
 from yggdrasil.llm.streaming import RunStats
 from yggdrasil.people import member_label
 from yggdrasil.pipeline import ratelimit
 from yggdrasil.pipeline.invoke import Invocator
 from yggdrasil.pipeline.prompt import instructions
-from yggdrasil.qq import client as qq_client
-from yggdrasil.qq.client import QQ
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import SandboxError, manager
 from yggdrasil.sandbox.job_model import KIND_TEXT, STATUS_TEXT, Job, ReportDeferred, fmt_duration
@@ -39,25 +33,23 @@ _RESULT_CHARS = 12000
 
 
 async def run_report(job: Job) -> str | None:
-    """Report ``job`` to its requester; returns the invocation id. Raises ``ReportDeferred`` when it cannot
-    start yet (no bot connection, the requester's queue is full)."""
-    qq = qq_client.connected()
-    if qq is None:
+    kook = kook_client.connected()
+    if kook is None:
         raise ReportDeferred("no bot connection")
     snap = snapshot()
-    if not snap.group_enabled(job.group_id):
-        LOGGER.info("sandbox job {}: group {} is disabled, no report", job.id, job.group_id)
+    if not snap.channel_enabled(job.channel_id):
+        LOGGER.info("sandbox job {}: channel {} is disabled, no report", job.id, job.channel_id)
         return None
-    settings = snap.settings(job.group_id)
-    if await ratelimit.tokens_exhausted(job.group_id, settings.ratelimit):
-        # No model call past the group's daily budget: a plain notice still closes the loop.
-        await _notice(qq, job, settings)
-        await ratelimit.add_tokens(job.group_id, _relay_tokens(job))
+    guild_id = snap.guild_of(job.channel_id)
+    settings = snap.settings(channel_id=job.channel_id, guild_id=guild_id)
+    if await ratelimit.tokens_exhausted(job.channel_id, settings.ratelimit):
+        await _notice(kook, job, guild_id)
+        await ratelimit.add_tokens(job.channel_id, _relay_tokens(job))
         return None
-    async with ratelimit.slot(job.group_id, job.user_id, settings.ratelimit) as granted:
+    async with ratelimit.slot(job.channel_id, job.user_id, settings.ratelimit) as granted:
         if not granted:
             raise ReportDeferred("requester's queue is full")
-        inv = ReportInvocator(qq, job, settings)
+        inv = ReportInvocator(kook, job, guild_id, settings)
         await inv.run()
         return str(inv.invocation_id) if inv.invocation_id is not None else None
 
@@ -70,33 +62,35 @@ def _headline(job: Job) -> str:
     return f"后台任务「{job.title}」{STATUS_TEXT[job.status]}"
 
 
-async def _notice(qq: QQ, job: Job, settings: Settings) -> None:
-    ident = await identity(qq)
+async def _notice(kook: Kook, job: Job, guild_id: str | None) -> None:
+    ident = await identity(kook)
     text = f"{_headline(job)}（今天的用量已到上限，不再生成详细说明）。"
     for link in job.links:
         text += f"\n{link.get('url')}"
-    await send_text(
-        qq,
-        group_id=job.group_id,
+    await send_kmarkdown(
+        kook,
+        channel_id=job.channel_id,
+        guild_id=guild_id,
         user_id=job.user_id,
         reply_to=job.trigger_message_id,
-        text=text,
+        content=text,
         self_id=ident.self_id,
         nickname=ident.nickname,
     )
 
 
 class ReportInvocator(Invocator):
-    """A chat run without a triggering event: replies to the job's trigger message."""
+    """A synthetic chat run reporting a finished sandbox job, quoting the original trigger message directly."""
 
-    def __init__(self, qq: QQ, job: Job, settings: Settings) -> None:
+    def __init__(self, kook: Kook, job: Job, guild_id: str | None, settings: Settings) -> None:
         self._setup(
-            qq,
+            kook,
             "chat",
             settings,
-            job.group_id,
+            job.channel_id,
+            guild_id,
             user_id=job.user_id,
-            trigger_message_id=job.trigger_message_id or 0,
+            trigger_message_id=job.trigger_message_id,
             role="member",
             record_handler="report",
         )
@@ -105,12 +99,12 @@ class ReportInvocator(Invocator):
 
     async def _run(self) -> str:
         job = self.job
-        ident = await identity(self.qq)
+        ident = await identity(self.kook)
         self.notes.bot = (ident.self_id, self.settings.persona.name)
         sandbox_on = suite_enabled(
             self.settings,
             "chat",
-            self.group_id,
+            self.channel_id,
             global_settings=snapshot().settings(),
             configured=manager().configured,
         )
@@ -121,8 +115,9 @@ class ReportInvocator(Invocator):
             LOGGER.warning("chat has no model route; job {} is not reported", job.id)
             return "failed"
         deps = Deps(
-            self.qq,
-            self.group_id,
+            self.kook,
+            self.channel_id,
+            self.guild_id,
             self.user_id,
             self.settings,
             Handles(),
@@ -136,10 +131,9 @@ class ReportInvocator(Invocator):
         )
         tools_cfg = self.settings.tools
         tool_list = tool_names(tools_cfg.enabled, "chat")
-        if sandbox_on and self.group_id is not None:
-            # The job's workspace is pre-selected so the model can look at what the job left there.
+        if sandbox_on and self.channel_id is not None:
             self.sandbox = deps.sandbox = manager().session(
-                self.group_id, invocation_id=deps.invocation_id, cfg=tools_cfg, workspace=job.workspace
+                self.channel_id, invocation_id=deps.invocation_id, cfg=tools_cfg, workspace=job.workspace
             )
             suite = sandbox_tools.suite(exclude=JOB_CONTROL_TOOLS)
         else:
@@ -147,16 +141,17 @@ class ReportInvocator(Invocator):
             suite = sandbox_tools.Suite(tools=[jobs_tool], names=[jobs_tool.name])
         image_notes = await self._attach_images(deps)
         nonce = secrets.token_hex(3)
-        requester = await member_label(self.group_id, self.user_id)
+        requester = await member_label(self.guild_id, self.user_id)
         prompt = build_prompt(job, nonce=nonce, requester=requester, image_notes=image_notes)
         agent = self._agent(
             resolved_model,
             tools=tools_for(tool_list) + suite.tools,
-            capabilities=suite.capabilities + skills_for(skill_names(self.settings, "chat", self.group_id)),
+            capabilities=suite.capabilities + skills_for(skill_names(self.settings, "chat", self.channel_id)),
             instructions=instructions(
                 "chat",
                 self.settings,
-                self.group_id,
+                self.channel_id,
+                guild_id=self.guild_id,
                 tools=tool_list + suite.names,
                 sandbox=tools_cfg if self.sandbox is not None else None,
                 report=True,
@@ -167,11 +162,10 @@ class ReportInvocator(Invocator):
         return await self._execute(agent, prompt, deps, resolved_model, mod_text)
 
     async def _attach_images(self, deps: Deps) -> list[str]:
-        """Moderate and attach the images the job showed; returns notes about the ones that were dropped."""
         if not self.job.images:
             return []
         notes: list[str] = []
-        found = await manager().backend_for(self.job.group_id, self.job.workspace) if manager().configured else None
+        found = await manager().backend_for(self.job.channel_id, self.job.workspace) if manager().configured else None
         if found is None or found[1] != self.job.claim:
             if found is not None:
                 await found[0].aclose()
@@ -193,7 +187,7 @@ class ReportInvocator(Invocator):
 
     def _account(self, model_label: str, usage: RunUsage, deps: Deps, stats: RunStats) -> None:
         super()._account(model_label, usage, deps, stats)
-        if self.job.usage and not self._relay_counted:  # what omp spent through the relay belongs here too
+        if self.job.usage and not self._relay_counted:
             self._relay_counted = True
             self.meta.models.append(f"relay/{self.job.model}")
             self.meta.tokens_in += self.job.usage.get("input_tokens", 0)
@@ -201,33 +195,23 @@ class ReportInvocator(Invocator):
             self.meta.tokens_cached += self.job.usage.get("cached_tokens", 0)
 
     def _billable_tokens(self) -> int:
-        # The relay tokens are billed with the report even when it never reached the model.
         return super()._billable_tokens() + (0 if self._relay_counted else _relay_tokens(self.job))
 
     async def _status(self, emoji: str) -> bool:
-        # The trigger message already carries the original run's reactions; adding them again only looks
-        # automated. The report's outcome is in the invocation record.
         return False
 
     async def deliver(self, reply: BotReply) -> None:
-        # A forward message cannot quote: a short quoted line first tells the requester which request this is.
-        if self.job.trigger_message_id:
-            ident = await identity(self.qq)
-            await send_text(
-                self.qq,
-                group_id=self.group_id,
-                user_id=self.user_id,
-                reply_to=self.job.trigger_message_id,
-                text=f"{_headline(self.job)}，结果见下面。",
-                self_id=ident.self_id,
-                nickname=ident.nickname,
+        if not reply.title:
+            reply = reply.model_copy(update={"title": _headline(self.job)})
+        # Background job reports finish minutes later: always quote the original trigger unless quote_reply=never.
+        if self.settings.interaction.quote_reply == "when_busy":
+            self.settings = self.settings.model_copy(
+                update={"interaction": self.settings.interaction.model_copy(update={"quote_reply": "always"})}
             )
         await super().deliver(reply)
 
 
 def build_prompt(job: Job, *, nonce: str, requester: str, image_notes: list[str]) -> str:
-    """The report's user prompt: the job and its outcome as data blocks."""
-
     def block(tag: str, body: str) -> str:
         name = f"{tag}-{nonce}"
         return f"<{name}>\n{body.replace(nonce, '*' * len(nonce))}\n</{name}>"
@@ -262,10 +246,10 @@ def build_prompt(job: Job, *, nonce: str, requester: str, image_notes: list[str]
     attached = len(job.images) - len(image_notes) if job.images else 0
     notes = []
     if attached > 0:
-        notes.append(f"任务给出的 {attached} 张图已经附在这次回复的合并转发里，正文不用再描述图里的内容。")
+        notes.append(f"任务给出的 {attached} 张图已经附在这次回复的卡片里，正文不用再描述图里的内容。")
     notes += image_notes
     notes.append(
-        "这是之前接下的后台任务的回报，不是新的请求：用 mode=forward 把结果告诉请求者，"
+        "这是之前接下的后台任务的回报，不是新的请求：用 mode=reply 把结果清晰地告诉请求者，"
         "说清做成了什么、在哪里（路径、链接）、没完成什么；失败、超时或取消时说明原因和下一步建议。"
     )
     if job.kind == "command":

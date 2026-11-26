@@ -1,4 +1,4 @@
-"""Fixed-window rate limits, daily token budgets (Redis) and per-process concurrency slots."""
+"""Fixed-window rate limits, daily token budgets (Redis) and per-process concurrency slots (per channel)."""
 
 import asyncio
 import contextlib
@@ -12,12 +12,11 @@ from yggdrasil.kv import redis_client
 from yggdrasil.settings import RateLimitSettings
 
 _TZ = ZoneInfo("Asia/Shanghai")
-_semaphores: dict[tuple[str, int | None, int], asyncio.Semaphore] = {}
-_waiting: Counter[tuple[int | None, int]] = Counter()
+_semaphores: dict[tuple[str, str | None, int], asyncio.Semaphore] = {}
+_waiting: Counter[tuple[str | None, str]] = Counter()
 
 
 async def _hit(key: str, window_s: int, limit: int) -> bool:
-    """Count one hit; True if still within ``limit`` for the window."""
     r = redis_client()
     pipe = r.pipeline()
     pipe.incr(key)
@@ -30,46 +29,43 @@ def _day() -> str:
     return datetime.now(_TZ).strftime("%Y%m%d")
 
 
-async def check(group_id: int | None, user_id: int, cfg: RateLimitSettings, *, superuser: bool) -> str | None:
-    """Return a rejection reason, or None if allowed. Superusers bypass limits."""
+async def check(channel_id: str | None, user_id: str, cfg: RateLimitSettings, *, superuser: bool) -> str | None:
     if superuser:
         return None
-    g = group_id or 0
+    ch = channel_id or "dm"
     checks = [
         (f"ygg:rl:u:{user_id}:m", 60, cfg.user_per_minute, "user_minute"),
         (f"ygg:rl:u:{user_id}:d:{_day()}", 86400, cfg.user_per_day, "user_day"),
-        (f"ygg:rl:g:{g}:m", 60, cfg.group_per_minute, "group_minute"),
+        (f"ygg:rl:c:{ch}:m", 60, cfg.channel_per_minute, "channel_minute"),
     ]
     for key, window, limit, scope in checks:
         if limit > 0 and not await _hit(key, window, limit):
             RATELIMIT_REJECTED.add(1, {"scope": scope})
             return scope
-    if await tokens_exhausted(group_id, cfg):
-        RATELIMIT_REJECTED.add(1, {"scope": "group_tokens"})
-        return "group_tokens"
+    if await tokens_exhausted(channel_id, cfg):
+        RATELIMIT_REJECTED.add(1, {"scope": "channel_tokens"})
+        return "channel_tokens"
     return None
 
 
-async def tokens_exhausted(group_id: int | None, cfg: RateLimitSettings) -> bool:
-    """Whether the group has used up today's token budget."""
-    if group_id is None or cfg.group_daily_tokens <= 0:
+async def tokens_exhausted(channel_id: str | None, cfg: RateLimitSettings) -> bool:
+    if channel_id is None or cfg.channel_daily_tokens <= 0:
         return False
-    used = await redis_client().get(f"ygg:tok:g:{group_id}:{_day()}")
-    return bool(used) and int(used) >= cfg.group_daily_tokens
+    used = await redis_client().get(f"ygg:tok:c:{channel_id}:{_day()}")
+    return bool(used) and int(used) >= cfg.channel_daily_tokens
 
 
-async def add_tokens(group_id: int | None, tokens: int) -> None:
-    if group_id is None or tokens <= 0:
+async def add_tokens(channel_id: str | None, tokens: int) -> None:
+    if channel_id is None or tokens <= 0:
         return
-    key = f"ygg:tok:g:{group_id}:{_day()}"
+    key = f"ygg:tok:c:{channel_id}:{_day()}"
     pipe = redis_client().pipeline()
     pipe.incrby(key, tokens)
     pipe.expire(key, 2 * 86400, nx=True)
     await pipe.execute()
 
 
-def _sem(kind: str, key: int | None, limit: int) -> asyncio.Semaphore:
-    # Keyed by the limit too, so a changed setting takes effect for new requests.
+def _sem(kind: str, key: str | None, limit: int) -> asyncio.Semaphore:
     k = (kind, key, max(limit, 1))
     sem = _semaphores.get(k)
     if sem is None:
@@ -78,24 +74,20 @@ def _sem(kind: str, key: int | None, limit: int) -> asyncio.Semaphore:
 
 
 @contextlib.asynccontextmanager
-async def slot(group_id: int | None, user_id: int, cfg: RateLimitSettings) -> AsyncIterator[bool]:
-    """Wait for a run slot: at most ``max_concurrent_per_user`` runs per user and
-    ``max_concurrent_per_group`` per group run at once, the rest queue. Yields False (without
-    running) when the user already has ``max_queued_per_user`` requests waiting or the wait
-    exceeds ``queue_timeout_s``."""
-    user_key = (group_id, user_id)
+async def slot(channel_id: str | None, user_id: str, cfg: RateLimitSettings) -> AsyncIterator[bool]:
+    user_key = (channel_id, user_id)
     if _waiting[user_key] >= cfg.max_queued_per_user:
         RATELIMIT_REJECTED.add(1, {"scope": "user_queue"})
         yield False
         return
     user_sem = _sem("user", user_id, cfg.max_concurrent_per_user)
-    group_sem = _sem("group", group_id, cfg.max_concurrent_per_group)
+    channel_sem = _sem("channel", channel_id, cfg.max_concurrent_per_channel)
     _waiting[user_key] += 1
     acquired: list[asyncio.Semaphore] = []
     try:
         try:
             async with asyncio.timeout(cfg.queue_timeout_s):
-                for sem in (user_sem, group_sem):
+                for sem in (user_sem, channel_sem):
                     await sem.acquire()
                     acquired.append(sem)
         except TimeoutError:
@@ -110,8 +102,7 @@ async def slot(group_id: int | None, user_id: int, cfg: RateLimitSettings) -> As
             sem.release()
 
 
-async def cooldown(rule_id: int, user_id: int, seconds: int) -> bool:
-    """True if the user may trigger this rule now (and starts the cooldown)."""
+async def cooldown(rule_id: int, user_id: str, seconds: int) -> bool:
     if seconds <= 0:
         return True
     return bool(await redis_client().set(f"ygg:cd:{rule_id}:{user_id}", "1", ex=seconds, nx=True))

@@ -1,5 +1,4 @@
-"""Status reactions on the trigger message: QQ shows the requester a gray tip for each one, so a request gets
-"received" right away, and a result reaction only when no message carries the outcome."""
+"""Status reactions on the KOOK trigger message."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -11,8 +10,8 @@ from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from pydantic_ai.usage import UsageLimits
 
-from tests.support.groups import fresh_group
-from tests.support.qq import FakeQQ, incoming
+from tests.support.groups import fresh_channel, fresh_guild
+from tests.support.kook import FakeKook, make_incoming
 from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.llm.registry import ResolvedModel
@@ -21,10 +20,10 @@ from yggdrasil.pipeline import invoke
 from yggdrasil.settings import Settings
 from yggdrasil.triggers.index import Resolved
 
-GROUP, SELF, ALICE = fresh_group(), 10001, 20001
-TRIGGER = 7
+GUILD, CHANNEL, SELF, ALICE = fresh_guild(), fresh_channel(), "10001", "20001"
+TRIGGER = "msg-trigger-7"
 CHAT = Resolved("chat", 2, "", (), "quoted_or_self", 0, False)
-FORWARD = '{"mode": "forward", "sections": [{"content": "答案"}]}'
+ANSWER = '{"mode": "reply", "sections": [{"content": "答案"}]}'
 SILENT = '{"mode": "silent", "silent_reason": "不是在问我"}'
 
 
@@ -38,7 +37,7 @@ class Run:
         async def moderate(stage: str, *_a: Any, **_k: Any) -> Verdict:
             return Verdict(stage, "Skipped", 0.0)
 
-        async def react(_qq: Any, _group_id: int | None, _message_id: int, emoji: str) -> None:
+        async def react(_kook: Any, _channel_id: str | None, _message_id: str, emoji: str) -> None:
             self.reactions.append(emoji)
 
         async def deliver(_inv: invoke.Invocator, reply: BotReply) -> None:
@@ -60,14 +59,16 @@ class Run:
         raise AssertionError("agents stream")
 
     async def go(self, monkeypatch: pytest.MonkeyPatch, *, fail: bool = False, slow_after_s: float = 30) -> str:
-        m = incoming("问个问题", group_id=GROUP, user_id=ALICE, self_id=SELF, message_id=TRIGGER, to_me=True)
+        m = make_incoming(
+            "问个问题", channel_id=CHANNEL, guild_id=GUILD, user_id=ALICE, self_id=SELF, message_id=TRIGGER, to_me=True
+        )
         settings = Settings()
         settings.interaction = settings.interaction.model_copy(update={"slow_after_s": slow_after_s})
-        qq = FakeQQ(self_id=SELF)
-        inv = invoke.Invocator(qq, m, CHAT, "chat", "", settings, GROUP)
+        kook = FakeKook(bot_id=SELF)
+        inv = invoke.Invocator(kook, m, CHAT, "chat", "", settings, CHANNEL, GUILD)
         model = FunctionModel(self._never, stream_function=self._stream)
         agent = Agent(model, output_type=BotReply, deps_type=Deps)
-        deps = Deps(qq, GROUP, ALICE, settings, Handles(), "chat")
+        deps = Deps(kook, CHANNEL, GUILD, ALICE, settings, Handles(), "chat")
         resolved = ResolvedModel("chat", model, {}, UsageLimits(), "test")
 
         async def _run(_inv: invoke.Invocator) -> str:
@@ -81,10 +82,10 @@ class Run:
 
 
 async def test_a_sent_answer_adds_only_received(monkeypatch: pytest.MonkeyPatch) -> None:
-    run = Run(monkeypatch, FORWARD)
+    run = Run(monkeypatch, ANSWER)
     assert await run.go(monkeypatch) == "ok"
     assert len(run.delivered) == 1
-    assert run.reactions == [Settings().interaction.received_emoji]  # no "done" on top of the answer itself
+    assert run.reactions == [Settings().interaction.received_emoji]
 
 
 async def test_an_outcome_without_a_message_gets_its_reaction(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,11 +101,11 @@ async def test_an_outcome_without_a_message_gets_its_reaction(monkeypatch: pytes
 
 async def test_a_run_still_working_after_slow_after_s_says_so_once(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = Settings().interaction
-    slow = Run(monkeypatch, FORWARD, think_s=0.3)
+    slow = Run(monkeypatch, ANSWER, think_s=0.3)
     assert await slow.go(monkeypatch, slow_after_s=0.05) == "ok"
     assert slow.reactions == [cfg.received_emoji, cfg.slow_emoji]
 
-    quick = Run(monkeypatch, FORWARD)
+    quick = Run(monkeypatch, ANSWER)
     assert await quick.go(monkeypatch, slow_after_s=0.05) == "ok"
-    await asyncio.sleep(0.1)  # the timer is cancelled once the answer is in, not left to fire after it went out
+    await asyncio.sleep(0.1)
     assert quick.reactions == [cfg.received_emoji]

@@ -1,4 +1,4 @@
-"""Batched persistence of group messages (10k+/day) plus recall marking."""
+"""Batched persistence of KOOK channel messages plus recall marking."""
 
 import asyncio
 import re
@@ -16,23 +16,22 @@ from yggdrasil.db.models import Message, UserAlias
 from yggdrasil.db.partitions import ensure_month
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.normalize import normalize
-from yggdrasil.stickers.collect import COLLECTOR, PendingFetch, Sighting, UsageKey, record, sighting
+from yggdrasil.runtime import snapshot
+from yggdrasil.stickers.collect import COLLECTOR, PendingFetch, Sighting, UsageKey, record, sightings
 
 
 @dataclass(slots=True)
 class IncomingMessage:
-    group_id: int
-    user_id: int
-    qq_message_id: int
-    message_seq: int | None
+    channel_id: str
+    guild_id: str
+    user_id: str
+    kook_message_id: str
     sent_at: datetime
     sender_name: str
     segments: list[dict[str, Any]]
     is_self: bool = False
 
 
-# Postgres text and jsonb reject NUL. SnowLuma passes some group cards through as raw protobuf
-# bytes (e.g. "\x12\nName | \n\x0c\n\nsuffix\x10\x00"); a name never contains control characters.
 _NAME_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -52,7 +51,7 @@ def strip_nul(value: Any) -> Any:
 
 def _kind(segments: list[dict[str, Any]]) -> str:
     types = {s.get("type") for s in segments}
-    for kind in ("forward", "file", "image", "market_face", "record", "video", "light_app"):
+    for kind in ("card", "file", "image", "emoji", "audio", "video"):
         if kind in types:
             return kind
     return "text"
@@ -68,7 +67,7 @@ class IngestWriter:
 
     def submit(self, msg: IncomingMessage) -> None:
         self._queue.append(msg)
-        MESSAGES_INGESTED.add(1, {"group": str(msg.group_id), "kind": _kind(msg.segments)})
+        MESSAGES_INGESTED.add(1, {"channel": msg.channel_id, "kind": _kind(msg.segments)})
         if len(self._queue) >= self._max_batch:
             self._wake.set()
 
@@ -94,39 +93,50 @@ class IngestWriter:
             try:
                 await self._write(batch)
             except BaseException:
-                self._queue[:0] = batch  # keep order, retry next tick
+                self._queue[:0] = batch
                 raise
             return len(batch)
 
     async def _write(self, batch: list[IncomingMessage]) -> None:
-        rows, aliases = [], {}
-        stickers: dict[tuple[str, str], Sighting] = {}
+        snap = snapshot()
+        rows: list[dict[str, Any]] = []
+        aliases: dict[tuple[str, str, str], datetime] = {}
+        sticker_seen: dict[tuple[str, str], Sighting] = {}
         sticker_usage = Counter[UsageKey]()
+        image_candidates: list[tuple[str, str, str]] = []  # (url, name, guild_id)
+
         for m in batch:
             segments = strip_nul(m.segments)
             norm = normalize(segments)
             name = clean_sender_name(m.sender_name)
+            guild_id = m.guild_id or snap.guild_of(m.channel_id) or ""
             rows.append(
                 {
                     "sent_at": m.sent_at,
-                    "group_id": m.group_id,
+                    "channel_id": m.channel_id,
+                    "guild_id": guild_id,
                     "user_id": m.user_id,
-                    "qq_message_id": m.qq_message_id,
-                    "message_seq": m.message_seq,
-                    "reply_to_qq_id": norm.reply_to,
+                    "kook_message_id": m.kook_message_id,
+                    "reply_to_msg_id": norm.reply_to,
                     "sender_name": name,
                     "plain_text": norm.text,
                     "segments": segments,
                     "is_self": m.is_self,
                 }
             )
-            if name and not m.is_self:
-                aliases[(m.group_id, m.user_id, name)] = m.sent_at
-            if not m.is_self:
-                for segment in segments:
-                    if (s := sighting(segment)) is not None:
-                        stickers[s.kind, s.ref] = s
-                        sticker_usage[s.kind, s.ref, m.group_id] += 1
+            if name and not m.is_self and guild_id:
+                aliases[(guild_id, m.user_id, name)] = m.sent_at
+            if (
+                not m.is_self
+                and guild_id
+                and snap.settings(channel_id=m.channel_id, guild_id=guild_id).features.sticker_collect
+            ):
+                found, img_cands = sightings(segments, guild_id=guild_id)
+                for s in found:
+                    sticker_seen[s.kind, s.ref] = s
+                    sticker_usage[s.kind, s.ref, guild_id] += 1
+                image_candidates.extend(img_cands)
+
         pending: list[PendingFetch] = []
         async with get_session() as session:
             conn = await session.connection()
@@ -135,34 +145,33 @@ class IngestWriter:
             await session.execute(insert(Message), rows)
             if aliases:
                 stmt = insert(UserAlias).values(
-                    [{"group_id": g, "user_id": u, "name": n, "last_seen": t} for (g, u, n), t in aliases.items()]
+                    [{"guild_id": g, "user_id": u, "name": n, "last_seen": t} for (g, u, n), t in aliases.items()]
                 )
                 await session.execute(
                     stmt.on_conflict_do_update(
-                        index_elements=["group_id", "user_id", "name"], set_={"last_seen": stmt.excluded.last_seen}
+                        index_elements=["guild_id", "user_id", "name"], set_={"last_seen": stmt.excluded.last_seen}
                     )
                 )
-            if stickers:
-                pending = await record(session, stickers, sticker_usage)
+            if sticker_seen:
+                pending = await record(session, sticker_seen, sticker_usage)
         COLLECTOR.schedule(pending)
+        COLLECTOR.schedule_images(image_candidates)
 
-    async def mark_recalled(self, group_id: int, qq_message_id: int) -> None:
+    async def mark_recalled(self, channel_id: str, kook_message_id: str) -> None:
         await self.flush()
         async with get_session() as session:
-            # Recent window only: qq ids repeat over long periods.
             result = await session.execute(
                 update(Message)
                 .where(
-                    Message.group_id == group_id,
-                    Message.qq_message_id == qq_message_id,
-                    Message.sent_at > func.now() - text("interval '7 days'"),
+                    Message.channel_id == channel_id,
+                    Message.kook_message_id == kook_message_id,
+                    Message.sent_at > func.now() - text("interval '30 days'"),
                 )
                 .values(recalled=True, recalled_at=datetime.now(UTC))
                 .returning(Message.id)
             )
             ids = [r[0] for r in result]
             if ids:
-                # Topics containing the message get recomputed by the next consolidation pass.
                 await session.execute(
                     text(
                         "UPDATE topics SET dirty = true WHERE id IN "

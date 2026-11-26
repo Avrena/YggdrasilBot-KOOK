@@ -30,12 +30,12 @@ def test_topic_ops_drop_ids_outside_window_and_duplicates() -> None:
 
 
 def test_participants_are_window_speakers_only() -> None:
-    a, b = mv(0, user=1), mv(1, user=2)
-    bot = replace(mv(2, user=3), is_self=True)
+    a, b = mv(0, user="1"), mv(1, user="2")
+    bot = replace(mv(2, user="3"), is_self=True)
     views = {v.id: v for v in (a, b, bot)}
-    # Claimed user 2 spoke in the window; 42 never spoke; the bot (3) is never a participant.
-    assert participants_of([a.id, bot.id], views, [2, 42, 3]) == [1, 2]
-    assert participants_of([b.id], views, existing=[1]) == [1, 2]
+    # Claimed user "2" spoke in the window; "42" never spoke; the bot ("3") is never a participant.
+    assert participants_of([a.id, bot.id], views, ["2", "42", "3"]) == ["1", "2"]
+    assert participants_of([b.id], views, existing=["1"]) == ["1", "2"]
 
 
 def test_profile_facts_need_shown_sources() -> None:
@@ -84,18 +84,23 @@ def test_topic_titles_collapse_repeated_prefixes() -> None:
 
 def test_digest_renders_one_fixed_plain_text_format() -> None:
     topics = {
-        1: Topic(id=1, msg_count=60, participants=[20001, 20002, 20003, 20004, 20005, 20006]),
-        2: Topic(id=2, msg_count=24, participants=[20002]),
-        3: Topic(id=3, msg_count=12, participants=[20003, 20004]),
+        1: Topic(
+            id=1,
+            channel_id="ch-1",
+            msg_count=60,
+            participants=["20001", "20002", "20003", "20004", "20005", "20006"],
+        ),
+        2: Topic(id=2, channel_id="ch-1", msg_count=24, participants=["20002"]),
+        3: Topic(id=3, channel_id="ch-2", msg_count=12, participants=["20003", "20004"]),
     }
-    names = {20001: "阿明", 20002: "小红", 20003: "老王", 20004: "Neko", 20005: "路人甲", 20006: "新来的"}
+    names = {"20001": "阿明", "20002": "小红", "20003": "老王", "20004": "Neko", "20005": "路人甲", "20006": "新来的"}
     draft = DigestDraft(
         overview="**以技术讨论为主**，夹杂一些闲聊",
         events=[
             DigestEvent(
                 title="**新版本发布**",
                 topic_ids=[1, 2, 1, 99],
-                participants=[20003, 424242, 20001, 20002, 20004, 20005, 20006],
+                participants=["20003", "424242", "20001", "20002", "20004", "20005", "20006"],
                 what="老王贴了更新日志，\n大家讨论了升级的坑",
                 conclusion="下周统一升级。",
             ),
@@ -103,11 +108,12 @@ def test_digest_renders_one_fixed_plain_text_format() -> None:
             DigestEvent(title="不存在的话题", topic_ids=[42], what="编的"),
         ],
     )
-    assert render_digest(date(2026, 10, 30), 3130, draft, topics, names) == (
+    rendered = render_digest(date(2026, 10, 30), 3130, draft, topics, names, {"ch-1": "技术", "ch-2": "运维"})
+    assert rendered == (
         "2026-10-30（周五）共 3130 条消息。以技术讨论为主，夹杂一些闲聊。\n"
-        "1. 新版本发布（84 条）：老王贴了更新日志， 大家讨论了升级的坑。结论：下周统一升级。"
+        "1. [#技术] 新版本发布（84 条）：老王贴了更新日志， 大家讨论了升级的坑。结论：下周统一升级。"
         "参与：老王、阿明、小红、Neko、路人甲。\n"
-        "2. 排查构建失败（12 条）：定位到缓存配置错误！参与：老王、Neko。"
+        "2. [#运维] 排查构建失败（12 条）：定位到缓存配置错误！参与：老王、Neko。"
     )
     assert render_digest(date(2026, 10, 30), 5, DigestDraft(overview=" ", events=[]), topics, names) is None
 

@@ -1,5 +1,4 @@
-"""What every agent tool module shares: the ``chat_tool`` decorator (failures are returned as text so the model
-can adapt) and the per-call ``accounting`` behind it, ref resolution, the vision sub-agent and name lookup."""
+"""Shared helpers for agent tools: ``chat_tool`` decorator, accounting, ref resolution, vision, name lookup."""
 
 import re
 import time
@@ -26,8 +25,6 @@ type ToolResult = str | ToolReturn
 
 @asynccontextmanager
 async def accounting(deps: Deps, name: str) -> AsyncIterator[None]:
-    """One call of tool ``name``: its count, its wall time and the tool metrics. The call failed when the body
-    raises; the exception goes on, for the caller to turn into text or not."""
     deps.tool_counts[name] += 1
     started = time.perf_counter()
     outcome = "ok"
@@ -68,17 +65,13 @@ def chat_tool[**P](name: str) -> Callable[[Callable[P, Awaitable[ToolResult]]], 
     return deco
 
 
-_KIND_LABELS = {"image": "图片", "file": "文件", "forward": "合并转发", "card": "卡片", "url": "链接"}
+_KIND_LABELS = {"image": "图片", "file": "文件", "card": "卡片", "url": "链接"}
 _MESSAGE_REF = re.compile(r"#(\d+)(?:/(\d+))?")
 
 
 async def resolve_ref(ctx: RunContext[Deps], ref: str, *kinds: str) -> Handle:
-    """What a tool argument points at: a handle (img#1, fwd#2, ...), or ``#<message id>[/<k>]`` from this group's
-    chat history, meaning the k-th attachment of the wanted kinds in that message (registered as a handle).
-
-    Every tool that takes rich content resolves it here, so one ref form works everywhere.
-    """
-    from yggdrasil.memory.search import message_segments
+    """Resolve a handle (``img#1``, ``file#1``, ...) or ``#<message id>[/<k>]`` from accessible guild history."""
+    from yggdrasil.memory.search import accessible_channels, message_segments
 
     ref = ref.strip()
     wanted = "或".join(_KIND_LABELS[k] for k in kinds)
@@ -92,12 +85,13 @@ async def resolve_ref(ctx: RunContext[Deps], ref: str, *kinds: str) -> Handle:
         raise ToolError(
             f"找不到 {ref}。这次能用的{wanted}句柄：{known}；聊天记录里的内容用消息编号 #N（第 k 个用 #N/k）"
         )
-    if ctx.deps.group_id is None:
-        raise ToolError("私聊里没有群聊记录，只能用句柄")
+    if not ctx.deps.guild_id:
+        raise ToolError("私聊里没有频道记录，只能用句柄")
     msg_id, k = int(m.group(1)), int(m.group(2) or 1)
-    segments = (await message_segments(ctx.deps.group_id, [msg_id])).get(msg_id)
+    allowed = accessible_channels(ctx.deps.guild_id, ctx.deps.channel_id)
+    segments = (await message_segments(ctx.deps.guild_id, [msg_id], allowed_channels=allowed)).get(msg_id)
     if segments is None:
-        raise ToolError(f"本群聊天记录里没有消息 #{msg_id}（或者已撤回）")
+        raise ToolError(f"本服务器可见聊天记录里没有消息 #{msg_id}（或者已撤回）")
     norm = normalize(segments)
     found = [(a.kind, a.data) for a in norm.attachments if a.kind in kinds]
     if "url" in kinds:
@@ -108,7 +102,7 @@ async def resolve_ref(ctx: RunContext[Deps], ref: str, *kinds: str) -> Handle:
         raise ToolError(f"消息 #{msg_id} 里只有 {len(found)} 个{wanted}")
     kind, data = found[k - 1]
     key = ctx.deps.handles.add(kind, data)
-    assert key is not None  # every kind in _KIND_LABELS has a handle prefix
+    assert key is not None
     return ctx.deps.handles.items[key]
 
 
@@ -124,10 +118,9 @@ async def vision(ctx: RunContext[Deps], images: list[ModelImage], question: str)
     return result.output
 
 
-async def people_for(ctx: RunContext[Deps], user_ids: Iterable[int] = (), texts: Iterable[str] = ()) -> People:
-    """One batched name lookup for everything a tool result shows (``名字(QQ)``, the bot as ``名字(你)``)."""
+async def people_for(ctx: RunContext[Deps], user_ids: Iterable[str] = (), texts: Iterable[str] = ()) -> People:
     return await resolve(
-        ctx.deps.group_id,
+        ctx.deps.guild_id,
         user_ids,
         bot_name=ctx.deps.settings.persona.name,
         self_id=ctx.deps.self_id or None,

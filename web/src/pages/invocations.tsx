@@ -3,17 +3,17 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { listInvocationsOptions } from "@/client/@tanstack/react-query.gen";
 import {
+  ChannelSelect,
   Empty,
   ExternalLink,
   FilterBar,
-  GroupSelect,
   Hint,
   OptionSelect,
   PageHeader,
   Pager,
   QueryState,
+  useChannelName,
   useDebounced,
-  useGroupName,
 } from "@/components/common";
 import { fmtMs } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
@@ -74,15 +74,15 @@ export function InvocationsPage() {
 function Runs() {
   const [q, setQ] = useState("");
   const query = useDebounced(q);
-  const [groupId, setGroupId] = useState<number | null>(null);
+  const [channelId, setChannelId] = useState<string | null>(null);
   const [handler, setHandler] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const navigate = useNavigate();
   const list = useQuery(
-    listInvocationsOptions({ query: { q: query || null, group_id: groupId, handler, status, limit: LIMIT, offset } }),
+    listInvocationsOptions({ query: { q: query || null, channel_id: channelId, handler, status, limit: LIMIT, offset } }),
   );
-  const groupName = useGroupName();
+  const channelName = useChannelName();
   // Every filter change starts from the first page.
   const filter =
     <T,>(set: (v: T) => void) =>
@@ -100,7 +100,7 @@ function Runs() {
           value={q}
           onChange={(e) => filter(setQ)(e.target.value)}
         />
-        <GroupSelect className="w-56" value={groupId} onChange={filter(setGroupId)} />
+        <ChannelSelect className="w-64" value={channelId} onChange={filter(setChannelId)} />
         <OptionSelect
           className="w-44"
           aria-label="handler"
@@ -125,7 +125,7 @@ function Runs() {
           <TableHeader>
             <TableRow>
               <TableHead>时间</TableHead>
-              <TableHead>群</TableHead>
+              <TableHead>频道</TableHead>
               <TableHead>用户</TableHead>
               <TableHead>handler</TableHead>
               <TableHead>状态</TableHead>
@@ -153,7 +153,7 @@ function Runs() {
                     {fmtTime(i.created_at)}
                   </Link>
                 </TableCell>
-                <TableCell className="max-w-36 truncate text-xs">{i.group_id != null ? groupName(i.group_id) : "私聊"}</TableCell>
+                <TableCell className="max-w-44 truncate text-xs">{i.channel_id ? channelName(i.channel_id) : "私聊"}</TableCell>
                 <TableCell className="max-w-32 text-xs">
                   <Hint content={i.user_name ? `${i.user_name}（${i.user_id}）` : null}>
                     <div className="truncate">{i.user_name || <span className="font-mono">{i.user_id}</span>}</div>

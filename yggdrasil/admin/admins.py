@@ -1,4 +1,4 @@
-"""Admins: ``qq`` superusers (reviews, admin commands) and ``email`` dashboard users."""
+"""Admins: ``kook`` superusers (reviews, admin commands) and ``email`` dashboard users."""
 
 from datetime import datetime
 from typing import Literal, Self
@@ -16,7 +16,7 @@ from yggdrasil.db.session import get_session
 
 router = APIRouter(prefix="/admins", tags=["admins"])
 
-AdminKind = Literal["qq", "email"]
+AdminKind = Literal["kook", "email"]
 
 
 class AdminOut(BaseModel):
@@ -24,7 +24,7 @@ class AdminOut(BaseModel):
     value: str
     note: str
     created_at: datetime | None
-    bootstrap: bool  # from environment variables; not removable here
+    bootstrap: bool
 
 
 class AdminIn(BaseModel):
@@ -35,8 +35,8 @@ class AdminIn(BaseModel):
     @model_validator(mode="after")
     def _normalize(self) -> Self:
         self.value = self.value.strip()
-        if self.kind == "qq" and not self.value.isdigit():
-            raise ValueError("QQ 号必须是数字")
+        if self.kind == "kook" and not self.value:
+            raise ValueError("KOOK 用户 ID 不能为空")
         if self.kind == "email":
             self.value = self.value.lower()
             if "@" not in self.value:
@@ -51,9 +51,9 @@ async def list_admins() -> list[AdminOut]:
     out = [AdminOut(kind=a.kind, value=a.value, note=a.note, created_at=a.created_at, bootstrap=False) for a in rows]  # pyright: ignore[reportArgumentType]
     seen = {(a.kind, a.value) for a in out}
     out += [
-        AdminOut(kind="qq", value=str(q), note="YGG_SUPERUSERS", created_at=None, bootstrap=True)
-        for q in APP_CONFIG.bootstrap_superusers
-        if ("qq", str(q)) not in seen
+        AdminOut(kind="kook", value=str(u), note="YGG_SUPERUSERS", created_at=None, bootstrap=True)
+        for u in APP_CONFIG.bootstrap_superusers
+        if ("kook", str(u)) not in seen
     ]
     out += [
         AdminOut(kind="email", value=e.lower(), note="YGG_ADMIN_EMAILS", created_at=None, bootstrap=True)

@@ -1,10 +1,4 @@
-"""Embedding spaces and ``memory_vectors`` maintenance.
-
-Every searchable memory row (chunk, topic, glossary term, digest) gets one vector per
-embed space. Rows are written first and vectors filled afterwards by :func:`embed_missing`,
-so an embedding outage never blocks the pipelines, and an admin edit can simply delete
-a vector to have it refreshed on the next run.
-"""
+"""Embedding spaces and ``memory_vectors`` maintenance (with ``guild_id`` + optional ``channel_id``)."""
 
 from collections.abc import Sequence
 from datetime import date
@@ -26,6 +20,9 @@ EMBED_MAX_CHARS = 3000
 _BATCH = 64
 _LOCK_KEY = "ygg:embed_space"
 
+# (ref_id, guild_id, channel_id_or_None, text)
+type VectorItem = tuple[int, str, str | None, str]
+
 
 class EmbedDimensionError(RuntimeError):
     pass
@@ -42,21 +39,16 @@ def glossary_text(term: str, aliases: Sequence[str], definition: str) -> str:
 
 
 def digest_text(day: date, summary: str) -> str:
-    return f"{day:%Y-%m-%d} 群聊摘要\n{summary}"
+    return f"{day:%Y-%m-%d} 服务器摘要\n{summary}"
 
 
 def query_text(model: str, query: str) -> str:
-    """Qwen3-Embedding wants an instruction on the query side only (documents are embedded raw)."""
     if "qwen3-embedding" in model.lower():
-        return f"Instruct: 给定一个群聊记录检索问题，找出相关的聊天内容\nQuery: {query}"
+        return f"Instruct: 给定一个频道聊天记录检索问题，找出相关的聊天内容\nQuery: {query}"
     return query
 
 
 async def resolve_space() -> EmbedSpaceInfo | None:
-    """The active embed space; bootstraps one from the ``embedding`` route on first use.
-
-    Returns None (logging an error for a dimension mismatch) when vectors cannot be written.
-    """
     snap = snapshot()
     space = snap.embed_space
     if space is None:
@@ -83,26 +75,34 @@ async def resolve_space() -> EmbedSpaceInfo | None:
     return space
 
 
-async def store_vectors(space: EmbedSpaceInfo, kind: str, items: Sequence[tuple[int, int, str]]) -> int:
-    """Embed ``(ref_id, group_id, text)`` items into ``space`` (upsert). Raises on a dimension mismatch.
-
-    The embedding call runs before the write transaction opens: a transaction left open across an HTTP call holds
-    its locks for that long (a 2026-11-01 outage started from one).
-    """
+async def store_vectors(space: EmbedSpaceInfo, kind: str, items: Sequence[VectorItem]) -> int:
     if not items:
         return 0
     vectors = await registry.embed(
-        [t[:EMBED_MAX_CHARS] for _, _, t in items], provider_id=space.provider_id, model=space.model
+        [t[:EMBED_MAX_CHARS] for _, _, _, t in items], provider_id=space.provider_id, model=space.model
     )
     rows: list[dict[str, Any]] = []
-    for (ref_id, group_id, _), vec in zip(items, vectors, strict=True):
+    for (ref_id, guild_id, channel_id, _), vec in zip(items, vectors, strict=True):
         if len(vec) != EMBED_DIM:
             raise EmbedDimensionError(f"model {space.model} returned dim {len(vec)}, schema expects {EMBED_DIM}")
-        rows.append({"kind": kind, "ref_id": ref_id, "space_id": space.id, "group_id": group_id, "embedding": vec})
+        rows.append(
+            {
+                "kind": kind,
+                "ref_id": ref_id,
+                "space_id": space.id,
+                "guild_id": guild_id,
+                "channel_id": channel_id,
+                "embedding": vec,
+            }
+        )
     stmt = pg_insert(MemoryVector).values(rows)
     stmt = stmt.on_conflict_do_update(
         index_elements=["kind", "ref_id", "space_id"],
-        set_={"embedding": stmt.excluded.embedding, "group_id": stmt.excluded.group_id},
+        set_={
+            "embedding": stmt.excluded.embedding,
+            "guild_id": stmt.excluded.guild_id,
+            "channel_id": stmt.excluded.channel_id,
+        },
     )
     async with get_session() as session:
         await session.execute(stmt)
@@ -114,8 +114,7 @@ async def delete_vectors(session: AsyncSession, kind: str, ref_ids: Sequence[int
         await session.execute(delete(MemoryVector).where(MemoryVector.kind == kind, MemoryVector.ref_id.in_(ref_ids)))
 
 
-async def try_embed(kind: str, items: Sequence[tuple[int, int, str]]) -> None:
-    """Best-effort immediate embedding of fresh rows; on failure :func:`embed_missing` catches up later."""
+async def try_embed(kind: str, items: Sequence[VectorItem]) -> None:
     if not items:
         return
     try:
@@ -128,9 +127,16 @@ async def try_embed(kind: str, items: Sequence[tuple[int, int, str]]) -> None:
 
 
 async def _missing(
-    session: AsyncSession, kind: str, space_id: int, group_id: int | None, limit: int
-) -> list[tuple[int, int, str]]:
+    session: AsyncSession,
+    kind: str,
+    space_id: int,
+    *,
+    guild_id: str | None = None,
+    channel_id: str | None = None,
+    limit: int,
+) -> list[VectorItem]:
     model: Any
+    has_channel = kind in ("chunk", "topic")
     match kind:
         case "chunk":
             model, cols = MessageChunk, (MessageChunk.text,)
@@ -147,12 +153,27 @@ async def _missing(
         .where(MemoryVector.kind == kind, MemoryVector.space_id == space_id, MemoryVector.ref_id == model.id)
         .exists()
     )
-    q = select(model.id, model.group_id, *cols).where(~has_vector).order_by(model.id).limit(limit)
-    if group_id is not None:
-        q = q.where(model.group_id == group_id)
-    out = []
+    if has_channel:
+        q = select(model.id, model.guild_id, model.channel_id, *cols).where(~has_vector).order_by(model.id).limit(limit)
+        if channel_id is not None:
+            q = q.where(model.channel_id == channel_id)
+        elif guild_id is not None:
+            q = q.where(model.guild_id == guild_id)
+    else:
+        if channel_id is not None and guild_id is None:
+            return []
+        q = select(model.id, model.guild_id, *cols).where(~has_vector).order_by(model.id).limit(limit)
+        if guild_id is not None:
+            q = q.where(model.guild_id == guild_id)
+
+    out: list[VectorItem] = []
     for row in (await session.execute(q)).all():
-        ref_id, gid, *rest = cast("list[Any]", list(row))
+        vals = cast("list[Any]", list(row))
+        if has_channel:
+            ref_id, gid, cid, *rest = vals
+        else:
+            ref_id, gid, *rest = vals
+            cid = None
         match kind:
             case "chunk":
                 body = rest[0]
@@ -162,17 +183,19 @@ async def _missing(
                 body = glossary_text(*rest)
             case _:
                 body = digest_text(*rest)
-        out.append((ref_id, gid, body))
+        out.append((ref_id, gid, cid, body))
     return out
 
 
-async def embed_missing(space: EmbedSpaceInfo, group_id: int | None = None) -> dict[str, int]:
-    """Fill vectors for every memory row of ``group_id`` (all groups if None) lacking one in ``space``."""
+async def embed_missing(
+    space: EmbedSpaceInfo, *, guild_id: str | None = None, channel_id: str | None = None
+) -> dict[str, int]:
+    """Fill vectors for rows matching ``guild_id`` / ``channel_id`` (or all rows if both None)."""
     counts = dict.fromkeys(KINDS, 0)
     for kind in KINDS:
         while True:
             async with get_session() as session:
-                items = await _missing(session, kind, space.id, group_id, _BATCH)
+                items = await _missing(session, kind, space.id, guild_id=guild_id, channel_id=channel_id, limit=_BATCH)
             counts[kind] += await store_vectors(space, kind, items)
             if len(items) < _BATCH:
                 break
@@ -180,7 +203,6 @@ async def embed_missing(space: EmbedSpaceInfo, group_id: int | None = None) -> d
 
 
 async def reembed_space(space_id: int) -> dict[str, int]:
-    """Backfill every memory row into ``space_id``, then make it the only space (older ones are deleted)."""
     async with get_session() as session:
         row = await session.get(EmbedSpace, space_id)
         if row is None:
@@ -198,8 +220,7 @@ async def reembed_space(space_id: int) -> dict[str, int]:
             totals[k] += v
         async with get_session() as session:
             await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": _LOCK_KEY})
-            # Rows written while we were backfilling (into the old space) still need a vector here.
-            if any([await _missing(session, kind, space.id, None, 1) for kind in KINDS]):
+            if any([await _missing(session, kind, space.id, limit=1) for kind in KINDS]):
                 continue
             await session.execute(
                 update(EmbedSpace).where(EmbedSpace.id == space.id).values(active=True, status="ready")
@@ -207,7 +228,6 @@ async def reembed_space(space_id: int) -> dict[str, int]:
             removed = await session.scalar(
                 select(func.count()).select_from(MemoryVector).where(MemoryVector.space_id != space.id)
             )
-            # Old spaces go entirely (their vectors cascade), so their providers can be deleted afterwards.
             await session.execute(delete(EmbedSpace).where(EmbedSpace.id != space.id))
         break
     LOGGER.info("embed space {} active; embedded {}; dropped {} old vectors", space.id, totals, removed)

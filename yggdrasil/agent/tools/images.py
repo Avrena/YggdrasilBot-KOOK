@@ -1,7 +1,4 @@
-"""Images the bot sends. The images it makes (``render_*``, the workspace's ``show()``) only become ``img#N`` handles;
-a reply sends the handles its sections name (``Section.images``: checked by :func:`check_reply_images`, resolved and
-moderated by :func:`reply_images` before delivery). A finished job's pictures are attached directly
-(:func:`attach_image`), and ``generate_image`` sends its own message."""
+"""Images the bot creates and embeds in KOOK replies (``render_*``, workspace ``show()``, ``generate_image``)."""
 
 import asyncio
 import io
@@ -25,7 +22,7 @@ from yggdrasil.tools import render as renderer
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.transcript.notes import blob_id
 
-MAX_IMAGES = 4  # pictures per reply: the ones its sections embed plus a job report's attached ones
+MAX_IMAGES = 4
 
 
 def _verify_image(blob: bytes) -> None:
@@ -42,13 +39,10 @@ def _decode_image(blob: bytes) -> bytes:
 
 
 def needs_image_check(settings: Settings) -> bool:
-    """Images the bot sends (embedded in a reply, attached to a job report, generated) follow the group's output
-    moderation switch."""
     return settings.moderation.enabled and settings.moderation.check_output
 
 
 async def screen_image(deps: Deps, blob: bytes, *, check: Any = None) -> bytes:
-    """An image the bot is about to send: decoded, fitted, and moderated when the group moderates output."""
     image = await asyncio.to_thread(_decode_image, blob)
     if needs_image_check(deps.settings):
         verdict: ImageVerdict = await (check or check_image)(image)
@@ -61,18 +55,14 @@ async def screen_image(deps: Deps, blob: bytes, *, check: Any = None) -> bytes:
 
 
 async def attach_image(deps: Deps, blob: bytes, caption: str, *, check: Any = check_image) -> None:
-    """Moderate (when the group moderates output) and attach one picture after the reply's sections, whatever the
-    reply references: a finished job's pictures."""
     deps.images.append((await screen_image(deps, blob, check=check), caption.strip()))
 
 
 def _made(deps: Deps, image: bytes, caption: str, by: Literal["render", "show"]) -> str:
-    """Register an image the bot made (``by`` a render_* tool or the workspace's ``show()``) as an ``img#N`` handle;
-    it goes out only if a section of the reply names it."""
     sha = blob_id(image)
     deps.made_images[sha] = image
     key = deps.handles.add("image", {"blob": sha, "caption": caption, "made": by})
-    assert key is not None  # images always get a handle
+    assert key is not None
     return key
 
 
@@ -83,7 +73,6 @@ def _made_text(keys: list[str], caption: str) -> str:
 
 
 async def show_image(deps: Deps, blob: bytes, caption: str, *, call_id: str | None = None) -> str:
-    """The workspace's ``show()``: check that ``blob`` is a picture and register it as an ``img#N`` handle."""
     await asyncio.to_thread(_verify_image, blob)
     caption = caption.strip()
     key = _made(deps, blob, caption, "show")
@@ -94,7 +83,6 @@ async def show_image(deps: Deps, blob: bytes, caption: str, *, call_id: str | No
 async def _render(ctx: RunContext[Deps], kind: renderer.Kind, source: str, caption: str) -> str:
     if not APP_CONFIG.render_url:
         raise ToolError("没有配置渲染服务")
-    # Only Markdown can come back as several pages, at most as many as one reply can carry.
     wanted = MAX_IMAGES if kind == "markdown" else 1
     pngs, warnings = await renderer.render(kind, source, base_url=APP_CONFIG.render_url, max_images=wanted)
     caption = caption.strip()
@@ -113,34 +101,25 @@ async def _render(ctx: RunContext[Deps], kind: renderer.Kind, source: str, capti
 
 @chat_tool("render_mermaid")
 async def render_mermaid(ctx: RunContext[Deps], code: str, caption: str = "") -> str:
-    """把 Mermaid 代码渲染成图片，返回 img#N 句柄；要发就在回复某一节的 images 里写它，不引用就不会发。支持所有
-    Mermaid 图类型：flowchart、sequenceDiagram、classDiagram、stateDiagram、erDiagram、gantt、mindmap、timeline、
-    pie、sankey、xychart 等。节点文字用中文即可，含特殊字符的文字用双引号包起来。语法错误会返回报错和出错的行，
-    改好后重试。"""
+    """把 Mermaid 代码渲染成图片，返回 img#N 句柄；要发就在回复某一节的 images 里写它，不引用就不会发。"""
     return await _render(ctx, "mermaid", code, caption)
 
 
 @chat_tool("render_markdown")
 async def render_markdown(ctx: RunContext[Deps], markdown: str, caption: str = "") -> str:
-    """把 Markdown 按 GitHub 风格排版渲染成图片，返回 img#N 句柄（每页一个）；要发就在回复某一节的 images 里写它，
-    不引用就不会发。支持 GFM 表格、代码高亮、数学公式 $…$ / $$…$$、提示块 > [!NOTE]、任务列表、脚注，```mermaid
-    代码块会直接画成图。内容长会自动分成多页，最多 4 页（一条回复总共最多发 4 张图）；放不下会报错，删减后重试。
-    适合对比表、代码、带格式的长内容这类纯文本消息里不好看的东西。"""
+    """把复杂 Markdown（如 GFM 表格、数学公式、多页文档）渲染成图片，返回 img#N 句柄。
+    普通 Markdown 直接写在回复正文里即可。"""
     return await _render(ctx, "markdown", markdown, caption)
 
 
 @chat_tool("render_html")
 async def render_html(ctx: RunContext[Deps], html: str, caption: str = "") -> str:
-    """把一段 HTML 渲染成一张图片，返回 img#N 句柄；要发就在回复某一节的 images 里写它，不引用就不会发。
-    只能用内联 style，不能用脚本，也不能引用外部图片、字体或链接。Markdown 表达不了的排版（卡片、色块、复杂表格）
-    再用它。"""
+    """把一段内联样式 HTML 渲染成图片，返回 img#N 句柄；不能用脚本或外部资源。"""
     return await _render(ctx, "html", html, caption)
 
 
 def check_reply_images(ctx: RunContext[Deps], reply: BotReply) -> BotReply:
-    """Output validator of the chat / tldr agents: ``Section.images`` may only name image handles of this
-    conversation, each once, and no more than the reply has room for next to any attached pictures."""
-    if reply.mode not in ("forward", "plain"):
+    if reply.mode != "reply":
         return reply
     deps = ctx.deps
     sections = [s.model_copy(update={"images": [k.strip() for k in s.images]}) for s in reply.sections]
@@ -149,8 +128,8 @@ def check_reply_images(ctx: RunContext[Deps], reply: BotReply) -> BotReply:
         h = deps.handles.get(key)
         if h is None:
             raise ModelRetry(
-                f"images 里的「{key}」不是这次对话里的句柄：只能写工具结果或聊天记录里出现过的 img#N，"
-                "没有要发的图就留空"
+                f"images 里的「{key}」不是这次对话里的句柄："
+                "只能写工具结果或聊天记录里出现过的 img#N，没有要发的图就留空"
             )
         if h.kind != "image":
             raise ModelRetry(f"images 里的 {key} 不是图片：只能写 img#N")
@@ -160,19 +139,15 @@ def check_reply_images(ctx: RunContext[Deps], reply: BotReply) -> BotReply:
     if len(keys) > room:
         attached = f"，任务的 {len(deps.images)} 张图已经附上了" if deps.images else ""
         raise ModelRetry(
-            f"一条回复最多发 {MAX_IMAGES} 张图{attached}；images 里写了 {len(keys)} 张，这次最多放 {room} 张，"
-            "只留最要紧的"
+            f"一条回复最多发 {MAX_IMAGES} 张图{attached}；"
+            f"images 里写了 {len(keys)} 张，这次最多放 {room} 张，只留最要紧的"
         )
     return reply.model_copy(update={"sections": sections})
 
 
 async def reply_images(deps: Deps, reply: BotReply) -> dict[str, tuple[bytes, str]]:
-    """(image, caption) of each handle ``reply``'s sections name, ready to send: images this run made from
-    ``Deps.made_images``, earlier ones from the blob store, the rest downloaded. Rendered pages go out as rendered
-    (they never were image-moderated); every other picture is decoded, fitted and moderated like any image the bot
-    sends. One that fails is left out (and logged); the reply still goes."""
     keys = list(dict.fromkeys(k.strip() for s in reply.sections for k in s.images))
-    if reply.mode not in ("forward", "plain") or not keys:
+    if reply.mode != "reply" or not keys:
         return {}
     results = await asyncio.gather(*(_reply_image(deps, key) for key in keys), return_exceptions=True)
     pictures: dict[str, tuple[bytes, str]] = {}
@@ -190,7 +165,7 @@ async def _reply_image(deps: Deps, key: str) -> tuple[bytes, str]:
     h = deps.handles.get(key)
     if h is None or h.kind != "image":
         raise ToolError(f"{key} 不是图片句柄")
-    blob, _ = await media_bytes(deps.qq, deps.group_id, deps.user_id, h, IMAGE_MAX_DOWNLOAD, made=deps.made_images)
+    blob, _ = await media_bytes(h, IMAGE_MAX_DOWNLOAD, made=deps.made_images)
     made = h.data.get("made")
     image = blob if made == "render" else compact_image(await screen_image(deps, blob))
     return image, str(h.data.get("caption") or "") if made else ""
@@ -208,18 +183,14 @@ async def generate_image(
     aspect_ratio: AspectRatio = "auto",
     text: str = "",
 ) -> str:
-    """画图：按描述生成一张图，或参照群里的图改图。画好后直接作为一条图片消息回复到群里，不进合并转发。
-    prompt 写清画面内容、风格、构图和图里要出现的文字；用户说得简单时按他的意思补全细节，不要改变意图。
-    references 是参考图（最多 4 张）：img#N 句柄、图片格式的 file#N，或聊天记录里的消息编号 #N（有多张时 #N/2 取第 2
-    张）；“把这张图改成……”时传被引用的那张。aspect_ratio 是画幅，用户没要求就用 auto。text 是随图发的一句话，可以留空。
-    生成要几十秒。发出后没有别的要说就选 mode=done，不要在合并转发里再描述这张图。"""
+    """画图：按描述生成一张图，或参照聊天里的图改图。画好后直接发送到当前频道；没有别的要说就选 mode=done。"""
     deps = ctx.deps
     if len(references or []) > MAX_REFERENCES:
         raise ToolError(f"参考图最多 {MAX_REFERENCES} 张")
     refs: list[tuple[bytes, str]] = []
     for ref in references or []:
         h = await resolve_ref(ctx, ref, "image", "file")
-        img = await load_image(deps.qq, deps.group_id, deps.user_id, h, made=deps.made_images)
+        img = await load_image(h, made=deps.made_images)
         deps.notes.image(img.data, img.content.media_type, segment=h.data)
         refs.append((img.data, img.content.media_type))
     try:
@@ -231,25 +202,23 @@ async def generate_image(
     deps.vision_tokens.append((result.model, result.input_tokens, result.output_tokens))
     pictures = [compact_image(await screen_image(deps, data)) for data, _ in result.images]
     caption = text.strip()
-    # Recorded before sending, so the transcript shows what was made (and paid for) even if QQ refuses it.
     for picture in pictures:
         deps.notes.shown(ctx.tool_call_id, [(picture, caption)], mime=media_type(picture))
     cost = f"（花费 ${result.cost:.3f}）" if result.cost is not None else ""
     try:
         message_id = await send_image(
-            deps.qq,
-            group_id=deps.group_id,
+            deps.kook,
+            channel_id=deps.channel_id,
+            guild_id=deps.guild_id,
             user_id=deps.user_id,
             reply_to=deps.trigger_message_id,
             images=pictures,
             text=caption,
             self_id=deps.self_id,
             nickname=deps.bot_nickname,
+            chat_code=deps.chat_code,
         )
     except Exception as e:
-        raise ToolError(f"图画好了{cost}，但发到群里失败：{type(e).__name__}: {str(e)[:200]}") from e
-    if message_id is None:
-        deps.actions.append("image (unconfirmed)")
-        return f"图已经发出{cost}，QQ 没有及时确认，但大概率已经发到群里了，不要重发。没有别的要说就选 mode=done。"
-    deps.actions.append(f"image {message_id}")
-    return f"图已经发到群里了{cost}。没有别的要说就选 mode=done。"
+        raise ToolError(f"图画好了{cost}，但发到频道失败：{type(e).__name__}: {str(e)[:200]}") from e
+    deps.actions.append(f"image {message_id or ''}".strip())
+    return f"图已经发到频道里了{cost}。没有别的要说就选 mode=done。"

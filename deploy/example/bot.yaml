@@ -1,6 +1,6 @@
-# The bot: the QQ connections (out to Yogurt's Milky API, configured in the dashboard; in from SnowLuma on the
-# OneBot v11 reverse WebSocket /onebot/v11/ws), the agent runs, the dashboard SPA and /api, health endpoints
-# (/healthz, /readyz, /drainz). Run exactly one replica: one process at a time holds the QQ connection.
+# The bot: connects directly to KOOK API v3 & Gateway WebSocket (configured in the dashboard or via
+# YGG_KOOK_BOT_TOKEN), runs agents, serves the dashboard SPA and /api, and exposes health endpoints
+# (/healthz, /readyz, /drainz). Run exactly one replica: one process at a time holds the KOOK Gateway lease.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -19,10 +19,10 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
 spec:
   replicas: 1
-  # Zero-downtime updates: the new pod becomes ready without a QQ connection (/readyz checks Postgres only) and
+  # Zero-downtime updates: the new pod becomes ready without a KOOK connection (/readyz checks Postgres only) and
   # takes over the dashboard. The old pod, already out of the Service, keeps its connection in preStop until its
-  # in-flight replies are sent. Then SnowLuma reconnects to the new pod, and the new pod's Milky link takes over
-  # once the old one released it at shutdown (a Redis lease); the new pod backfills the messages of that gap.
+  # in-flight replies are sent. Once the old pod releases the Redis gateway lease at shutdown, the new pod
+  # connects to KOOK Gateway and backfills missed channel messages.
   strategy:
     type: RollingUpdate
     rollingUpdate:

@@ -1,14 +1,4 @@
-"""Continuing an answer's conversation when a group member replies to it.
-
-Each delivered chat or tldr answer keeps its agent run (``InvocationSession``) for a while: the messages exactly as
-they went to the model, the instructions, the route, the tool names and the skills it could load. A chat request that
-replies to such an answer runs again on that route with those instructions, tools and skills and the messages as
-history (a skill the answer loaded stays loaded), then adds only a user turn with what changed: the time, what the
-group said since, and the request (``agent.context.build_followup_context``). Everything before that new turn is
-byte for byte what the provider saw last time, so its prompt cache hits; this is why instructions never depend on
-the request. The run's handles and block nonce carry over, so ``fwd#1`` or ``<请求-ab12cd>`` in the old messages
-still mean what they meant.
-"""
+"""Continuing an answer's conversation when a channel member replies to it (isolated per channel)."""
 
 import json
 from collections.abc import Sequence
@@ -25,20 +15,17 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Invocation, InvocationSession
 from yggdrasil.db.session import get_session
 
-# A bigger run (mostly inline images, kept as base64) is not kept: replies to it start over with the full context.
 MAX_HISTORY_CHARS = 4_000_000
-RETENTION = timedelta(days=1)  # rows older than this are deleted whenever a new one is saved
+RETENTION = timedelta(days=1)
 
 
 @dataclass(slots=True)
 class Setup:
-    """How the answering agent was built; a continuation rebuilds exactly this."""
-
-    handler: str  # the route (model and its settings) and the transcript's handler
+    handler: str
     instructions: str
-    tools: list[str]  # ALL_TOOLS names, in order
-    sandbox: bool  # had the workspace suite
-    skills: list[str] = field(default_factory=list)  # agent.skills names, in order
+    tools: list[str]
+    sandbox: bool
+    skills: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -48,7 +35,7 @@ class Session:
     messages: list[ModelMessage]
     handles: Handles
     nonce: str
-    seen_message_id: int | None  # the newest chat message the conversation had seen (messages.id)
+    seen_message_id: int | None
     created_at: datetime
 
 
@@ -60,7 +47,6 @@ async def save(
     nonce: str,
     seen_message_id: int | None,
 ) -> None:
-    """Keep the run of an answer about to be delivered. Never raises."""
     try:
         payload = ModelMessagesTypeAdapter.dump_python(list(messages), mode="json")
         size = len(json.dumps(payload, ensure_ascii=False))
@@ -88,15 +74,14 @@ async def save(
         LOGGER.exception("saving the session of {} failed", invocation_id)
 
 
-async def load(group_id: int, answer_qq_id: int, max_age: timedelta) -> Session | None:
-    """The kept run of the delivered answer ``answer_qq_id`` from the last ``max_age``, if any."""
+async def load(channel_id: str, answer_msg_id: str, max_age: timedelta) -> Session | None:
     async with get_session() as s:
         row = await s.scalar(
             select(InvocationSession)
             .join(Invocation, Invocation.id == InvocationSession.invocation_id)
             .where(
-                Invocation.group_id == group_id,
-                Invocation.reply_qq_message_id == answer_qq_id,
+                Invocation.channel_id == channel_id,
+                Invocation.reply_msg_id == answer_msg_id,
                 Invocation.status == "ok",
                 InvocationSession.created_at > datetime.now(UTC) - max_age,
             )

@@ -1,22 +1,20 @@
-"""Sticker collection in the bot process: record each sticker sighting and save the image while its link is fresh.
+"""KOOK sticker collection: guild custom emojis ``(emj)name(emj)[id]`` and chat GIF / small-image stickers.
 
-A custom sticker (an ``image`` segment with ``sticker`` set) is identified by its content sha1 (``image.sha1``, the
-same under every protocol); one without a sha1 has no stable identity and is skipped. A market face is identified by
-``"<emoji_package_id>:<emoji_id>"`` and sent by id, so it needs no image.
-
-QQ image links expire (the rkey rotates roughly hourly), so a custom sticker's image is downloaded right after the
-message is stored; if the link already fails, the protocol refreshes it from the segment's ``ref``
-(``QQ.media_url``). A later sighting retries stickers whose download failed (except oversized ones).
+- ``kind = 'emoji'``: KOOK custom guild emojis, keyed by ``emoji_id``. Their CDN image is fetched for vision tagging
+  and cross-guild image fallback.
+- ``kind = 'image'``: Standalone animated GIF/WebP or small sticker-like images (<= 512px max side, <= 5 MB) sent in
+  chat, deduplicated by content sha256.
+Usage is tracked per ``guild_id`` (guild-shared popularity).
 """
 
 import asyncio
+import hashlib
 import io
 from collections import Counter
 from dataclasses import dataclass
 
-import httpx
 from PIL import Image
-from sqlalchemy import Update, func, select, update
+from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,71 +22,82 @@ from yggdrasil.agent.media import download
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Sticker, StickerBlob, StickerUsage
 from yggdrasil.db.session import get_session
-from yggdrasil.qq import client
-from yggdrasil.qq.segments import Segment
+from yggdrasil.kook import client as kook_client
+from yggdrasil.kook.client import LiveKook
+from yggdrasil.kook.segments import Segment
 from yggdrasil.tools.errors import ToolError
 
 MAX_BYTES = 5 * 1024 * 1024
+STICKER_IMAGE_MAX_SIDE = 512
 TOO_LARGE = "too_large"
 _CONCURRENCY = 4
 
-type UsageKey = tuple[str, str, int]
-"""(kind, ref, group_id)."""
+type UsageKey = tuple[str, str, str]  # (kind, ref, guild_id)
 
 
 @dataclass(slots=True)
 class Sighting:
-    """One distinct sticker seen in a batch of messages."""
-
-    kind: str
+    kind: str  # emoji | image
     ref: str
     summary: str
-    url: str = ""  # image: the download link from the newest sighting
-    media_ref: str = ""  # image: the segment's ``ref``, to refresh the link
+    guild_id: str | None = None
     emoji_id: str | None = None
-    package_id: str | None = None
-    key: str = ""
+    url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class PendingFetch:
     sticker_id: int
+    kind: str
+    ref: str
+    guild_id: str | None
     url: str
-    media_ref: str
 
 
-def sighting(segment: Segment) -> Sighting | None:
-    """The sticker in a segment, or ``None`` if it is not one."""
-    data = segment.get("data") or {}
-    summary = str(data.get("summary") or "").strip("[]")
-    match segment.get("type"):
-        case "market_face" if data.get("emoji_id") and data.get("emoji_package_id"):
-            package, emoji = str(data["emoji_package_id"]), str(data["emoji_id"])
-            key = str(data.get("key") or "")
-            return Sighting("mface", f"{package}:{emoji}", summary, emoji_id=emoji, package_id=package, key=key)
-        case "image" if data.get("sticker") and data.get("sha1"):
-            ref = str(data["sha1"]).lower()
-            return Sighting("image", ref, summary, url=str(data.get("url") or ""), media_ref=str(data.get("ref") or ""))
-    return None
+def sightings(segments: list[Segment], *, guild_id: str) -> tuple[list[Sighting], list[tuple[str, str, str]]]:
+    """Extract immediate emoji sightings plus standalone image candidates ``(url, name, guild_id)``."""
+    found: list[Sighting] = []
+    img_candidates: list[tuple[str, str, str]] = []
+    # Only treat standalone images (no long accompanying prose) as sticker candidates.
+    text_len = sum(len(str((s.get("data") or {}).get("text", "")).strip()) for s in segments if s.get("type") == "text")
+    for seg in segments:
+        data = seg.get("data") or {}
+        st = seg.get("type")
+        if st == "emoji" and data.get("id"):
+            eid = str(data["id"])
+            found.append(
+                Sighting(
+                    kind="emoji",
+                    ref=eid,
+                    summary=str(data.get("name") or eid),
+                    guild_id=str(data.get("guild_id") or guild_id) or None,
+                    emoji_id=eid,
+                    url=str(data.get("url") or ""),
+                )
+            )
+        elif st == "image" and data.get("url") and text_len <= 10:
+            url = str(data["url"])
+            name = str(data.get("name") or "")
+            img_candidates.append((url, name, guild_id))
+    return found, img_candidates
 
 
 async def record(
     session: AsyncSession, seen: dict[tuple[str, str], Sighting], usage: Counter[UsageKey]
 ) -> list[PendingFetch]:
-    """Upsert the batch's stickers and per-group counts; returns the images that still need downloading."""
+    """Upsert stickers and per-guild usage counts; returns items whose image bytes still need downloading."""
     counts = Counter[tuple[str, str]]()
-    for (kind, ref, _group), n in usage.items():
+    for (kind, ref, _guild), n in usage.items():
         counts[kind, ref] += n
     stmt = insert(Sticker).values(
         [
             {
                 "kind": s.kind,
                 "ref": s.ref,
-                "summary": s.summary,
+                "guild_id": s.guild_id,
                 "emoji_id": s.emoji_id,
-                "package_id": s.package_id,
-                "key": s.key,
-                "status": "fetching" if s.kind == "image" else "ready",
+                "summary": s.summary,
+                "status": "fetching",
                 "seen_count": counts[k],
             }
             for k, s in seen.items()
@@ -100,119 +109,175 @@ async def record(
             "seen_count": Sticker.seen_count + stmt.excluded.seen_count,
             "last_seen": func.now(),
             "summary": stmt.excluded.summary,
-            "key": stmt.excluded.key,
         },
     ).returning(Sticker.id, Sticker.kind, Sticker.ref, Sticker.status, Sticker.error)
     rows = (await session.execute(upsert)).all()
     ids = {(kind, ref): sid for sid, kind, ref, _, _ in rows}
     usage_stmt = insert(StickerUsage).values(
-        [{"sticker_id": ids[kind, ref], "group_id": g, "count": n} for (kind, ref, g), n in usage.items()]
+        [{"sticker_id": ids[kind, ref], "guild_id": g, "count": n} for (kind, ref, g), n in usage.items()]
     )
     await session.execute(
         usage_stmt.on_conflict_do_update(
-            index_elements=["sticker_id", "group_id"],
+            index_elements=["sticker_id", "guild_id"],
             set_={"count": StickerUsage.count + usage_stmt.excluded.count, "last_seen": func.now()},
         )
     )
-    # A failed download is retried with the newer link; an oversized image is not worth fetching again.
-    unfetched = [
-        (sid, kind, ref)
-        for sid, kind, ref, status, error in rows
-        if kind == "image" and status in ("fetching", "failed") and error != TOO_LARGE
-    ]
-    if not unfetched:
-        return []
-    blob_ids = select(StickerBlob.sticker_id).where(StickerBlob.sticker_id.in_([sid for sid, _, _ in unfetched]))
-    have_blob = set((await session.scalars(blob_ids)).all())
-    return [
-        PendingFetch(sid, seen[kind, ref].url, seen[kind, ref].media_ref)
-        for sid, kind, ref in unfetched
-        if sid not in have_blob
-    ]
+    pending: list[PendingFetch] = []
+    for sid, kind, ref, status, error in rows:
+        if status == "fetching" or (status == "failed" and error != TOO_LARGE):
+            s = seen[kind, ref]
+            pending.append(PendingFetch(sid, kind, ref, s.guild_id, s.url))
+    return pending
 
 
-class Collector:
-    """Downloads sticker images in the background, a few at a time, one task per sticker."""
+def _inspect_image(data: bytes) -> tuple[str, int, int, int, bool]:
+    """Return ``(mime, width, height, frames, is_sticker_like)``."""
+    with Image.open(io.BytesIO(data)) as img:
+        w, h = img.size
+        frames = int(getattr(img, "n_frames", 1) or 1)
+        fmt = (img.format or "PNG").lower()
+        mime = f"image/{'jpeg' if fmt == 'jpg' else fmt}"
+        animated = frames > 1
+        # Collect animated GIF/WebP or compact sticker-sized images.
+        is_sticker = animated or (max(w, h) <= STICKER_IMAGE_MAX_SIDE and min(w, h) >= 32)
+        return mime, w, h, frames, is_sticker
+
+
+class StickerCollector:
+    """Background downloader for KOOK custom emojis and sticker-like images."""
 
     def __init__(self) -> None:
         self._sem = asyncio.Semaphore(_CONCURRENCY)
-        self._inflight: set[int] = set()
+        self._inflight: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
     def schedule(self, items: list[PendingFetch]) -> None:
         for item in items:
-            if item.sticker_id in self._inflight:
+            key = f"id:{item.sticker_id}"
+            if key in self._inflight:
                 continue
-            self._inflight.add(item.sticker_id)
-            task = asyncio.create_task(self._fetch(item), name=f"sticker-fetch-{item.sticker_id}")
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            self._inflight.add(key)
+            self._spawn(self._fetch_pending(item, key))
 
-    async def drain(self) -> None:
-        """Wait for scheduled downloads (tests, shutdown)."""
-        while self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+    def schedule_images(self, candidates: list[tuple[str, str, str]]) -> None:
+        for url, name, guild_id in candidates:
+            key = f"url:{url}"
+            if key in self._inflight:
+                continue
+            self._inflight.add(key)
+            self._spawn(self._inspect_and_collect_image(url, name, guild_id, key))
 
-    async def _fetch(self, item: PendingFetch) -> None:
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro, name="sticker-collect")
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _fetch_pending(self, item: PendingFetch, key: str) -> None:
         try:
             async with self._sem:
-                blob = await fetch_image(item)
-                mime, width, height, frames = await asyncio.to_thread(inspect_image, blob)
-            async with get_session() as session:
-                await session.execute(
-                    insert(StickerBlob).values(sticker_id=item.sticker_id, data=blob).on_conflict_do_nothing()
-                )
-                await session.execute(
-                    _unfetched(item.sticker_id).values(
-                        status="untagged",
-                        error="",
-                        mime=mime,
-                        size_bytes=len(blob),
-                        width=width,
-                        height=height,
-                        frames=frames,
+                url = item.url
+                if not url and item.kind == "emoji":
+                    kook = kook_client.connected()
+                    if isinstance(kook, LiveKook) and item.guild_id:
+                        url = await kook.emoji_url(item.guild_id, item.ref)
+                    else:
+                        url = f"https://img.kookapp.cn/emojis/{item.ref}.png"
+                if not url:
+                    return
+                try:
+                    data = await download(url, MAX_BYTES)
+                except ToolError:
+                    await self._mark_failed(item.sticker_id, TOO_LARGE)
+                    return
+                except Exception as e:
+                    # Try .gif fallback for KOOK animated custom emojis when .png 404s.
+                    if item.kind == "emoji" and url.endswith(".png"):
+                        try:
+                            data = await download(url[:-4] + ".gif", MAX_BYTES)
+                        except Exception:
+                            await self._mark_failed(item.sticker_id, f"fetch: {e}"[:300])
+                            return
+                    else:
+                        await self._mark_failed(item.sticker_id, f"fetch: {e}"[:300])
+                        return
+                mime, w, h, frames, _ = await asyncio.to_thread(_inspect_image, data)
+                async with get_session() as session:
+                    await session.execute(
+                        insert(StickerBlob)
+                        .values(sticker_id=item.sticker_id, data=data)
+                        .on_conflict_do_nothing(index_elements=["sticker_id"])
                     )
-                )
-        except Exception as exc:
-            LOGGER.warning("sticker {} download failed: {!r}", item.sticker_id, exc)
-            error = TOO_LARGE if isinstance(exc, ToolError) else f"download: {exc}"[:300]
-            async with get_session() as session:
-                await session.execute(_unfetched(item.sticker_id).values(status="failed", error=error))
+                    await session.execute(
+                        update(Sticker)
+                        .where(Sticker.id == item.sticker_id)
+                        .values(
+                            status="untagged",
+                            error="",
+                            mime=mime,
+                            size_bytes=len(data),
+                            width=w,
+                            height=h,
+                            frames=frames,
+                        )
+                    )
+        except Exception:
+            LOGGER.exception("collecting sticker {} failed", item.sticker_id)
         finally:
-            self._inflight.discard(item.sticker_id)
+            self._inflight.discard(key)
 
-
-def _unfetched(sticker_id: int) -> Update:
-    return update(Sticker).where(Sticker.id == sticker_id, Sticker.status.in_(("fetching", "failed")))
-
-
-async def fetch_image(item: PendingFetch) -> bytes:
-    """The sticker image; asks the protocol for a fresh link when the stored one no longer works."""
-    if item.url:
+    async def _inspect_and_collect_image(self, url: str, name: str, guild_id: str, key: str) -> None:
         try:
-            return await download(item.url, MAX_BYTES)
-        except httpx.HTTPStatusError as exc:
-            if not 400 <= exc.response.status_code < 500:
-                raise
-    if not item.media_ref:
-        raise RuntimeError("link expired and the sticker has no ref to refresh it")
-    qq = client.connected()
-    if qq is None:
-        raise RuntimeError("link expired and no QQ connection to refresh it")
-    segment = {"type": "image", "data": {"ref": item.media_ref, "url": item.url}}
-    fresh = await qq.media_url(segment, group_id=None, user_id=0)
-    if not fresh or fresh == item.url:
-        raise RuntimeError("link expired and could not be refreshed")
-    return await download(fresh, MAX_BYTES)
+            async with self._sem:
+                try:
+                    data = await download(url, MAX_BYTES)
+                    mime, w, h, frames, is_sticker = await asyncio.to_thread(_inspect_image, data)
+                except Exception:
+                    return
+                if not is_sticker:
+                    return
+                sha = hashlib.sha256(data).hexdigest()
+                async with get_session() as session:
+                    stmt = insert(Sticker).values(
+                        kind="image",
+                        ref=sha,
+                        guild_id=guild_id,
+                        summary=name[:80],
+                        status="untagged",
+                        mime=mime,
+                        size_bytes=len(data),
+                        width=w,
+                        height=h,
+                        frames=frames,
+                        seen_count=1,
+                    )
+                    sid = await session.scalar(
+                        stmt.on_conflict_do_update(
+                            index_elements=["kind", "ref"],
+                            set_={"seen_count": Sticker.seen_count + 1, "last_seen": func.now()},
+                        ).returning(Sticker.id)
+                    )
+                    if sid is None:
+                        return
+                    await session.execute(
+                        insert(StickerBlob)
+                        .values(sticker_id=sid, data=data)
+                        .on_conflict_do_nothing(index_elements=["sticker_id"])
+                    )
+                    u_stmt = insert(StickerUsage).values(sticker_id=sid, guild_id=guild_id, count=1)
+                    await session.execute(
+                        u_stmt.on_conflict_do_update(
+                            index_elements=["sticker_id", "guild_id"],
+                            set_={"count": StickerUsage.count + 1, "last_seen": func.now()},
+                        )
+                    )
+        except Exception:
+            LOGGER.debug("image sticker inspection failed for {}", url)
+        finally:
+            self._inflight.discard(key)
+
+    async def _mark_failed(self, sticker_id: int, reason: str) -> None:
+        async with get_session() as session:
+            await session.execute(update(Sticker).where(Sticker.id == sticker_id).values(status="failed", error=reason))
 
 
-def inspect_image(blob: bytes) -> tuple[str, int, int, int]:
-    """(mime, width, height, frames); raises for data that is not an image."""
-    with Image.open(io.BytesIO(blob)) as img:
-        mime = Image.MIME.get(img.format or "", "")
-        if not mime:
-            raise ValueError(f"unsupported image format {img.format!r}")
-        return mime, img.width, img.height, int(getattr(img, "n_frames", 1))
-
-
-COLLECTOR = Collector()
+COLLECTOR = StickerCollector()

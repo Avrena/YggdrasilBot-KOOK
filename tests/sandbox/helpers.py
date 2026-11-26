@@ -13,7 +13,7 @@ import httpx
 import pytest
 from pydantic_ai.workspaces import CommandResult, FileEntry
 
-from tests.support.groups import fresh_group
+from tests.support.groups import fresh_channel
 from yggdrasil.sandbox.backend import ExecResult, SandboxdWorkspace
 from yggdrasil.sandbox.manager import WorkspaceManager
 from yggdrasil.sandbox.text import TREE_SCRIPT
@@ -25,11 +25,11 @@ SANDBOXD_TOKEN = os.environ.get("YGG_TEST_SANDBOXD_TOKEN")
 HAVE_SANDBOXD = bool(SANDBOXD_REST and SANDBOXD_GRPC and SANDBOXD_TOKEN)
 NO_SANDBOXD = "set YGG_TEST_SANDBOXD_REST / YGG_TEST_SANDBOXD_GRPC / YGG_TEST_SANDBOXD_TOKEN to run against a sandboxd"
 
-# The manager tests' groups; nothing of theirs reaches the database (Redis and the API server are per test).
-GROUP, OTHER_GROUP = fresh_group(), fresh_group()
+# The manager tests' channels; nothing of theirs reaches the database (Redis and the API server are per test).
+GROUP, OTHER_GROUP = fresh_channel(), fresh_channel()
 
 
-async def reserve(mgr: WorkspaceManager, name: str, *, group: int = GROUP, cfg: ToolSettings | None = None) -> None:
+async def reserve(mgr: WorkspaceManager, name: str, *, group: str = GROUP, cfg: ToolSettings | None = None) -> None:
     """Add workspace ``name`` (described as ``"<name> 的说明"``) as ``open_workspace(new=True)`` would."""
     await mgr.reserve(group, name, f"{name} 的说明", cfg or ToolSettings())
 

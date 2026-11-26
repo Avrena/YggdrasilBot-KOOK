@@ -155,14 +155,14 @@ def test_validate_port_rejects_reserved_and_invalid(port: int) -> None:
 
 
 def test_generated_names() -> None:
-    name = claim_name(10001, "pelican-game")
+    name = claim_name("10001", "pelican-game")
     assert name.startswith("ygg-sbx-10001-pelican-game-")
     suffix = name.removeprefix("ygg-sbx-10001-pelican-game-")
     assert len(suffix) == 6
     assert suffix.isalnum()
     assert suffix.lower() == suffix
-    # A long group id and a 32-character name still fit an object name, without a dangling '-'.
-    long = claim_name(1234567890123, "a" * 30 + "-b")
+    # A long channel id and a 32-character name still fit an object name, without a dangling '-'.
+    long = claim_name("1234567890123", "a" * 30 + "-b")
     assert len(long) <= 63
     assert "--" not in long
     assert long.startswith("ygg-sbx-1234567890123-aaaa")
@@ -182,7 +182,7 @@ def test_mapping_round_trips_through_a_redis_hash() -> None:
         pid=43,
     )
     m = Mapping(
-        group_id=10001,
+        channel_id="10001",
         name="pelican-game",
         description="鹈鹕小游戏",
         claim="ygg-sbx-10001-pelican-game-abc123",
@@ -198,7 +198,7 @@ def test_mapping_round_trips_through_a_redis_hash() -> None:
     )
     data = m.to_hash()
     assert all(isinstance(v, str) for v in data.values())
-    back = Mapping.from_hash(10001, data)
+    back = Mapping.from_hash("10001", data)
     assert back == m
     assert back is not None
     info = back.info(("job1",))
@@ -225,17 +225,17 @@ def test_mapping_round_trips_through_a_redis_hash() -> None:
     ],
 )
 def test_unusable_hashes_decode_to_none(data: dict[str, str]) -> None:
-    assert Mapping.from_hash(1, data) is None
+    assert Mapping.from_hash("1", data) is None
 
 
 def test_mapping_tolerates_missing_optional_fields_and_negative_active() -> None:
-    m = Mapping.from_hash(7, {"name": "w", "claim": "c", "active": "-1"})
+    m = Mapping.from_hash("7", {"name": "w", "claim": "c", "active": "-1"})
     assert m is not None
     assert m.active == 0
     assert m.sandbox is None
     assert m.links == []
     assert m.description == ""
-    pending = Mapping.from_hash(7, {"name": "w", "claim": "", "description": "空的"})
+    pending = Mapping.from_hash("7", {"name": "w", "claim": "", "description": "空的"})
     assert pending is not None
     assert pending.pending
     assert pending.info().pending
@@ -254,9 +254,8 @@ def test_invalid_workspace_names(name: str) -> None:
 
 
 def test_workspace_keys_round_trip() -> None:
-    assert parse_ws_key(ws_key(10001, "pelican-game")) == (10001, "pelican-game")
+    assert parse_ws_key(ws_key("10001", "pelican-game")) == ("10001", "pelican-game")
     assert parse_ws_key("ygg:sandbox:ws:10001") is None  # the old one-per-group key
-    assert parse_ws_key("ygg:sandbox:ws:x:name") is None
     assert parse_ws_key("ygg:sandbox:ws:10001:Bad") is None
 
 
@@ -268,7 +267,7 @@ def test_descriptions_are_one_short_line() -> None:
 def test_workspace_list_for_the_model() -> None:
     now = 100_000.0
     base = Mapping(
-        group_id=1,
+        channel_id="1",
         name="pelican-game",
         description="鹈鹕小游戏，代码在 /workspace/game",
         claim="c1",
@@ -280,7 +279,7 @@ def test_workspace_list_for_the_model() -> None:
         max_until=now + 10000,
     ).info()
     busy = Mapping(
-        group_id=1,
+        channel_id="1",
         name="site",
         description="",
         claim="c2",
@@ -294,7 +293,7 @@ def test_workspace_list_for_the_model() -> None:
     ).info(("job1",))
     busy = replace(busy, links=(Link(port=8000, url="https://sbx-a.example.com", command="", created_at=0),))
     pending = Mapping(
-        group_id=1,
+        channel_id="1",
         name="new-one",
         description="还没用",
         claim="",

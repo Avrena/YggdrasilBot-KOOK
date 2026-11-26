@@ -3,8 +3,8 @@ import { Link, useParams } from "@tanstack/react-router";
 import { ArrowLeftIcon } from "lucide-react";
 import { getInvocationOptions, getInvocationTranscriptOptions } from "@/client/@tanstack/react-query.gen";
 import type { ModerationOut, VerdictOut } from "@/client/types.gen";
-import { ExternalLink, Meta, PageHeader, QueryState, SectionHeader, useGroupName } from "@/components/common";
-import { ReplyView } from "@/components/qq";
+import { ExternalLink, Meta, PageHeader, QueryState, SectionHeader, useChannelName } from "@/components/common";
+import { ReplyView } from "@/components/kook";
 import { Code, ContextUsage, Facts, Transcript, fmtMs, fmtTokens } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -48,7 +48,7 @@ export function InvocationPage() {
     ...getInvocationTranscriptOptions({ path: { invocation_id: id } }),
     refetchInterval: (q) => (q.state.data?.live || running ? 3000 : false),
   });
-  const groupName = useGroupName();
+  const channelName = useChannelName();
   const d = detail.data;
   const t = transcript.data;
   const verdicts = [d?.input_verdict, d?.output_verdict].filter((v): v is VerdictOut => !!v);
@@ -82,7 +82,7 @@ export function InvocationPage() {
                 </div>
                 <Facts
                   items={[
-                    ["群", d.group_id != null ? groupName(d.group_id) : "私聊"],
+                    ["频道", d.channel_id ? channelName(d.channel_id) : "私聊"],
                     [
                       "用户",
                       <>

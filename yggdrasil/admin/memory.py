@@ -1,4 +1,4 @@
-"""Memory browser: topics, daily digests, glossary, user profiles, pipeline watermarks."""
+"""Memory browser: per-channel topics, guild-shared daily digests / glossary / user profiles, pipeline watermarks."""
 
 from datetime import UTC, date, datetime
 from typing import Any, Literal
@@ -28,11 +28,12 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 
 class TopicOut(BaseModel):
     id: int
-    group_id: int
+    channel_id: str
+    guild_id: str
     title: str
     summary: str
     keywords: list[str]
-    participants: list[int]
+    participants: list[str]
     start_at: datetime
     end_at: datetime
     msg_count: int
@@ -46,7 +47,8 @@ class TopicOut(BaseModel):
 def _topic_out(t: Topic) -> TopicOut:
     return TopicOut(
         id=t.id,
-        group_id=t.group_id,
+        channel_id=t.channel_id,
+        guild_id=t.guild_id,
         title=t.title,
         summary=t.summary,
         keywords=list(t.keywords),
@@ -64,12 +66,13 @@ def _topic_out(t: Topic) -> TopicOut:
 
 @router.get("/topics")
 async def list_topics(
-    group_id: int | None = None,
+    guild_id: str | None = None,
+    channel_id: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     status: Literal["open", "closed", "archived"] | None = None,
     q: str | None = None,
-    user_id: int | None = None,
+    user_id: str | None = None,
     min_messages: int | None = Query(None, ge=0),
     max_messages: int | None = Query(None, ge=0),
     min_participants: int | None = Query(None, ge=0),
@@ -78,8 +81,10 @@ async def list_topics(
     offset: int = Query(0, ge=0),
 ) -> Page[TopicOut]:
     cond: list[ColumnElement[bool]] = []
-    if group_id is not None:
-        cond.append(Topic.group_id == group_id)
+    if guild_id:
+        cond.append(Topic.guild_id == guild_id)
+    if channel_id:
+        cond.append(Topic.channel_id == channel_id)
     if since is not None:
         cond.append(Topic.end_at >= since)
     if until is not None:
@@ -95,7 +100,7 @@ async def list_topics(
                 func.array_to_string(Topic.keywords, " ").ilike(like),
             )
         )
-    if user_id is not None:
+    if user_id:
         cond.append(Topic.participants.contains([user_id]))
     ranges = (
         (Topic.msg_count, min_messages, max_messages),
@@ -119,7 +124,6 @@ class ArchiveIn(BaseModel):
 
 @router.post("/topics/{topic_id}/archive")
 async def archive_topic(topic_id: int, body: ArchiveIn, actor: Actor) -> TopicOut:
-    """Archive (hide from the agent) or restore one finished topic."""
     async with change(actor, "topic", "archive" if body.archived else "restore", topic_id) as c:
         t = await c.session.get(Topic, topic_id)
         if t is None:
@@ -129,8 +133,6 @@ async def archive_topic(topic_id: int, body: ArchiveIn, actor: Actor) -> TopicOu
         if body.archived:
             t.status = "archived"
         elif t.status == "archived":
-            # Profiles skip archived topics; a restored one is new to them (see Topic.closed_at). The restore
-            # also counts as its curation review, so the hourly curation won't archive it again.
             t.status, t.closed_at = "closed", datetime.now(UTC)
             t.scored_at = t.scored_at or datetime.now(UTC)
         await c.session.flush()
@@ -139,7 +141,7 @@ async def archive_topic(topic_id: int, body: ArchiveIn, actor: Actor) -> TopicOu
 
 
 class ArchiveSmallIn(BaseModel):
-    group_id: int
+    channel_id: str
 
 
 class ArchiveSmallOut(BaseModel):
@@ -148,16 +150,15 @@ class ArchiveSmallOut(BaseModel):
 
 @router.post("/topics/archive-small")
 async def archive_small_topics(body: ArchiveSmallIn, actor: Actor) -> ArchiveSmallOut:
-    """Apply the group's current archive thresholds (size and curation weight) to its finished topics."""
-    async with change(actor, "topic", "archive_small", body.group_id) as c:
-        n = await topics.archive_closed(c.session, body.group_id)
-        c.detail = {"group_id": body.group_id, "archived": n}
+    async with change(actor, "topic", "archive_small", body.channel_id) as c:
+        n = await topics.archive_closed(c.session, body.channel_id)
+        c.detail = {"channel_id": body.channel_id, "archived": n}
     return ArchiveSmallOut(archived=n)
 
 
 class DigestOut(BaseModel):
     id: int
-    group_id: int
+    guild_id: str
     day: date
     summary: str
     topic_ids: list[int]
@@ -165,18 +166,18 @@ class DigestOut(BaseModel):
 
 @router.get("/digests")
 async def list_digests(
-    group_id: int | None = None,
+    guild_id: str | None = None,
     limit: int = Query(30, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> Page[DigestOut]:
-    cond = [DailyDigest.group_id == group_id] if group_id is not None else []
+    cond = [DailyDigest.guild_id == guild_id] if guild_id else []
     async with get_session() as s:
         total = await s.scalar(select(func.count()).select_from(DailyDigest).where(*cond)) or 0
         rows = await s.scalars(
             select(DailyDigest).where(*cond).order_by(DailyDigest.day.desc()).limit(limit).offset(offset)
         )
         items = [
-            DigestOut(id=d.id, group_id=d.group_id, day=d.day, summary=d.summary, topic_ids=list(d.topic_ids))
+            DigestOut(id=d.id, guild_id=d.guild_id, day=d.day, summary=d.summary, topic_ids=list(d.topic_ids))
             for d in rows.all()
         ]
     return Page[DigestOut](items=items, total=total)
@@ -184,7 +185,7 @@ async def list_digests(
 
 class GlossaryOut(BaseModel):
     id: int
-    group_id: int
+    guild_id: str
     term: str
     aliases: list[str]
     definition: str
@@ -199,7 +200,7 @@ class GlossaryOut(BaseModel):
 
 
 class GlossaryIn(BaseModel):
-    group_id: int
+    guild_id: str
     term: str = Field(min_length=1)
     aliases: list[str] = Field(default_factory=list)
     definition: str = Field(min_length=1)
@@ -212,7 +213,7 @@ class LockIn(BaseModel):
 def _glossary_out(g: GlossaryTerm) -> GlossaryOut:
     return GlossaryOut(
         id=g.id,
-        group_id=g.group_id,
+        guild_id=g.guild_id,
         term=g.term,
         aliases=list(g.aliases),
         definition=g.definition,
@@ -228,20 +229,19 @@ def _glossary_out(g: GlossaryTerm) -> GlossaryOut:
 
 
 def _drop_glossary_vectors(term_id: int) -> Any:
-    # The memory pipeline re-embeds glossary rows that have no vector in the active space.
     return delete(MemoryVector).where(MemoryVector.kind == "glossary", MemoryVector.ref_id == term_id)
 
 
 @router.get("/glossary")
 async def list_glossary(
-    group_id: int | None = None,
+    guild_id: str | None = None,
     q: str | None = None,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> Page[GlossaryOut]:
     cond = []
-    if group_id is not None:
-        cond.append(GlossaryTerm.group_id == group_id)
+    if guild_id:
+        cond.append(GlossaryTerm.guild_id == guild_id)
     if q:
         like = f"%{q}%"
         cond.append(or_(GlossaryTerm.term.ilike(like), GlossaryTerm.definition.ilike(like)))
@@ -263,7 +263,7 @@ async def create_glossary_term(body: GlossaryIn, actor: Actor) -> GlossaryOut:
     try:
         async with change(actor, "glossary", "create") as c:
             g = GlossaryTerm(
-                group_id=body.group_id,
+                guild_id=body.guild_id,
                 term=body.term.strip(),
                 aliases=[a.strip() for a in body.aliases if a.strip()],
                 definition=body.definition.strip(),
@@ -275,9 +275,9 @@ async def create_glossary_term(body: GlossaryIn, actor: Actor) -> GlossaryOut:
             c.session.add(g)
             await c.session.flush()
             await c.session.refresh(g)
-            c.entity_id, c.detail = str(g.id), {"group_id": g.group_id, "term": g.term}
+            c.entity_id, c.detail = str(g.id), {"guild_id": g.guild_id, "term": g.term}
     except IntegrityError as e:
-        raise conflict(f"群 {body.group_id} 已有词条 {body.term}") from e
+        raise conflict(f"服务器 {body.guild_id} 已有词条 {body.term}") from e
     return _glossary_out(g)
 
 
@@ -289,7 +289,7 @@ async def update_glossary_term(term_id: int, body: GlossaryIn, actor: Actor) -> 
             if g is None:
                 raise not_found("词条")
             c.detail = {"before": {"term": g.term, "definition": g.definition, "aliases": list(g.aliases)}}
-            g.group_id = body.group_id
+            g.guild_id = body.guild_id
             g.term = body.term.strip()
             g.aliases = [a.strip() for a in body.aliases if a.strip()]
             g.definition = body.definition.strip()
@@ -299,7 +299,7 @@ async def update_glossary_term(term_id: int, body: GlossaryIn, actor: Actor) -> 
             await c.session.flush()
             await c.session.refresh(g)
     except IntegrityError as e:
-        raise conflict(f"群 {body.group_id} 已有词条 {body.term}") from e
+        raise conflict(f"服务器 {body.guild_id} 已有词条 {body.term}") from e
     return _glossary_out(g)
 
 
@@ -321,15 +321,15 @@ async def delete_glossary_term(term_id: int, actor: Actor) -> Ok:
         g = await c.session.get(GlossaryTerm, term_id)
         if g is None:
             raise not_found("词条")
-        c.detail = {"group_id": g.group_id, "term": g.term, "definition": g.definition}
+        c.detail = {"guild_id": g.guild_id, "term": g.term, "definition": g.definition}
         await c.session.execute(_drop_glossary_vectors(term_id))
         await c.session.delete(g)
     return Ok()
 
 
 class ProfileOut(BaseModel):
-    group_id: int
-    user_id: int
+    guild_id: str
+    user_id: str
     display_name: str
     summary: str
     interests: list[str]
@@ -343,13 +343,11 @@ class FactOut(BaseModel):
     fact: str
     source_msg_ids: list[int]
     created_at: datetime
-    importance: int | None = Field(description="重要度 1–5（画像更新或整理任务给的）；未评分为空")
-    weight: float | None = Field(description="重要度，佐证消息多的略高；排序时还会按时间衰减")
-    archived_at: datetime | None = Field(description="归档时间；归档的事实 agent 和画像更新都看不到")
-    archive_reason: str | None = Field(
-        description="low 重要度低于阈值，duplicate 与另一条重复，cap 超出每人上限，outdated 被新消息推翻"
-    )
-    locked: bool = Field(description="管理员恢复过：整理任务不再归档它")
+    importance: int | None
+    weight: float | None
+    archived_at: datetime | None
+    archive_reason: str | None
+    locked: bool
 
 
 class ProfileDetail(ProfileOut):
@@ -372,7 +370,7 @@ def _fact_out(f: UserProfileFact) -> FactOut:
 
 def _profile_out(p: UserProfile) -> ProfileOut:
     return ProfileOut(
-        group_id=p.group_id,
+        guild_id=p.guild_id,
         user_id=p.user_id,
         display_name=p.display_name,
         summary=p.summary,
@@ -385,22 +383,22 @@ def _profile_out(p: UserProfile) -> ProfileOut:
 
 @router.get("/profiles")
 async def list_profiles(
-    group_id: int | None = None,
+    guild_id: str | None = None,
     q: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> Page[ProfileOut]:
     cond = []
-    if group_id is not None:
-        cond.append(UserProfile.group_id == group_id)
+    if guild_id:
+        cond.append(UserProfile.guild_id == guild_id)
     if q:
-        conds: list[ColumnElement[bool]] = [
-            UserProfile.display_name.ilike(f"%{q}%"),
-            UserProfile.summary.ilike(f"%{q}%"),
-        ]
-        if q.isdigit():
-            conds.append(UserProfile.user_id == int(q))
-        cond.append(or_(*conds))
+        cond.append(
+            or_(
+                UserProfile.display_name.ilike(f"%{q}%"),
+                UserProfile.summary.ilike(f"%{q}%"),
+                UserProfile.user_id == q.strip(),
+            )
+        )
     async with get_session() as s:
         total = await s.scalar(select(func.count()).select_from(UserProfile).where(*cond)) or 0
         rows = await s.scalars(
@@ -410,15 +408,15 @@ async def list_profiles(
     return Page[ProfileOut](items=items, total=total)
 
 
-@router.get("/profiles/{group_id}/{user_id}")
-async def get_profile(group_id: int, user_id: int) -> ProfileDetail:
+@router.get("/profiles/{guild_id}/{user_id}")
+async def get_profile(guild_id: str, user_id: str) -> ProfileDetail:
     async with get_session() as s:
-        p = await s.get(UserProfile, (group_id, user_id))
+        p = await s.get(UserProfile, (guild_id, user_id))
         if p is None:
             raise not_found("画像")
         facts = await s.scalars(
             select(UserProfileFact)
-            .where(UserProfileFact.group_id == group_id, UserProfileFact.user_id == user_id)
+            .where(UserProfileFact.guild_id == guild_id, UserProfileFact.user_id == user_id)
             .order_by(
                 UserProfileFact.archived_at.is_not(None),
                 UserProfileFact.weight.desc().nulls_last(),
@@ -429,12 +427,12 @@ async def get_profile(group_id: int, user_id: int) -> ProfileDetail:
     return ProfileDetail(**_profile_out(p).model_dump(), facts=fact_items)
 
 
-@router.delete("/profiles/{group_id}/{user_id}")
-async def delete_profile(group_id: int, user_id: int, actor: Actor) -> Ok:
-    async with change(actor, "profile", "delete", f"{group_id}:{user_id}") as c:
-        p = await c.session.get(UserProfile, (group_id, user_id))
+@router.delete("/profiles/{guild_id}/{user_id}")
+async def delete_profile(guild_id: str, user_id: str, actor: Actor) -> Ok:
+    async with change(actor, "profile", "delete", f"{guild_id}:{user_id}") as c:
+        p = await c.session.get(UserProfile, (guild_id, user_id))
         facts = await c.session.execute(
-            delete(UserProfileFact).where(UserProfileFact.group_id == group_id, UserProfileFact.user_id == user_id)
+            delete(UserProfileFact).where(UserProfileFact.guild_id == guild_id, UserProfileFact.user_id == user_id)
         )
         if p is None and not facts.rowcount:  # pyright: ignore[reportAttributeAccessIssue]
             raise not_found("画像")
@@ -443,27 +441,26 @@ async def delete_profile(group_id: int, user_id: int, actor: Actor) -> Ok:
     return Ok()
 
 
-@router.delete("/profiles/{group_id}/{user_id}/facts/{fact_id}")
-async def delete_profile_fact(group_id: int, user_id: int, fact_id: int, actor: Actor) -> Ok:
+@router.delete("/profiles/{guild_id}/{user_id}/facts/{fact_id}")
+async def delete_profile_fact(guild_id: str, user_id: str, fact_id: int, actor: Actor) -> Ok:
     async with change(actor, "profile_fact", "delete", fact_id) as c:
         f = await c.session.get(UserProfileFact, fact_id)
-        if f is None or f.group_id != group_id or f.user_id != user_id:
+        if f is None or f.guild_id != guild_id or f.user_id != user_id:
             raise not_found("事实")
-        c.detail = {"group_id": group_id, "fact": f.fact}
+        c.detail = {"guild_id": guild_id, "fact": f.fact}
         await c.session.delete(f)
     return Ok()
 
 
-@router.post("/profiles/{group_id}/{user_id}/facts/{fact_id}/restore")
-async def restore_profile_fact(group_id: int, user_id: int, fact_id: int, actor: Actor) -> FactOut:
-    """Bring an archived fact back; it is locked, so curation never archives it again."""
+@router.post("/profiles/{guild_id}/{user_id}/facts/{fact_id}/restore")
+async def restore_profile_fact(guild_id: str, user_id: str, fact_id: int, actor: Actor) -> FactOut:
     async with change(actor, "profile_fact", "restore", fact_id) as c:
         f = await c.session.get(UserProfileFact, fact_id)
-        if f is None or f.group_id != group_id or f.user_id != user_id:
+        if f is None or f.guild_id != guild_id or f.user_id != user_id:
             raise not_found("事实")
         if f.archived_at is None:
             raise conflict("这条事实没有归档")
-        c.detail = {"group_id": group_id, "fact": f.fact, "archive_reason": f.archive_reason}
+        c.detail = {"guild_id": guild_id, "fact": f.fact, "archive_reason": f.archive_reason}
         f.archived_at, f.archive_reason, f.locked = None, None, True
         await c.session.flush()
         await c.session.refresh(f)
@@ -472,30 +469,32 @@ async def restore_profile_fact(group_id: int, user_id: int, fact_id: int, actor:
 
 class PipelineOut(BaseModel):
     pipeline: str
-    group_id: int
+    scope_id: str
     last_msg_id: int
     backlog: int = Field(description="水位之后的新消息数（上限 10000）")
     state: dict[str, Any]
     updated_at: datetime
 
 
+_CHANNEL_PIPELINES = frozenset({"chunk", "topic"})
+
+
 @router.get("/pipelines")
 async def list_pipelines() -> list[PipelineOut]:
     async with get_session() as s:
-        rows = (await s.scalars(select(PipelineState).order_by(PipelineState.pipeline, PipelineState.group_id))).all()
+        rows = (await s.scalars(select(PipelineState).order_by(PipelineState.pipeline, PipelineState.scope_id))).all()
         out = []
         for p in rows:
-            capped = (
-                select(Message.id)
-                .where(Message.group_id == p.group_id, Message.id > p.last_msg_id)
-                .limit(10000)
-                .subquery()
-            )
+            if p.pipeline in _CHANNEL_PIPELINES:
+                cond = [Message.channel_id == p.scope_id, Message.id > p.last_msg_id]
+            else:
+                cond = [Message.guild_id == p.scope_id, Message.id > p.last_msg_id]
+            capped = select(Message.id).where(*cond).limit(10000).subquery()
             backlog = await s.scalar(select(func.count()).select_from(capped)) or 0
             out.append(
                 PipelineOut(
                     pipeline=p.pipeline,
-                    group_id=p.group_id,
+                    scope_id=p.scope_id,
                     last_msg_id=p.last_msg_id,
                     backlog=backlog,
                     state=dict(p.state),

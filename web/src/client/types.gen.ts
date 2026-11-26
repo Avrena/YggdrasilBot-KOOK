@@ -21,7 +21,7 @@ export type AdminIn = {
     /**
      * Kind
      */
-    kind: 'qq' | 'email';
+    kind: 'kook' | 'email';
     /**
      * Value
      */
@@ -39,7 +39,7 @@ export type AdminOut = {
     /**
      * Kind
      */
-    kind: 'qq' | 'email';
+    kind: 'kook' | 'email';
     /**
      * Value
      */
@@ -100,9 +100,9 @@ export type ArchiveIn = {
  */
 export type ArchiveSmallIn = {
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number;
+    channel_id: string;
 };
 
 /**
@@ -165,7 +165,7 @@ export type BotOut = {
     /**
      * User Id
      */
-    user_id: number;
+    user_id: string;
     /**
      * Name
      */
@@ -175,25 +175,34 @@ export type BotOut = {
 /**
  * BotReply
  *
- * The structured answer of the chat / tldr agents.
+ * Structured answer of the chat / tldr agents.
+ *
+ * The delivery renderer adaptively picks concise KMarkdown or structured CardMessage based on length,
+ * structure, images, and sources so the model focuses on clear writing.
  */
 export type BotReply = {
     /**
      * Mode
      *
-     * forward：查证后用合并转发作答（不接或做不了的直接请求也用它简短说明）；plain：一两句话就能答完（正文不超过 120 字），或者只发 1–2 张图，直接作为普通消息发到群里，不进合并转发、不带来源和元数据（只在普通答疑里可用）；silent：不回复（不是在跟你说话、没有实际内容）；done：已经用操作类工具完成了请求（比如撤回），不再发消息
+     * reply：发出回复（由发送层根据内容长度、分节、图片与来源自适应选择简洁文本或卡片消息）；silent：不回复（不是在跟你说话、没有实际内容）；done：已经用操作类工具完成了请求（比如撤回），不再发消息
      */
-    mode: 'forward' | 'plain' | 'silent' | 'done';
+    mode: 'reply' | 'silent' | 'done';
+    /**
+     * Style
+     *
+     * 可选排版提示：默认 auto 自动选择最易读的样式；简短闲聊可用 text，结构化报告可用 card
+     */
+    style?: 'auto' | 'text' | 'card';
     /**
      * Title
      *
-     * mode=forward 时这次回复的主题（≤20 字）
+     * 长回答或 TL;DR 的主题标题（≤30 字；简短一句回复可留空）
      */
     title?: string | null;
     /**
      * Sections
      *
-     * mode=forward / plain 时的各节（plain 只写一节）
+     * mode=reply 时的各节内容
      */
     sections?: Array<Section>;
     /**
@@ -212,10 +221,6 @@ export type BotReply = {
 
 /**
  * BridgeCall
- *
- * A bot tool (or ``media``, a fetch of an attachment's bytes) that code in a workspace called through the tool
- * bridge. Kept on the ``sh`` / ``py`` tool entry whose code made it (a job's on an event entry); like entries, it
- * carries arguments and result text only in ``full`` mode.
  */
 export type BridgeCall = {
     /**
@@ -252,18 +257,245 @@ export type BridgeCall = {
      * Display
      */
     display?: ({
-        kind: 'qq_context';
-    } & QqContextDisplay) | ({
-        kind: 'qq_messages';
-    } & QqMessagesDisplay) | ({
-        kind: 'qq_forward';
-    } & QqForwardDisplay) | ({
+        kind: 'chat_context';
+    } & ChatContextDisplay) | ({
+        kind: 'chat_messages';
+    } & ChatMessagesDisplay) | ({
         kind: 'page';
     } & PageDisplay) | ({
         kind: 'hits';
     } & HitsDisplay) | ({
         kind: 'images';
     } & ImagesDisplay) | null;
+};
+
+/**
+ * CategoryNode
+ */
+export type CategoryNode = {
+    category: ChannelOut;
+    /**
+     * Channels
+     */
+    channels: Array<ChannelOut>;
+};
+
+/**
+ * ChannelCount
+ */
+export type ChannelCount = {
+    /**
+     * Channel Id
+     */
+    channel_id: string;
+    /**
+     * Guild Id
+     */
+    guild_id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Guild Name
+     */
+    guild_name: string;
+    /**
+     * Enabled
+     */
+    enabled: boolean;
+    /**
+     * Count
+     */
+    count: number;
+};
+
+/**
+ * ChannelIn
+ */
+export type ChannelIn = {
+    /**
+     * Guild Id
+     */
+    guild_id: string;
+    /**
+     * Parent Id
+     */
+    parent_id?: string | null;
+    /**
+     * Name
+     */
+    name?: string;
+    /**
+     * Topic
+     */
+    topic?: string;
+    /**
+     * Position
+     */
+    position?: number;
+    /**
+     * Is Category
+     */
+    is_category?: boolean;
+    /**
+     * Enabled
+     *
+     * 启用开关：true 启用 / false 停用 / null 继承所属分组（分组或无分组频道为 null 时视为停用）
+     */
+    enabled?: boolean | null;
+    /**
+     * Settings
+     *
+     * 省略则保留原有覆盖
+     */
+    settings?: {
+        [key: string]: unknown;
+    } | null;
+};
+
+/**
+ * ChannelOut
+ */
+export type ChannelOut = {
+    /**
+     * Channel Id
+     */
+    channel_id: string;
+    /**
+     * Guild Id
+     */
+    guild_id: string;
+    /**
+     * Parent Id
+     */
+    parent_id: string | null;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Topic
+     */
+    topic: string;
+    /**
+     * Position
+     */
+    position: number;
+    /**
+     * Is Category
+     */
+    is_category: boolean;
+    /**
+     * Enabled
+     */
+    enabled: boolean | null;
+    /**
+     * Effective Enabled
+     */
+    effective_enabled: boolean;
+    /**
+     * Settings
+     */
+    settings: {
+        [key: string]: unknown;
+    };
+    /**
+     * Backfilled At
+     */
+    backfilled_at: string | null;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+/**
+ * ChatContextDisplay
+ */
+export type ChatContextDisplay = {
+    /**
+     * Kind
+     */
+    kind?: 'chat_context';
+    /**
+     * Recent
+     */
+    recent?: Array<number>;
+    quoted?: ChatMessage | null;
+    trigger?: ChatMessage | null;
+    /**
+     * Blocks
+     */
+    blocks?: Array<string>;
+    /**
+     * Chain
+     */
+    chain?: Array<ChatMessage>;
+};
+
+/**
+ * ChatMessage
+ *
+ * A KOOK message snapshot as seen by a run.
+ */
+export type ChatMessage = {
+    /**
+     * Id
+     */
+    id?: number | null;
+    /**
+     * Kook Message Id
+     */
+    kook_message_id?: string | null;
+    /**
+     * Channel Id
+     */
+    channel_id?: string | null;
+    /**
+     * User Id
+     */
+    user_id: string;
+    /**
+     * Sender Name
+     */
+    sender_name?: string;
+    /**
+     * Sent At
+     */
+    sent_at?: string | null;
+    /**
+     * Segments
+     */
+    segments?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Is Self
+     */
+    is_self?: boolean;
+    /**
+     * Recalled
+     */
+    recalled?: boolean;
+};
+
+/**
+ * ChatMessagesDisplay
+ */
+export type ChatMessagesDisplay = {
+    /**
+     * Kind
+     */
+    kind?: 'chat_messages';
+    /**
+     * Message Ids
+     */
+    message_ids?: Array<number>;
 };
 
 /**
@@ -299,9 +531,9 @@ export type DigestOut = {
      */
     id: number;
     /**
-     * Group Id
+     * Guild Id
      */
-    group_id: number;
+    guild_id: string;
     /**
      * Day
      */
@@ -376,8 +608,6 @@ export type EmbedSpaceOut = {
 
 /**
  * Entry
- *
- * One turn. Fields beyond ``kind``/``at``/``parts`` apply to some kinds only (noted per field).
  */
 export type Entry = {
     /**
@@ -396,12 +626,10 @@ export type Entry = {
      * Display
      */
     display?: ({
-        kind: 'qq_context';
-    } & QqContextDisplay) | ({
-        kind: 'qq_messages';
-    } & QqMessagesDisplay) | ({
-        kind: 'qq_forward';
-    } & QqForwardDisplay) | ({
+        kind: 'chat_context';
+    } & ChatContextDisplay) | ({
+        kind: 'chat_messages';
+    } & ChatMessagesDisplay) | ({
         kind: 'page';
     } & PageDisplay) | ({
         kind: 'hits';
@@ -452,20 +680,6 @@ export type Entry = {
 };
 
 /**
- * EventDecideIn
- */
-export type EventDecideIn = {
-    /**
-     * Approve
-     */
-    approve: boolean;
-    /**
-     * Reason
-     */
-    reason?: string | null;
-};
-
-/**
  * EventOut
  */
 export type EventOut = {
@@ -482,17 +696,21 @@ export type EventOut = {
      */
     kind: string;
     /**
-     * Group Id
+     * Guild Id
      */
-    group_id: number | null;
+    guild_id: string | null;
+    /**
+     * Channel Id
+     */
+    channel_id: string | null;
     /**
      * User Id
      */
-    user_id: number | null;
+    user_id: string | null;
     /**
      * Operator Id
      */
-    operator_id: number | null;
+    operator_id: string | null;
     /**
      * Data
      */
@@ -535,62 +753,24 @@ export type FactOut = {
     created_at: string;
     /**
      * Importance
-     *
-     * 重要度 1–5（画像更新或整理任务给的）；未评分为空
      */
     importance: number | null;
     /**
      * Weight
-     *
-     * 重要度，佐证消息多的略高；排序时还会按时间衰减
      */
     weight: number | null;
     /**
      * Archived At
-     *
-     * 归档时间；归档的事实 agent 和画像更新都看不到
      */
     archived_at: string | null;
     /**
      * Archive Reason
-     *
-     * low 重要度低于阈值，duplicate 与另一条重复，cap 超出每人上限，outdated 被新消息推翻
      */
     archive_reason: string | null;
     /**
      * Locked
-     *
-     * 管理员恢复过：整理任务不再归档它
      */
     locked: boolean;
-};
-
-/**
- * ForwardNode
- */
-export type ForwardNode = {
-    /**
-     * Depth
-     */
-    depth?: number;
-    /**
-     * User Id
-     */
-    user_id?: number;
-    /**
-     * Sender Name
-     */
-    sender_name?: string;
-    /**
-     * Sent At
-     */
-    sent_at?: string | null;
-    /**
-     * Segments
-     */
-    segments?: Array<{
-        [key: string]: unknown;
-    }>;
 };
 
 /**
@@ -598,9 +778,9 @@ export type ForwardNode = {
  */
 export type GlossaryIn = {
     /**
-     * Group Id
+     * Guild Id
      */
-    group_id: number;
+    guild_id: string;
     /**
      * Term
      */
@@ -624,9 +804,9 @@ export type GlossaryOut = {
      */
     id: number;
     /**
-     * Group Id
+     * Guild Id
      */
-    group_id: number;
+    guild_id: string;
     /**
      * Term
      */
@@ -674,35 +854,17 @@ export type GlossaryOut = {
 };
 
 /**
- * GroupCount
+ * GuildIn
  */
-export type GroupCount = {
-    /**
-     * Group Id
-     */
-    group_id: number;
-    /**
-     * Name
-     */
-    name: string;
-    /**
-     * Enabled
-     */
-    enabled: boolean;
-    /**
-     * Count
-     */
-    count: number;
-};
-
-/**
- * GroupIn
- */
-export type GroupIn = {
+export type GuildIn = {
     /**
      * Name
      */
     name?: string;
+    /**
+     * Icon
+     */
+    icon?: string;
     /**
      * Enabled
      */
@@ -718,17 +880,21 @@ export type GroupIn = {
 };
 
 /**
- * GroupOut
+ * GuildOut
  */
-export type GroupOut = {
+export type GuildOut = {
     /**
-     * Group Id
+     * Guild Id
      */
-    group_id: number;
+    guild_id: string;
     /**
      * Name
      */
     name: string;
+    /**
+     * Icon
+     */
+    icon: string;
     /**
      * Enabled
      */
@@ -740,10 +906,6 @@ export type GroupOut = {
         [key: string]: unknown;
     };
     /**
-     * Backfilled At
-     */
-    backfilled_at: string | null;
-    /**
      * Created At
      */
     created_at: string;
@@ -751,6 +913,21 @@ export type GroupOut = {
      * Updated At
      */
     updated_at: string;
+};
+
+/**
+ * GuildTreeOut
+ */
+export type GuildTreeOut = {
+    guild: GuildOut;
+    /**
+     * Categories
+     */
+    categories: Array<CategoryNode>;
+    /**
+     * Ungrouped
+     */
+    ungrouped: Array<ChannelOut>;
 };
 
 /**
@@ -841,8 +1018,6 @@ export type ImagePart = {
 
 /**
  * ImagesDisplay
- *
- * Images a tool produced or posted (render_*, sandbox show) rather than returned to the model.
  */
 export type ImagesDisplay = {
     /**
@@ -868,13 +1043,17 @@ export type InvocationDetail = {
      */
     created_at: string;
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number | null;
+    channel_id: string | null;
+    /**
+     * Guild Id
+     */
+    guild_id: string | null;
     /**
      * User Id
      */
-    user_id: number;
+    user_id: string;
     /**
      * User Name
      */
@@ -924,9 +1103,9 @@ export type InvocationDetail = {
      */
     error: string | null;
     /**
-     * Trigger Qq Message Id
+     * Trigger Msg Id
      */
-    trigger_qq_message_id: number | null;
+    trigger_msg_id: string | null;
     /**
      * Tokens Cached
      */
@@ -966,13 +1145,17 @@ export type InvocationSummary = {
      */
     created_at: string;
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number | null;
+    channel_id: string | null;
+    /**
+     * Guild Id
+     */
+    guild_id: string | null;
     /**
      * User Id
      */
-    user_id: number;
+    user_id: string;
     /**
      * User Name
      */
@@ -1036,9 +1219,13 @@ export type JobDetail = {
      */
     kind: string;
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number;
+    channel_id: string;
+    /**
+     * Guild Id
+     */
+    guild_id: string | null;
     /**
      * Workspace
      */
@@ -1046,7 +1233,7 @@ export type JobDetail = {
     /**
      * User Id
      */
-    user_id: number;
+    user_id: string;
     /**
      * Title
      */
@@ -1155,9 +1342,13 @@ export type JobOut = {
      */
     kind: string;
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number;
+    channel_id: string;
+    /**
+     * Guild Id
+     */
+    guild_id: string | null;
     /**
      * Workspace
      */
@@ -1165,7 +1356,7 @@ export type JobOut = {
     /**
      * User Id
      */
-    user_id: number;
+    user_id: string;
     /**
      * Title
      */
@@ -1238,6 +1429,64 @@ export type JobUsageOut = {
 };
 
 /**
+ * KookConnectionIn
+ */
+export type KookConnectionIn = {
+    /**
+     * Bot Token
+     *
+     * KOOK 开发者后台机器人的 Bot Token
+     */
+    bot_token: string;
+};
+
+/**
+ * KookConnectionOut
+ */
+export type KookConnectionOut = {
+    /**
+     * Configured
+     */
+    configured: boolean;
+    /**
+     * Source
+     */
+    source: 'db' | 'env' | 'none';
+    /**
+     * Token Preview
+     */
+    token_preview: string;
+    /**
+     * Connected
+     */
+    connected: boolean;
+    /**
+     * Bot Id
+     */
+    bot_id: string | null;
+    /**
+     * Bot Name
+     */
+    bot_name: string | null;
+    /**
+     * Connected At
+     */
+    connected_at: string | null;
+    /**
+     * Last Heartbeat
+     */
+    last_heartbeat: string | null;
+    /**
+     * Guild Count
+     */
+    guild_count: number;
+    /**
+     * Enabled Channels
+     */
+    enabled_channels: number;
+};
+
+/**
  * LinkOut
  */
 export type LinkOut = {
@@ -1264,6 +1513,62 @@ export type LinkOut = {
 };
 
 /**
+ * LiveChannelOut
+ */
+export type LiveChannelOut = {
+    /**
+     * Channel Id
+     */
+    channel_id: string;
+    /**
+     * Parent Id
+     */
+    parent_id: string | null;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Topic
+     */
+    topic: string;
+    /**
+     * Position
+     */
+    position: number;
+    /**
+     * Is Category
+     */
+    is_category: boolean;
+    /**
+     * Type
+     */
+    type: number;
+};
+
+/**
+ * LiveGuildOut
+ */
+export type LiveGuildOut = {
+    /**
+     * Guild Id
+     */
+    guild_id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Icon
+     */
+    icon: string;
+    /**
+     * Channels
+     */
+    channels: Array<LiveChannelOut>;
+};
+
+/**
  * LockIn
  */
 export type LockIn = {
@@ -1285,65 +1590,6 @@ export type Me = {
      * Environment
      */
     environment: string;
-};
-
-/**
- * MilkyIn
- */
-export type MilkyIn = {
-    /**
-     * Url
-     */
-    url: string;
-    /**
-     * Token
-     */
-    token?: string | null;
-};
-
-/**
- * MilkyLinkOut
- */
-export type MilkyLinkOut = {
-    /**
-     * Managed
-     */
-    managed: boolean;
-    /**
-     * Url
-     */
-    url: string | null;
-    /**
-     * Connected
-     */
-    connected: boolean;
-    /**
-     * Self Id
-     */
-    self_id: number | null;
-    /**
-     * Error
-     */
-    error: string | null;
-    /**
-     * Since
-     */
-    since: string | null;
-};
-
-/**
- * MilkyOut
- */
-export type MilkyOut = {
-    /**
-     * Url
-     */
-    url: string | null;
-    /**
-     * Token Set
-     */
-    token_set: boolean;
-    link: MilkyLinkOut;
 };
 
 /**
@@ -1439,28 +1685,25 @@ export type Ok = {
 /**
  * OpsReply
  *
- * The structured answer of the ops agent (``yggdrasil.ops.agent``).
+ * Structured answer of the ops agent (``yggdrasil.ops.agent``).
  */
 export type OpsReply = {
     /**
      * Mode
      *
-     * done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）
+     * done：已用工具完成操作，不发消息；reply：回一段简短说明（查询结果、失败原因、需要澄清时）
      */
     mode: 'done' | 'reply';
     /**
      * Text
      *
-     * mode=reply 时发出的文字，纯文本，简短
+     * mode=reply 时发出的文字，简短清晰，可使用基础 Markdown
      */
     text?: string | null;
 };
 
 /**
  * OutputPart
- *
- * The run's structured output when the model returned it as text (native or prompted output mode) instead of
- * calling ``final_result``. Not stored: the admin API sets it when it reads a transcript.
  */
 export type OutputPart = {
     /**
@@ -1676,9 +1919,9 @@ export type PipelineOut = {
      */
     pipeline: string;
     /**
-     * Group Id
+     * Scope Id
      */
-    group_id: number;
+    scope_id: string;
     /**
      * Last Msg Id
      */
@@ -1734,13 +1977,13 @@ export type PreviewOut = {
  */
 export type ProfileDetail = {
     /**
-     * Group Id
+     * Guild Id
      */
-    group_id: number;
+    guild_id: string;
     /**
      * User Id
      */
-    user_id: number;
+    user_id: string;
     /**
      * Display Name
      */
@@ -1776,13 +2019,13 @@ export type ProfileDetail = {
  */
 export type ProfileOut = {
     /**
-     * Group Id
+     * Guild Id
      */
-    group_id: number;
+    guild_id: string;
     /**
      * User Id
      */
-    user_id: number;
+    user_id: string;
     /**
      * Display Name
      */
@@ -2042,103 +2285,6 @@ export type ProviderProbe = {
 };
 
 /**
- * QQContextDisplay
- *
- * The user turn of an invocation: the group chat the prompt included, the quoted message and the trigger.
- */
-export type QqContextDisplay = {
-    /**
-     * Kind
-     */
-    kind?: 'qq_context';
-    /**
-     * Recent
-     */
-    recent?: Array<number>;
-    quoted?: QqMessage | null;
-    trigger?: QqMessage | null;
-    /**
-     * Blocks
-     */
-    blocks?: Array<string>;
-    /**
-     * Chain
-     */
-    chain?: Array<QqMessage>;
-};
-
-/**
- * QQForwardDisplay
- */
-export type QqForwardDisplay = {
-    /**
-     * Kind
-     */
-    kind?: 'qq_forward';
-    /**
-     * Nodes
-     */
-    nodes?: Array<ForwardNode>;
-};
-
-/**
- * QQMessage
- *
- * A QQ message as it was when the run used it. ``segments`` are ``qq.segments`` segments; the API adds ``src``
- * to image and market face data when it can serve the picture, and ``name`` to faces.
- */
-export type QqMessage = {
-    /**
-     * Id
-     */
-    id?: number | null;
-    /**
-     * Qq Message Id
-     */
-    qq_message_id?: number | null;
-    /**
-     * User Id
-     */
-    user_id: number;
-    /**
-     * Sender Name
-     */
-    sender_name?: string;
-    /**
-     * Sent At
-     */
-    sent_at?: string | null;
-    /**
-     * Segments
-     */
-    segments?: Array<{
-        [key: string]: unknown;
-    }>;
-    /**
-     * Is Self
-     */
-    is_self?: boolean;
-    /**
-     * Recalled
-     */
-    recalled?: boolean;
-};
-
-/**
- * QQMessagesDisplay
- */
-export type QqMessagesDisplay = {
-    /**
-     * Kind
-     */
-    kind?: 'qq_messages';
-    /**
-     * Message Ids
-     */
-    message_ids?: Array<number>;
-};
-
-/**
  * RefreshResult
  */
 export type RefreshResult = {
@@ -2201,13 +2347,17 @@ export type ReviewOut = {
      */
     invocation_id: string | null;
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number;
+    channel_id: string;
+    /**
+     * Guild Id
+     */
+    guild_id: string | null;
     /**
      * User Id
      */
-    user_id: number;
+    user_id: string;
     /**
      * Request Text
      */
@@ -2470,15 +2620,21 @@ export type SearchTestResult = {
  */
 export type Section = {
     /**
+     * Heading
+     *
+     * 可选的小节标题（长回答分节时使用，简短回复留空）
+     */
+    heading?: string | null;
+    /**
      * Content
      *
-     * 正文，纯文本，不要 markdown，不要加小标题；按意思分段，段落之间空一行
+     * 正文，支持标准 Markdown（加粗、列表、行内代码、代码块、链接）；按人类阅读习惯自然分段
      */
     content: string;
     /**
      * Images
      *
-     * 紧跟在这一节正文后面发的图片句柄（img#N），按顺序；render_*、show() 生成的图和聊天、网页里的图都行。整条回复最多 4 张；没写进来的图不会发
+     * 紧跟在这一节正文后面展示的图片句柄（img#N），按顺序；render_*、show() 生成的图和聊天、网页里的图都行。整条回复最多 4 张；没写进来的图不会发
      */
     images?: Array<string>;
 };
@@ -2505,6 +2661,10 @@ export type SettingsView = {
     defaults: {
         [key: string]: unknown;
     };
+    /**
+     * Chain
+     */
+    chain?: Array<string>;
 };
 
 /**
@@ -2528,7 +2688,7 @@ export type SourceRef = {
     /**
      * Label
      *
-     * 来源名称，如网页标题、文件名、#消息id
+     * 来源名称，如网页标题、文件名、#频道名 #消息id
      */
     label: string;
     /**
@@ -2544,7 +2704,7 @@ export type Stats = {
     /**
      * Messages 24H
      */
-    messages_24h: Array<GroupCount>;
+    messages_24h: Array<ChannelCount>;
     /**
      * Invocations 24H
      */
@@ -2640,9 +2800,9 @@ export type StickerDetail = {
      */
     seen_count: number;
     /**
-     * Group Count
+     * Guild Count
      */
-    group_count: number;
+    guild_count: number;
     /**
      * Enabled
      */
@@ -2664,21 +2824,21 @@ export type StickerDetail = {
      */
     emoji_id: string | null;
     /**
-     * Package Id
+     * Guild Id
      */
-    package_id: string | null;
+    guild_id: string | null;
     /**
-     * Key
+     * Asset Url
      */
-    key: string;
+    asset_url: string;
     /**
      * Tag Attempts
      */
     tag_attempts: number;
     /**
-     * Groups
+     * Guilds
      */
-    groups: Array<StickerGroupUsage>;
+    guilds: Array<StickerGuildUsage>;
 };
 
 /**
@@ -2694,9 +2854,13 @@ export type StickerDropOut = {
      */
     at: string;
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number;
+    channel_id: string;
+    /**
+     * Guild Id
+     */
+    guild_id: string;
     outcome: DropOutcome;
     /**
      * Fit
@@ -2751,17 +2915,17 @@ export type StickerEnabledIn = {
 };
 
 /**
- * StickerGroupUsage
+ * StickerGuildUsage
  */
-export type StickerGroupUsage = {
+export type StickerGuildUsage = {
     /**
-     * Group Id
+     * Guild Id
      */
-    group_id: number;
+    guild_id: string;
     /**
-     * Group Name
+     * Guild Name
      */
-    group_name: string;
+    guild_name: string;
     /**
      * Count
      */
@@ -2772,7 +2936,7 @@ export type StickerGroupUsage = {
     last_seen: string;
 };
 
-export type StickerKind = 'image' | 'mface';
+export type StickerKind = 'image' | 'emoji';
 
 /**
  * StickerOut
@@ -2841,9 +3005,9 @@ export type StickerOut = {
      */
     seen_count: number;
     /**
-     * Group Count
+     * Guild Count
      */
-    group_count: number;
+    guild_count: number;
     /**
      * Enabled
      */
@@ -2859,6 +3023,24 @@ export type StickerOut = {
 };
 
 export type StickerStatus = 'fetching' | 'untagged' | 'ready' | 'failed';
+
+/**
+ * SyncOut
+ */
+export type SyncOut = {
+    /**
+     * Guilds
+     */
+    guilds: number;
+    /**
+     * Categories
+     */
+    categories: number;
+    /**
+     * Channels
+     */
+    channels: number;
+};
 
 /**
  * TaskRouteRow
@@ -2948,9 +3130,13 @@ export type TopicOut = {
      */
     id: number;
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number;
+    channel_id: string;
+    /**
+     * Guild Id
+     */
+    guild_id: string;
     /**
      * Title
      */
@@ -2966,7 +3152,7 @@ export type TopicOut = {
     /**
      * Participants
      */
-    participants: Array<number>;
+    participants: Array<string>;
     /**
      * Start At
      */
@@ -3033,7 +3219,7 @@ export type TranscriptOut = {
      * Messages
      */
     messages?: {
-        [key: string]: QqMessage;
+        [key: string]: ChatMessage;
     };
     /**
      * Names
@@ -3059,11 +3245,11 @@ export type TriggerIn = {
     /**
      * Scope
      */
-    scope?: 'global' | 'group' | 'private';
+    scope?: 'global' | 'guild' | 'category' | 'channel' | 'private';
     /**
-     * Group Id
+     * Scope Id
      */
-    group_id?: number | null;
+    scope_id?: string | null;
     /**
      * Match Type
      */
@@ -3145,9 +3331,9 @@ export type TriggerOut = {
      */
     scope?: string;
     /**
-     * Group Id
+     * Scope Id
      */
-    group_id?: number | null;
+    scope_id?: string | null;
     /**
      * Match Type
      */
@@ -3213,11 +3399,15 @@ export type TriggerTestIn = {
     /**
      * Scope
      */
-    scope?: 'group' | 'private';
+    scope?: 'channel' | 'private';
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id?: number | null;
+    channel_id?: string | null;
+    /**
+     * Guild Id
+     */
+    guild_id?: string | null;
     /**
      * To Me
      */
@@ -3330,9 +3520,9 @@ export type VerdictOut = {
  */
 export type WorkspaceOut = {
     /**
-     * Group Id
+     * Channel Id
      */
-    group_id: number;
+    channel_id: string;
     /**
      * Name
      */
@@ -4026,37 +4216,41 @@ export type PutGlobalSettingsResponses = {
 
 export type PutGlobalSettingsResponse = PutGlobalSettingsResponses[keyof PutGlobalSettingsResponses];
 
-export type GetGroupSettingsData = {
+export type GetScopeSettingsData = {
     body?: never;
     path: {
         /**
-         * Group Id
+         * Scope
          */
-        group_id: number;
+        scope: 'guild' | 'category' | 'channel';
+        /**
+         * Scope Id
+         */
+        scope_id: string;
     };
     query?: never;
-    url: '/settings/groups/{group_id}';
+    url: '/settings/scopes/{scope}/{scope_id}';
 };
 
-export type GetGroupSettingsErrors = {
+export type GetScopeSettingsErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type GetGroupSettingsError = GetGroupSettingsErrors[keyof GetGroupSettingsErrors];
+export type GetScopeSettingsError = GetScopeSettingsErrors[keyof GetScopeSettingsErrors];
 
-export type GetGroupSettingsResponses = {
+export type GetScopeSettingsResponses = {
     /**
      * Successful Response
      */
     200: SettingsView;
 };
 
-export type GetGroupSettingsResponse = GetGroupSettingsResponses[keyof GetGroupSettingsResponses];
+export type GetScopeSettingsResponse = GetScopeSettingsResponses[keyof GetScopeSettingsResponses];
 
-export type PutGroupSettingsData = {
+export type PutScopeSettingsData = {
     /**
      * Body
      */
@@ -4065,212 +4259,348 @@ export type PutGroupSettingsData = {
     };
     path: {
         /**
-         * Group Id
+         * Scope
          */
-        group_id: number;
+        scope: 'guild' | 'category' | 'channel';
+        /**
+         * Scope Id
+         */
+        scope_id: string;
     };
     query?: never;
-    url: '/settings/groups/{group_id}';
+    url: '/settings/scopes/{scope}/{scope_id}';
 };
 
-export type PutGroupSettingsErrors = {
+export type PutScopeSettingsErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type PutGroupSettingsError = PutGroupSettingsErrors[keyof PutGroupSettingsErrors];
+export type PutScopeSettingsError = PutScopeSettingsErrors[keyof PutScopeSettingsErrors];
 
-export type PutGroupSettingsResponses = {
+export type PutScopeSettingsResponses = {
     /**
      * Successful Response
      */
     200: SettingsView;
 };
 
-export type PutGroupSettingsResponse = PutGroupSettingsResponses[keyof PutGroupSettingsResponses];
+export type PutScopeSettingsResponse = PutScopeSettingsResponses[keyof PutScopeSettingsResponses];
 
-export type DeleteQqMilkyData = {
+export type DeleteKookConnectionData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/qq/milky';
+    url: '/kook/connection';
 };
 
-export type DeleteQqMilkyResponses = {
+export type DeleteKookConnectionResponses = {
     /**
      * Successful Response
      */
-    200: MilkyOut;
+    200: Ok;
 };
 
-export type DeleteQqMilkyResponse = DeleteQqMilkyResponses[keyof DeleteQqMilkyResponses];
+export type DeleteKookConnectionResponse = DeleteKookConnectionResponses[keyof DeleteKookConnectionResponses];
 
-export type GetQqMilkyData = {
+export type GetKookConnectionData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/qq/milky';
+    url: '/kook/connection';
 };
 
-export type GetQqMilkyResponses = {
+export type GetKookConnectionResponses = {
     /**
      * Successful Response
      */
-    200: MilkyOut;
+    200: KookConnectionOut;
 };
 
-export type GetQqMilkyResponse = GetQqMilkyResponses[keyof GetQqMilkyResponses];
+export type GetKookConnectionResponse = GetKookConnectionResponses[keyof GetKookConnectionResponses];
 
-export type PutQqMilkyData = {
-    body: MilkyIn;
+export type PutKookConnectionData = {
+    body: KookConnectionIn;
     path?: never;
     query?: never;
-    url: '/qq/milky';
+    url: '/kook/connection';
 };
 
-export type PutQqMilkyErrors = {
+export type PutKookConnectionErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type PutQqMilkyError = PutQqMilkyErrors[keyof PutQqMilkyErrors];
+export type PutKookConnectionError = PutKookConnectionErrors[keyof PutKookConnectionErrors];
 
-export type PutQqMilkyResponses = {
+export type PutKookConnectionResponses = {
     /**
      * Successful Response
      */
-    200: MilkyOut;
+    200: KookConnectionOut;
 };
 
-export type PutQqMilkyResponse = PutQqMilkyResponses[keyof PutQqMilkyResponses];
+export type PutKookConnectionResponse = PutKookConnectionResponses[keyof PutKookConnectionResponses];
 
-export type DeleteQqMilkyTokenData = {
+export type ListKookLiveGuildsData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/qq/milky/token';
+    url: '/kook/guilds';
 };
 
-export type DeleteQqMilkyTokenResponses = {
+export type ListKookLiveGuildsResponses = {
     /**
-     * Successful Response
-     */
-    200: MilkyOut;
-};
-
-export type DeleteQqMilkyTokenResponse = DeleteQqMilkyTokenResponses[keyof DeleteQqMilkyTokenResponses];
-
-export type ListGroupsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/groups';
-};
-
-export type ListGroupsResponses = {
-    /**
-     * Response List Groups
+     * Response List Kook Live Guilds
      *
      * Successful Response
      */
-    200: Array<GroupOut>;
+    200: Array<LiveGuildOut>;
 };
 
-export type ListGroupsResponse = ListGroupsResponses[keyof ListGroupsResponses];
+export type ListKookLiveGuildsResponse = ListKookLiveGuildsResponses[keyof ListKookLiveGuildsResponses];
 
-export type DeleteGroupData = {
+export type SyncKookStructureData = {
     body?: never;
-    path: {
-        /**
-         * Group Id
-         */
-        group_id: number;
-    };
+    path?: never;
     query?: never;
-    url: '/groups/{group_id}';
+    url: '/kook/sync';
 };
 
-export type DeleteGroupErrors = {
+export type SyncKookStructureResponses = {
+    /**
+     * Successful Response
+     */
+    200: SyncOut;
+};
+
+export type SyncKookStructureResponse = SyncKookStructureResponses[keyof SyncKookStructureResponses];
+
+export type ListGuildsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/channels/guilds';
+};
+
+export type ListGuildsResponses = {
+    /**
+     * Response List Guilds
+     *
+     * Successful Response
+     */
+    200: Array<GuildOut>;
+};
+
+export type ListGuildsResponse = ListGuildsResponses[keyof ListGuildsResponses];
+
+export type ListChannelsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Guild Id
+         */
+        guild_id?: string | null;
+        /**
+         * Include Categories
+         */
+        include_categories?: boolean;
+    };
+    url: '/channels';
+};
+
+export type ListChannelsErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type DeleteGroupError = DeleteGroupErrors[keyof DeleteGroupErrors];
+export type ListChannelsError = ListChannelsErrors[keyof ListChannelsErrors];
 
-export type DeleteGroupResponses = {
+export type ListChannelsResponses = {
+    /**
+     * Response List Channels
+     *
+     * Successful Response
+     */
+    200: Array<ChannelOut>;
+};
+
+export type ListChannelsResponse = ListChannelsResponses[keyof ListChannelsResponses];
+
+export type GetChannelTreeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/channels/tree';
+};
+
+export type GetChannelTreeResponses = {
+    /**
+     * Response Get Channel Tree
+     *
+     * Successful Response
+     */
+    200: Array<GuildTreeOut>;
+};
+
+export type GetChannelTreeResponse = GetChannelTreeResponses[keyof GetChannelTreeResponses];
+
+export type DeleteGuildData = {
+    body?: never;
+    path: {
+        /**
+         * Guild Id
+         */
+        guild_id: string;
+    };
+    query?: never;
+    url: '/channels/guilds/{guild_id}';
+};
+
+export type DeleteGuildErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteGuildError = DeleteGuildErrors[keyof DeleteGuildErrors];
+
+export type DeleteGuildResponses = {
     /**
      * Successful Response
      */
     200: Ok;
 };
 
-export type DeleteGroupResponse = DeleteGroupResponses[keyof DeleteGroupResponses];
+export type DeleteGuildResponse = DeleteGuildResponses[keyof DeleteGuildResponses];
 
-export type UpsertGroupData = {
-    body: GroupIn;
+export type UpsertGuildData = {
+    body: GuildIn;
     path: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id: number;
+        guild_id: string;
     };
     query?: never;
-    url: '/groups/{group_id}';
+    url: '/channels/guilds/{guild_id}';
 };
 
-export type UpsertGroupErrors = {
+export type UpsertGuildErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type UpsertGroupError = UpsertGroupErrors[keyof UpsertGroupErrors];
+export type UpsertGuildError = UpsertGuildErrors[keyof UpsertGuildErrors];
 
-export type UpsertGroupResponses = {
+export type UpsertGuildResponses = {
     /**
      * Successful Response
      */
-    200: GroupOut;
+    200: GuildOut;
 };
 
-export type UpsertGroupResponse = UpsertGroupResponses[keyof UpsertGroupResponses];
+export type UpsertGuildResponse = UpsertGuildResponses[keyof UpsertGuildResponses];
 
-export type BackfillGroupData = {
+export type DeleteChannelData = {
     body?: never;
     path: {
         /**
-         * Group Id
+         * Channel Id
          */
-        group_id: number;
+        channel_id: string;
     };
     query?: never;
-    url: '/groups/{group_id}/backfill';
+    url: '/channels/{channel_id}';
 };
 
-export type BackfillGroupErrors = {
+export type DeleteChannelErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type BackfillGroupError = BackfillGroupErrors[keyof BackfillGroupErrors];
+export type DeleteChannelError = DeleteChannelErrors[keyof DeleteChannelErrors];
 
-export type BackfillGroupResponses = {
+export type DeleteChannelResponses = {
     /**
      * Successful Response
      */
     200: Ok;
 };
 
-export type BackfillGroupResponse = BackfillGroupResponses[keyof BackfillGroupResponses];
+export type DeleteChannelResponse = DeleteChannelResponses[keyof DeleteChannelResponses];
+
+export type UpsertChannelData = {
+    body: ChannelIn;
+    path: {
+        /**
+         * Channel Id
+         */
+        channel_id: string;
+    };
+    query?: never;
+    url: '/channels/{channel_id}';
+};
+
+export type UpsertChannelErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpsertChannelError = UpsertChannelErrors[keyof UpsertChannelErrors];
+
+export type UpsertChannelResponses = {
+    /**
+     * Successful Response
+     */
+    200: ChannelOut;
+};
+
+export type UpsertChannelResponse = UpsertChannelResponses[keyof UpsertChannelResponses];
+
+export type BackfillChannelData = {
+    body?: never;
+    path: {
+        /**
+         * Channel Id
+         */
+        channel_id: string;
+    };
+    query?: never;
+    url: '/channels/{channel_id}/backfill';
+};
+
+export type BackfillChannelErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type BackfillChannelError = BackfillChannelErrors[keyof BackfillChannelErrors];
+
+export type BackfillChannelResponses = {
+    /**
+     * Successful Response
+     */
+    200: Ok;
+};
+
+export type BackfillChannelResponse = BackfillChannelResponses[keyof BackfillChannelResponses];
 
 export type GetTriggerMetaData = {
     body?: never;
@@ -4633,7 +4963,7 @@ export type RemoveAdminData = {
         /**
          * Kind
          */
-        kind: 'qq' | 'email';
+        kind: 'kook' | 'email';
         /**
          * Value
          */
@@ -4670,9 +5000,13 @@ export type ListReviewsData = {
          */
         status?: 'pending' | 'approved' | 'rejected' | 'expired' | null;
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
+        /**
+         * Channel Id
+         */
+        channel_id?: string | null;
         /**
          * Limit
          */
@@ -4740,7 +5074,7 @@ export type ListEventsData = {
         /**
          * Kind
          *
-         * 类型前缀，例如 request. 或 notice.group_ban
+         * 类型前缀，例如 kook.added_channel 或 kook.self_
          */
         kind?: string | null;
         /**
@@ -4748,9 +5082,13 @@ export type ListEventsData = {
          */
         status?: 'pending' | 'approved' | 'rejected' | 'expired' | 'failed' | null;
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
+        /**
+         * Channel Id
+         */
+        channel_id?: string | null;
         /**
          * Limit
          */
@@ -4781,44 +5119,18 @@ export type ListEventsResponses = {
 
 export type ListEventsResponse = ListEventsResponses[keyof ListEventsResponses];
 
-export type DecideEventData = {
-    body: EventDecideIn;
-    path: {
-        /**
-         * Event Id
-         */
-        event_id: number;
-    };
-    query?: never;
-    url: '/events/{event_id}/decide';
-};
-
-export type DecideEventErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type DecideEventError = DecideEventErrors[keyof DecideEventErrors];
-
-export type DecideEventResponses = {
-    /**
-     * Successful Response
-     */
-    200: EventOut;
-};
-
-export type DecideEventResponse = DecideEventResponses[keyof DecideEventResponses];
-
 export type ListTopicsData = {
     body?: never;
     path?: never;
     query?: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
+        /**
+         * Channel Id
+         */
+        channel_id?: string | null;
         /**
          * Since
          */
@@ -4838,7 +5150,7 @@ export type ListTopicsData = {
         /**
          * User Id
          */
-        user_id?: number | null;
+        user_id?: string | null;
         /**
          * Min Messages
          */
@@ -4945,9 +5257,9 @@ export type ListDigestsData = {
     path?: never;
     query?: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
         /**
          * Limit
          */
@@ -4983,9 +5295,9 @@ export type ListGlossaryData = {
     path?: never;
     query?: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
         /**
          * Q
          */
@@ -5140,9 +5452,9 @@ export type ListProfilesData = {
     path?: never;
     query?: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
         /**
          * Q
          */
@@ -5181,16 +5493,16 @@ export type DeleteProfileData = {
     body?: never;
     path: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id: number;
+        guild_id: string;
         /**
          * User Id
          */
-        user_id: number;
+        user_id: string;
     };
     query?: never;
-    url: '/memory/profiles/{group_id}/{user_id}';
+    url: '/memory/profiles/{guild_id}/{user_id}';
 };
 
 export type DeleteProfileErrors = {
@@ -5215,16 +5527,16 @@ export type GetProfileData = {
     body?: never;
     path: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id: number;
+        guild_id: string;
         /**
          * User Id
          */
-        user_id: number;
+        user_id: string;
     };
     query?: never;
-    url: '/memory/profiles/{group_id}/{user_id}';
+    url: '/memory/profiles/{guild_id}/{user_id}';
 };
 
 export type GetProfileErrors = {
@@ -5249,20 +5561,20 @@ export type DeleteProfileFactData = {
     body?: never;
     path: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id: number;
+        guild_id: string;
         /**
          * User Id
          */
-        user_id: number;
+        user_id: string;
         /**
          * Fact Id
          */
         fact_id: number;
     };
     query?: never;
-    url: '/memory/profiles/{group_id}/{user_id}/facts/{fact_id}';
+    url: '/memory/profiles/{guild_id}/{user_id}/facts/{fact_id}';
 };
 
 export type DeleteProfileFactErrors = {
@@ -5287,20 +5599,20 @@ export type RestoreProfileFactData = {
     body?: never;
     path: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id: number;
+        guild_id: string;
         /**
          * User Id
          */
-        user_id: number;
+        user_id: string;
         /**
          * Fact Id
          */
         fact_id: number;
     };
     query?: never;
-    url: '/memory/profiles/{group_id}/{user_id}/facts/{fact_id}/restore';
+    url: '/memory/profiles/{guild_id}/{user_id}/facts/{fact_id}/restore';
 };
 
 export type RestoreProfileFactErrors = {
@@ -5348,9 +5660,13 @@ export type ListInvocationsData = {
          */
         q?: string | null;
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
+        /**
+         * Channel Id
+         */
+        channel_id?: string | null;
         /**
          * Handler
          */
@@ -5476,9 +5792,9 @@ export type ListStickersData = {
          */
         flagged?: boolean | null;
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
         /**
          * Q
          */
@@ -5522,9 +5838,13 @@ export type ListStickerDropsData = {
     path?: never;
     query?: {
         /**
-         * Group Id
+         * Guild Id
          */
-        group_id?: number | null;
+        guild_id?: string | null;
+        /**
+         * Channel Id
+         */
+        channel_id?: string | null;
         /**
          * Outcome
          */
@@ -5667,16 +5987,16 @@ export type DestroyWorkspaceData = {
     body?: never;
     path: {
         /**
-         * Group Id
+         * Channel Id
          */
-        group_id: number;
+        channel_id: string;
         /**
          * Name
          */
         name: string;
     };
     query?: never;
-    url: '/sandbox/workspaces/{group_id}/{name}';
+    url: '/sandbox/workspaces/{channel_id}/{name}';
 };
 
 export type DestroyWorkspaceErrors = {
@@ -5718,9 +6038,9 @@ export type ListJobsData = {
     path?: never;
     query?: {
         /**
-         * Group Id
+         * Channel Id
          */
-        group_id?: number | null;
+        channel_id?: string | null;
         /**
          * Status
          */

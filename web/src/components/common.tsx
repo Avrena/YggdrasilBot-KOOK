@@ -13,7 +13,7 @@ import {
 } from "react";
 import type { DateRange } from "react-day-picker";
 import { zhCN } from "react-day-picker/locale";
-import { listGroupsOptions } from "@/client/@tanstack/react-query.gen";
+import { listChannelsOptions, listGuildsOptions } from "@/client/@tanstack/react-query.gen";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -525,39 +525,93 @@ export function OptionSelect({
   );
 }
 
-/** Display name of a group by id: its configured name, else the number. */
-export function useGroupName(): (id: number) => string {
-  const groups = useQuery(listGroupsOptions());
-  return (id) => groups.data?.find((g) => g.group_id === id)?.name || String(id);
+/** Display name of a KOOK guild by id. */
+export function useGuildName(): (id: string) => string {
+  const guilds = useQuery(listGuildsOptions());
+  return (id) => guilds.data?.find((g) => g.guild_id === id)?.name || id;
 }
 
-export function GroupSelect({
+/** Display name of a KOOK channel by id (shows `#channel` when known). */
+export function useChannelName(): (id: string) => string {
+  const channels = useQuery(listChannelsOptions({ query: { include_categories: true } }));
+  const guilds = useQuery(listGuildsOptions());
+  return (id) => {
+    const ch = channels.data?.find((c) => c.channel_id === id);
+    if (!ch) return id;
+    const gname = guilds.data?.find((g) => g.guild_id === ch.guild_id)?.name;
+    const prefix = ch.is_category ? "📁 " : "#";
+    return gname ? `${gname} / ${prefix}${ch.name || id}` : `${prefix}${ch.name || id}`;
+  };
+}
+
+export function GuildSelect({
   id,
   value,
   onChange,
-  allLabel = "全部群",
+  allLabel = "全部服务器",
   className,
 }: {
   id?: string;
-  value: number | null;
-  onChange: (v: number | null) => void;
+  value: string | null;
+  onChange: (v: string | null) => void;
   allLabel?: string | null;
   className?: string;
 }) {
-  const groups = useQuery(listGroupsOptions());
+  const guilds = useQuery(listGuildsOptions());
   return (
     <OptionSelect
       id={id}
-      aria-label={id ? undefined : "群"}
+      aria-label={id ? undefined : "服务器"}
       className={className}
-      value={value === null ? null : String(value)}
-      onChange={(v) => onChange(v === null ? null : Number(v))}
+      value={value}
+      onChange={onChange}
       noneLabel={allLabel ?? undefined}
-      placeholder="选择群"
-      options={(groups.data ?? []).map((g) => ({
-        value: String(g.group_id),
-        label: g.name ? `${g.name}（${g.group_id}）` : String(g.group_id),
+      placeholder="选择服务器"
+      options={(guilds.data ?? []).map((g) => ({
+        value: g.guild_id,
+        label: g.name ? `${g.name}（${g.guild_id}）` : g.guild_id,
       }))}
+    />
+  );
+}
+
+export function ChannelSelect({
+  id,
+  value,
+  onChange,
+  guildId,
+  includeCategories = false,
+  allLabel = "全部频道",
+  className,
+}: {
+  id?: string;
+  value: string | null;
+  onChange: (v: string | null) => void;
+  guildId?: string | null;
+  includeCategories?: boolean;
+  allLabel?: string | null;
+  className?: string;
+}) {
+  const channels = useQuery(listChannelsOptions({ query: { guild_id: guildId || null, include_categories: includeCategories } }));
+  const guilds = useQuery(listGuildsOptions());
+  const guildMap = new Map((guilds.data ?? []).map((g) => [g.guild_id, g.name]));
+  return (
+    <OptionSelect
+      id={id}
+      aria-label={id ? undefined : "频道"}
+      className={className}
+      value={value}
+      onChange={onChange}
+      noneLabel={allLabel ?? undefined}
+      placeholder="选择频道"
+      options={(channels.data ?? []).map((c) => {
+        const gname = guildMap.get(c.guild_id);
+        const prefix = c.is_category ? "[分组] " : "#";
+        return {
+          value: c.channel_id,
+          label: `${gname ? `${gname} / ` : ""}${prefix}${c.name || c.channel_id}`,
+        };
+      })}
     />
   );
 }

@@ -34,10 +34,17 @@ from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.transcript.notes import Blob
 from yggdrasil.transcript.schema import Entry, Usage
 
-GROUP = 10001
+GROUP = "ch-10001"
 WS = "train"
-CLAIM = "ygg-sbx-10001-train-abcdef"
-REQ = Requester(group_id=GROUP, user_id=20002, trigger_message_id=777, invocation_id="inv-1", request_text="跑个训练")
+CLAIM = "ygg-sbx-ch-10001-train-abcdef"
+REQ = Requester(
+    channel_id=GROUP,
+    guild_id="g-1",
+    user_id="20002",
+    trigger_message_id="777",
+    invocation_id="inv-1",
+    request_text="跑个训练",
+)
 
 
 class Clock:
@@ -161,33 +168,35 @@ class FakeWorkspaces:
     def __init__(self, pod: Pod) -> None:
         self.pod = pod
 
-    def _here(self, group_id: int, name: str) -> bool:
+    def _here(self, channel_id: str, name: str) -> bool:
         self.pod.names.append(name)
-        return group_id == GROUP and name == WS and not self.pod.gone
+        return channel_id == GROUP and name == WS and not self.pod.gone
 
-    async def backend_for(self, group_id: int, name: str) -> tuple[Any, str] | None:
-        if not self._here(group_id, name):
+    async def backend_for(self, channel_id: str, name: str) -> tuple[Any, str] | None:
+        if not self._here(channel_id, name):
             return None
         return FakeBackend(self.pod), self.pod.claim
 
-    async def renew(self, group_id: int, name: str, cfg: ToolSettings) -> bool:
+    async def renew(self, channel_id: str, name: str, cfg: ToolSettings) -> bool:
         self.pod.renewals += 1
-        return self._here(group_id, name)
+        return self._here(channel_id, name)
 
-    async def extend(self, group_id: int, name: str, claim: str, until: float, cfg: ToolSettings) -> float | None:
-        if not self._here(group_id, name) or claim != self.pod.claim:
+    async def extend(self, channel_id: str, name: str, claim: str, until: float, cfg: ToolSettings) -> float | None:
+        if not self._here(channel_id, name) or claim != self.pod.claim:
             return None
         self.pod.extended.append(until)
         self.pod.max_until = max(self.pod.max_until, until)
         return self.pod.max_until
 
-    async def publish(self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> Link:
-        self._here(group_id, name)
+    async def publish(self, channel_id: str, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> Link:
+        self._here(channel_id, name)
         self.pod.published.append(port)
         return Link(port=port, url=f"https://sbx-x.example.com/{port}", command="python", created_at=0.0)
 
-    async def unpublish(self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> bool:
-        self._here(group_id, name)
+    async def unpublish(
+        self, channel_id: str, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
+    ) -> bool:
+        self._here(channel_id, name)
         return True
 
 
@@ -368,12 +377,12 @@ async def test_command_job_runs_and_reports(
     assert done.report == "done"
     assert done.report_invocation == "inv-report-1"
     assert [j.id for j in reports.jobs] == [job.id]
-    assert reports.jobs[0].trigger_message_id == 777
+    assert reports.jobs[0].trigger_message_id == "777"
     assert await fake_redis.hget(keep_key(GROUP, WS), keep_field(job.id)) is None  # pyright: ignore[reportGeneralTypeIssues]
     assert await fake_redis.hlen(running_key(GROUP)) == 0  # pyright: ignore[reportGeneralTypeIssues]
     assert not await fake_redis.sismember(ACTIVE_KEY, job.id)  # pyright: ignore[reportGeneralTypeIssues]
     assert await fake_redis.ttl(job_key(job.id)) > 0
-    assert [j.id for j in await runner.for_group(GROUP)] == [job.id]
+    assert [j.id for j in await runner.for_channel(GROUP)] == [job.id]
     assert [e.text for e in await runner.events(job.id)][::-1][:1] == ["已启动"]
 
 
@@ -475,7 +484,7 @@ async def test_a_start_the_poller_gave_up_on_is_stopped(
     pod.during_start = poll_meanwhile
     with pytest.raises(SandboxError, match="启动太慢"):
         await runner.start_command(REQ, FakeBackend(pod), workspace=WS, script="sleep 1000", title="慢")
-    [job] = await runner.for_group(GROUP)
+    [job] = await runner.for_channel(GROUP)
     assert job.status == "failed"
     assert job.pid is None
     assert pod.killed == [job.dir]
@@ -498,7 +507,7 @@ async def test_a_late_agent_start_revokes_its_token(
     pod.mode = "hang"
     with pytest.raises(SandboxError, match="启动太慢"):
         await runner.start_agent(REQ, FakeBackend(pod), workspace=WS, task="做点什么", title="慢")
-    [job] = await runner.for_group(GROUP)
+    [job] = await runner.for_channel(GROUP)
     assert job.id in fake_relay["revoked"]
     assert pod.killed == [job.dir]
     proc = pod.rpcs[job.dir].proc
@@ -513,7 +522,7 @@ async def test_unknown_start_outcome_stops_the_process_and_frees_the_slot(
     with pytest.raises(SandboxError, match="结果未知") as raised:
         await runner.start_command(REQ, FakeBackend(pod), workspace=WS, script="sleep 1000", title="x")
     assert "停掉" in str(raised.value)
-    [job] = await runner.for_group(GROUP)
+    [job] = await runner.for_channel(GROUP)
     assert job.status == "failed"
     assert job.report == "skipped"
     assert pod.killed == [job.dir]  # the supervisor may have started: stopped by its pid file
@@ -570,9 +579,9 @@ async def test_two_pollers_report_once(
 
 async def test_chat_cancel_skips_the_report(runner: JobRunner, pod: Pod, reports: Reports) -> None:
     job = await runner.start_command(REQ, FakeBackend(pod), workspace=WS, script="sleep 1000", title="x")
-    other = await runner.cancel(job.id, by="chat:20002", group_id=GROUP + 1)
-    assert other is None  # another group's job is invisible
-    assert await runner.cancel(job.id, by="chat:20002", group_id=GROUP) is not None
+    other = await runner.cancel(job.id, by="chat:20002", channel_id=f"{GROUP}-other")
+    assert other is None  # another channel's job is invisible
+    assert await runner.cancel(job.id, by="chat:20002", channel_id=GROUP) is not None
     done = await _until(runner, job.id)
     assert done.status == "cancelled"
     assert done.report == "skipped"

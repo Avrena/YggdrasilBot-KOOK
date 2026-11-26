@@ -1,27 +1,24 @@
-"""Bot process: ``python -m yggdrasil``."""
+"""Bot process: ``python -m yggdrasil`` (pure FastAPI + uvicorn + self-contained KOOK gateway)."""
 
 import asyncio
 import contextlib
-import logging
 import time
+from collections.abc import AsyncIterator
 
-import nonebot
+import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 from sqlalchemy import text
 
-from yggdrasil.config import APP_CONFIG, DB_CONFIG, LOG_CONFIG
+from yggdrasil.config import APP_CONFIG, DB_CONFIG
 from yggdrasil.core.log import LOGGER, setup_logging
-from yggdrasil.qq.milky import Adapter as MilkyAdapter
 
 _tasks: list[asyncio.Task] = []
 _gauges: dict[str, list[tuple[float, dict[str, str]]]] = {}
 
 
 async def _gauge_loop() -> None:
-    """Refresh DB-derived gauges (memory lag, partitions runway, pending reviews) and sandbox workspace
-    gauges once a minute; also drops sandbox mappings whose claim is gone."""
+    """Refresh DB-derived gauges (memory lag, partitions runway, pending reviews) and sandbox workspace gauges."""
     from yggdrasil.db.partitions import months_of_runway
     from yggdrasil.db.session import engine
     from yggdrasil.moderation.review import refresh_pending
@@ -34,19 +31,20 @@ async def _gauge_loop() -> None:
             async with engine().connect() as conn:
                 _gauges["runway"] = [(await months_of_runway(conn), {})]
                 lag = []
-                for gid, group in snapshot().groups.items():
-                    if not group.enabled:
+                snap = snapshot()
+                for cid, ch in snap.channels.items():
+                    if ch.is_category or not snap.channel_enabled(cid):
                         continue
                     for pipeline in ("chunk", "topic"):
                         row = await conn.execute(
                             text(
-                                "SELECT count(*) FROM messages WHERE group_id = :g AND NOT recalled AND id > "
+                                "SELECT count(*) FROM messages WHERE channel_id = :c AND NOT recalled AND id > "
                                 "COALESCE((SELECT last_msg_id FROM pipeline_state WHERE pipeline = :p "
-                                "AND group_id = :g), 0)"
+                                "AND scope_id = :c), 0)"
                             ),
-                            {"g": gid, "p": pipeline},
+                            {"c": cid, "p": pipeline},
                         )
-                        lag.append((float(row.scalar() or 0), {"group": str(gid), "pipeline": pipeline}))
+                        lag.append((float(row.scalar() or 0), {"channel": cid, "pipeline": pipeline}))
                 _gauges["lag"] = lag
         except asyncio.CancelledError:
             raise
@@ -73,40 +71,21 @@ async def _sandbox_gauges() -> None:
         LOGGER.exception("sandbox gauge refresh failed")
 
 
-def _protocols(self_ids: set[str]) -> dict[str, str]:
-    """The protocol ("milky" | "onebot") of each connected bot in ``self_ids``."""
-    from yggdrasil.qq.client import client
-
-    out: dict[str, str] = {}
-    for sid, bot in nonebot.get_bots().items():
-        if sid in self_ids:
-            with contextlib.suppress(TypeError):
-                out[sid] = client(bot).protocol
-    return out
-
-
-def _per_protocol(self_ids: set[str]) -> list[tuple[float, dict[str, str]]]:
-    counts = {"milky": 0, "onebot": 0}
-    for protocol in _protocols(self_ids).values():
-        counts[protocol] += 1
-    return [(float(n), {"protocol": p}) for p, n in counts.items()]
-
-
 def _register_gauges() -> None:
     from yggdrasil.bot import state
     from yggdrasil.core.metrics import observe_gauge
+    from yggdrasil.kook import gateway as kook_gw
 
-    observe_gauge("ygg.qq.connected", "{bot}", lambda: _per_protocol(set(state.connected)))
-    # Connected and not reported logged out: what actually decides whether QQ messages flow.
-    observe_gauge("ygg.qq.logged_in", "{bot}", lambda: _per_protocol(set(state.connected) - state.offline))
+    def kook_connected() -> list[tuple[float, dict[str, str]]]:
+        st = kook_gw.status()
+        return [(1.0 if (st and st.connected) else 0.0, {"protocol": "kook"})]
 
     def heartbeat_age() -> list[tuple[float, dict[str, str]]]:
-        # OneBot only: Milky has no heartbeat, its last event says nothing about a quiet group's connection.
-        onebot = [sid for sid, p in _protocols(set(state.connected)).items() if p == "onebot"]
         now = time.time()
-        return [(now - state.last_heartbeat[s], {"self_id": s}) for s in onebot if s in state.last_heartbeat]
+        return [(now - ts, {"self_id": sid}) for sid, ts in state.last_heartbeat.items()]
 
-    observe_gauge("ygg.qq.heartbeat_age", "s", heartbeat_age)
+    observe_gauge("ygg.kook.connected", "{bot}", kook_connected)
+    observe_gauge("ygg.kook.heartbeat_age", "s", heartbeat_age)
     observe_gauge("ygg.review.pending", "{review}", lambda: _gauges.get("review", []))
     observe_gauge("ygg.partitions.runway", "mo", lambda: _gauges.get("runway", []))
     observe_gauge("ygg.memory.lag", "{message}", lambda: _gauges.get("lag", []))
@@ -116,6 +95,8 @@ def _register_gauges() -> None:
 
 def _health_routes(app: FastAPI) -> None:
     from yggdrasil.db.session import engine
+    from yggdrasil.kook import client as kook_client
+    from yggdrasil.kook import gateway as kook_gw
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
@@ -128,61 +109,95 @@ def _health_routes(app: FastAPI) -> None:
                 await conn.execute(text("SELECT 1"))
         except Exception as e:
             return JSONResponse({"status": "db unavailable", "error": str(e)[:200]}, status_code=503)
-        return JSONResponse({"status": "ok", "bots": list(nonebot.get_bots())})
+        kook = kook_client.connected()
+        return JSONResponse({"status": "ok", "bots": [kook.self_id] if kook else []})
 
     @app.get("/drainz", include_in_schema=False)
     async def drainz(max_wait: float = 170) -> dict[str, int]:
-        """preStop hook: hold the pod (and its QQ connections) until in-flight replies are sent.
-
-        The terminating pod is already out of the Service, so the dashboard is served by the new pod. The QQ
-        connections move at shutdown: SnowLuma reconnects to the new pod once SIGTERM closes its socket, and the new
-        pod's Milky link connects once this one releases the link lease (``qq.milky_link``).
-        """
+        """preStop hook: hold the pod until in-flight replies finish, then release the KOOK gateway lease."""
         from yggdrasil.bot.inflight import drain
 
         left = await drain(min(max_wait, 600))
+        if (gw := kook_gw.gateway()) is not None:
+            await gw.stop()
         LOGGER.info("drained for shutdown; {} tasks still running", left)
         return {"left": left}
 
 
-def main() -> None:
-    nonebot.init(
-        # FastAPI serves OneBot's reverse WebSocket and the dashboard; Milky needs an HTTP and a WebSocket client.
-        driver="~fastapi+~httpx+~websockets",
-        host=APP_CONFIG.host,
-        port=APP_CONFIG.port,
-        onebot_access_token=APP_CONFIG.onebot_access_token or None,
-        command_start={""},
-        command_sep={" "},
-        nickname=set(),
-        log_level=LOG_CONFIG.level,
-        superusers={str(u) for u in APP_CONFIG.bootstrap_superusers},
-        alconna_use_command_start=False,
-        alconna_auto_send_output=False,
-        alconna_response_self=False,
-        fastapi_reload=False,
-        # FastAPI >= 0.142 adds its own OTLP exporters from OTEL_EXPORTER_OTLP_ENDPOINT at lifespan
-        # startup, on top of setup_telemetry's: every span and metric was exported twice.
-        fastapi_extra={"telemetry": {"auto_configure": False}},
-        # Don't let NoneBot read .env (it logs every key, incl. secrets, at DEBUG). A falsy value
-        # makes it fall back to (".env", ".env.<env>"), so point it at a file that never exists.
-        _env_file=("__nonebot_env_disabled__",),
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    from pydantic_ai import Agent
+    from pydantic_ai.models.instrumented import InstrumentationSettings
+
+    from yggdrasil import runtime
+    from yggdrasil.bot import router as bot_router
+    from yggdrasil.core.telemetry import shutdown_telemetry
+    from yggdrasil.db.session import dispose_engine, init_engine
+    from yggdrasil.ingest.writer import WRITER
+    from yggdrasil.kook import gateway as kook_gw
+    from yggdrasil.moderation.review import expire_loop
+    from yggdrasil.readiness import wait_for_dependencies
+    from yggdrasil.relay.server import start_relay, stop_relay
+    from yggdrasil.sandbox import manager
+    from yggdrasil.sandbox.jobs import runner
+    from yggdrasil.seed import seed_defaults
+    from yggdrasil.stickers.drop import deliver_forever
+
+    init_engine(statement_timeout_ms=DB_CONFIG.bot_statement_timeout_ms)
+    await wait_for_dependencies()
+    await seed_defaults()
+    snap = await runtime.load()
+    Agent.instrument_all(
+        InstrumentationSettings(
+            include_content=snap.settings().privacy.capture_llm_content, include_binary_content=False
+        )
     )
-    setup_logging()
-    # NoneBot's uvicorn log config already routes uvicorn.* to loguru; stop a second copy via root.
-    logging.getLogger("uvicorn").propagate = False
-    driver = nonebot.get_driver()
-    # Milky has no static clients: qq.milky_link connects it as configured in the console.
-    driver.register_adapter(OneBotV11Adapter)
-    driver.register_adapter(MilkyAdapter)
-    app: FastAPI = nonebot.get_app()
+    gw = kook_gw.install(
+        on_event=bot_router.handle_event,
+        on_connected=bot_router.on_connected,
+        on_disconnected=bot_router.on_disconnected,
+    )
+    runtime.on_reload(lambda _s: gw.trigger_reload())
 
-    from yggdrasil.core.telemetry import setup_telemetry, shutdown_telemetry
-    from yggdrasil.qq import hooks, milky_link
+    _tasks.extend(
+        asyncio.create_task(coro, name=name)
+        for name, coro in (
+            ("config-listener", runtime.listen_forever()),
+            ("ingest-writer", WRITER.run()),
+            ("review-expiry", expire_loop()),
+            ("gauges", _gauge_loop()),
+            ("sticker-drop", deliver_forever()),
+        )
+    )
+    _tasks.append(gw.start())
+    if manager().configured:
+        _tasks.append(asyncio.create_task(runner().run_forever(), name="sandbox-jobs"))
+    await start_relay()
+    LOGGER.info("yggdrasil KOOK bot started on {}:{}", APP_CONFIG.host, APP_CONFIG.port)
 
+    try:
+        yield
+    finally:
+        await stop_relay()
+        await gw.stop()
+        for task in _tasks:
+            task.cancel()
+        for task in _tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        _tasks.clear()
+        await runner().aclose()
+        with contextlib.suppress(Exception):
+            await WRITER.flush()
+        await dispose_engine()
+        shutdown_telemetry()
+
+
+def create_app() -> FastAPI:
+    from yggdrasil.core.telemetry import setup_telemetry
+
+    app = FastAPI(title="Yggdrasil KOOK Bot", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
     setup_telemetry("yggdrasil-bot", app)
-    hooks.install()
-    milky_link.install()
     _register_gauges()
     _health_routes(app)
     try:
@@ -191,71 +206,13 @@ def main() -> None:
         LOGGER.warning("admin dashboard module not available")
     else:
         mount(app)
+    return app
 
-    nonebot.load_plugin("nonebot_plugin_alconna")
-    nonebot.load_plugin("yggdrasil.bot.plugin")
 
-    @driver.on_startup
-    async def _startup() -> None:
-        from pydantic_ai import Agent
-        from pydantic_ai.models.instrumented import InstrumentationSettings
-
-        from yggdrasil import runtime
-        from yggdrasil.db.session import init_engine
-        from yggdrasil.ingest.writer import WRITER
-        from yggdrasil.moderation.review import expire_loop
-        from yggdrasil.readiness import wait_for_dependencies
-        from yggdrasil.relay.server import start_relay
-        from yggdrasil.sandbox import manager
-        from yggdrasil.sandbox.jobs import runner
-        from yggdrasil.seed import seed_defaults
-        from yggdrasil.stickers.drop import deliver_forever
-
-        init_engine(statement_timeout_ms=DB_CONFIG.bot_statement_timeout_ms)
-        await wait_for_dependencies()
-        await seed_defaults()
-        snap = await runtime.load()
-        Agent.instrument_all(
-            InstrumentationSettings(
-                include_content=snap.settings().privacy.capture_llm_content, include_binary_content=False
-            )
-        )
-        _tasks.extend(
-            asyncio.create_task(coro, name=name)
-            for name, coro in (
-                ("config-listener", runtime.listen_forever()),
-                ("ingest-writer", WRITER.run()),
-                ("review-expiry", expire_loop()),
-                ("gauges", _gauge_loop()),
-                ("sticker-drop", deliver_forever()),
-            )
-        )
-        if manager().configured:
-            # Background jobs: resumes whatever was running before this process started.
-            _tasks.append(asyncio.create_task(runner().run_forever(), name="sandbox-jobs"))
-        await start_relay()  # after runtime.load: it routes by the snapshot's agent route
-        LOGGER.info("yggdrasil bot started on {}:{}", APP_CONFIG.host, APP_CONFIG.port)
-
-    @driver.on_shutdown
-    async def _shutdown() -> None:
-        from yggdrasil.db.session import dispose_engine
-        from yggdrasil.ingest.writer import WRITER
-        from yggdrasil.relay.server import stop_relay
-        from yggdrasil.sandbox.jobs import runner
-
-        await stop_relay()
-        for task in _tasks:
-            task.cancel()
-        for task in _tasks:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        await runner().aclose()  # in-flight job visits; the jobs keep running and are resumed on restart
-        with contextlib.suppress(Exception):
-            await WRITER.flush()
-        await dispose_engine()
-        shutdown_telemetry()
-
-    nonebot.run()
+def main() -> None:
+    setup_logging()
+    app = create_app()
+    uvicorn.run(app, host=APP_CONFIG.host, port=APP_CONFIG.port, log_config=None)
 
 
 if __name__ == "__main__":

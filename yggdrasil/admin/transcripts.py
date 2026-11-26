@@ -1,10 +1,4 @@
-"""Transcripts for the console: the stored conversation plus what the pipeline did around it, ready to render.
-
-``build`` merges events (moderation verdicts, the final outcome) into the entries by time, resolves a ``src`` for
-every image and market face of the QQ messages it shows (the bytes the run kept, the bot's own sent picture, a
-stored sticker, QQ's market face CDN, else the original QQ link), names QQ faces, and falls back to a few synthetic
-entries for runs recorded before transcripts existed.
-"""
+"""Transcripts for the console: the stored conversation plus pipeline events, ready to render for KOOK."""
 
 import copy
 import json
@@ -19,17 +13,14 @@ from yggdrasil.admin.common import not_found
 from yggdrasil.agent.schema import BotReply, OpsReply
 from yggdrasil.db.models import Sticker, StickerBlob, Transcript
 from yggdrasil.db.session import get_session
-from yggdrasil.qq import faces
-from yggdrasil.stickers.collect import sighting
 from yggdrasil.transcript import store
 from yggdrasil.transcript.notes import image_key
 from yggdrasil.transcript.schema import (
+    ChatContextDisplay,
+    ChatMessage,
     Entry,
     OutputPart,
     Part,
-    QQContextDisplay,
-    QQForwardDisplay,
-    QQMessage,
     TextPart,
     ToolCallPart,
 )
@@ -42,32 +33,35 @@ _REPLY: TypeAdapter[BotReply | OpsReply] = TypeAdapter(BotReply | OpsReply)
 
 
 class BotOut(BaseModel):
-    user_id: int
+    user_id: str
     name: str
 
 
 class TranscriptOut(BaseModel):
-    available: bool  # False: nothing was recorded (the run predates transcripts); entries are a stand-in
+    available: bool
     source: str
     content: Literal["full", "metadata"]
-    live: bool = False  # the run is still going; poll for more
+    live: bool = False
     entries: list[Entry]
-    messages: dict[str, QQMessage] = {}  # QQ message snapshots by messages.id, image segments with ``src``
-    names: dict[str, str] = {}  # latest group card by QQ number, for @mentions and senders
-    bot: BotOut | None = None  # the bot's QQ number and persona name when the run recorded them
+    messages: dict[str, ChatMessage] = {}
+    names: dict[str, str] = {}
+    bot: BotOut | None = None
     updated_at: datetime | None = None
 
 
-def _market_face_src(data: dict[str, Any]) -> str | None:
-    if url := data.get("url"):
-        return str(url)
-    emoji = str(data.get("emoji_id") or "")
-    return f"https://gxh.vip.qq.com/club/item/parcel/item/{emoji[:2]}/{emoji}/raw300.gif" if emoji else None
+def _sticker_key(seg: dict[str, Any]) -> tuple[str, str] | None:
+    data = seg.get("data")
+    if not isinstance(data, dict):
+        return None
+    if seg.get("type") == "emoji" and data.get("id"):
+        return ("emoji", str(data["id"]))
+    if seg.get("type") == "image" and data.get("sha256"):
+        return ("image", str(data["sha256"]))
+    return None
 
 
 async def _stickers(segments: list[dict[str, Any]]) -> dict[tuple[str, str], int]:
-    """Stored custom stickers among these segments: ``(kind, ref) -> sticker id`` (only those with an image)."""
-    keys = {(s.kind, s.ref) for seg in segments if (s := sighting(seg)) is not None and s.kind == "image"}
+    keys = {k for seg in segments if (k := _sticker_key(seg)) is not None}
     if not keys:
         return {}
     async with get_session() as session:
@@ -90,33 +84,30 @@ class _Sources:
             if not isinstance(data, dict):
                 continue
             match seg.get("type"):
-                case "market_face":
-                    data["src"] = _market_face_src(data)
-                case "face":
-                    data["name"] = faces.name(str(data.get("face_id", "")))
+                case "emoji":
+                    k = _sticker_key(seg)
+                    if k is not None and (sid := self._stickers.get(k)) is not None:
+                        data["src"] = STICKER_URL.format(sid)
+                    elif url := data.get("url"):
+                        data["src"] = url
                 case "image":
                     key = image_key(data)
-                    s = sighting(seg)
+                    k = _sticker_key(seg)
                     if key and key in self._keys:
                         data["src"] = BLOB_URL.format(self._keys[key])
                     elif blob := data.get("blob"):
                         data["src"] = BLOB_URL.format(blob)
-                    elif s is not None and (sid := self._stickers.get((s.kind, s.ref))) is not None:
+                    elif k is not None and (sid := self._stickers.get(k)) is not None:
                         data["src"] = STICKER_URL.format(sid)
                     else:
                         data["src"] = data.get("url")
-                case "forward":
-                    for node in data.get("nodes") or []:
-                        if isinstance(node, dict) and isinstance(node.get("segments"), list):
-                            node["segments"] = self.segments(node["segments"])
         return out
 
-    def message(self, m: QQMessage) -> QQMessage:
+    def message(self, m: ChatMessage) -> ChatMessage:
         return m.model_copy(update={"segments": self.segments(m.segments)})
 
 
 def _merge(items: list[Entry], events: list[Entry]) -> list[Entry]:
-    """Insert each event before the first entry that happened after it (events without a time go last)."""
     out = list(items)
     for event in sorted(events, key=lambda e: (e.at is None, e.at or datetime.min)):
         idx = len(out)
@@ -127,20 +118,14 @@ def _merge(items: list[Entry], events: list[Entry]) -> list[Entry]:
 
 
 def _mark_output(items: list[Entry]) -> None:
-    """Show the run's answer as an answer when the model returned it as text.
-
-    In pydantic-ai's native and prompted output modes the model writes the structured output as the text of its last
-    response instead of calling ``final_result``. Every transcribed pydantic-ai agent answers with a ``BotReply`` or
-    ``OpsReply``, so a last response with no tool calls whose text is such an object is that answer.
-    """
     last = next((e for e in reversed(items) if e.kind == "assistant"), None)
     if last is None or any(isinstance(p, ToolCallPart) for p in last.parts):
         return
     texts = [p for p in last.parts if isinstance(p, TextPart)]
-    if not texts or any(p.text is None for p in texts):  # metadata mode: nothing to read
+    if not texts or any(p.text is None for p in texts):
         return
     raw = "".join(p.text or "" for p in texts).strip()
-    if raw.startswith("```"):  # prompted output may fence the JSON
+    if raw.startswith("```"):
         raw = raw.strip("`").removeprefix("json").strip()
     try:
         value = json.loads(raw)
@@ -163,17 +148,14 @@ async def build(
     if row.source == "pydantic-ai":
         _mark_output(items)
     context = row.context or {}
-    messages = {k: QQMessage.model_validate(v) for k, v in (context.get("messages") or {}).items()}
-    # Every QQ message the page will show, for one sticker lookup.
+    messages = {k: ChatMessage.model_validate(v) for k, v in (context.get("messages") or {}).items()}
     shown: list[list[dict[str, Any]]] = [m.segments for m in messages.values()]
     for e in items:
-        if isinstance(e.display, QQContextDisplay):
+        if isinstance(e.display, ChatContextDisplay):
             shown += [m.segments for m in (e.display.trigger, e.display.quoted, *e.display.chain) if m is not None]
-        elif isinstance(e.display, QQForwardDisplay):
-            shown += [n.segments for n in e.display.nodes]
     sources = _Sources(context.get("image_keys") or {}, await _stickers([s for segs in shown for s in segs]))
     for e in items:
-        if isinstance(e.display, QQContextDisplay):
+        if isinstance(e.display, ChatContextDisplay):
             d = e.display
             e.display = d.model_copy(
                 update={
@@ -182,9 +164,6 @@ async def build(
                     "chain": [sources.message(m) for m in d.chain],
                 }
             )
-        elif isinstance(e.display, QQForwardDisplay):
-            for node in e.display.nodes:
-                node.segments = sources.segments(node.segments)
     return TranscriptOut(
         available=True,
         source=row.source,

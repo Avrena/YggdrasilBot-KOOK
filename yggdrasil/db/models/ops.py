@@ -1,3 +1,5 @@
+"""Operational tables: invocations, sessions, moderation, reviews, bot events, sandbox jobs, transcripts."""
+
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -14,27 +16,25 @@ class Invocation(Base):
     __tablename__ = "invocations"
     __table_args__ = (
         Index("ix_invocations_created", "created_at"),
-        Index("ix_invocations_group_created", "group_id", "created_at"),
+        Index("ix_invocations_channel_created", "channel_id", "created_at"),
+        Index("ix_invocations_guild_created", "guild_id", "created_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    group_id: Mapped[int | None]
-    user_id: Mapped[int]
+    channel_id: Mapped[str | None] = mapped_column(Text)
+    guild_id: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(Text)
     handler: Mapped[str] = mapped_column(Text)
-    trigger_qq_message_id: Mapped[int | None]
-    # The bot message that answered (forward, or the reviewed text): who asked for a bot message,
-    # e.g. to let the asker recall it. QQ ids repeat, so only look up recent rows.
-    reply_qq_message_id: Mapped[int | None]
+    trigger_msg_id: Mapped[str | None] = mapped_column(Text)
+    reply_msg_id: Mapped[str | None] = mapped_column(Text)
     request_text: Mapped[str] = mapped_column(Text, default="")
-    # ok | done | silent | blocked_input | review | rejected | dropped | failed | ratelimited | cancelled
-    # (ops runs: done | reply | handoff)
     status: Mapped[str] = mapped_column(Text, default="running")
     models: Mapped[list[Any]] = mapped_column(default=list)
     tokens_in: Mapped[int] = mapped_column(default=0)
     tokens_out: Mapped[int] = mapped_column(default=0)
     tokens_cached: Mapped[int] = mapped_column(default=0)
-    tool_calls: Mapped[dict[str, Any]] = mapped_column(default=dict)  # {tool: count}
+    tool_calls: Mapped[dict[str, Any]] = mapped_column(default=dict)
     ack_kind: Mapped[str | None] = mapped_column(Text)
     ack_latency_ms: Mapped[int | None]
     duration_ms: Mapped[int | None]
@@ -46,9 +46,7 @@ class Invocation(Base):
 
 
 class InvocationSession(Base):
-    """The agent run of a delivered answer, kept a short while so a reply to that answer continues it
-    (``pipeline.session``): how the agent was built (route, instructions, tool names, workspace suite, skills), the
-    pydantic-ai messages exactly as sent, the run's handles, its block nonce and the newest chat message it had seen."""
+    """The agent run of a delivered answer, kept briefly so a reply to that answer continues it."""
 
     __tablename__ = "invocation_sessions"
     __table_args__ = (Index("ix_invocation_sessions_created", "created_at"),)
@@ -58,7 +56,7 @@ class InvocationSession(Base):
     instructions: Mapped[str] = mapped_column(Text)
     tools: Mapped[list[Any]]
     sandbox: Mapped[bool]
-    skills: Mapped[list[Any]] = mapped_column(default=list, server_default="[]")  # agent.skills names
+    skills: Mapped[list[Any]] = mapped_column(default=list, server_default="[]")
     messages: Mapped[list[Any]]
     handles: Mapped[dict[str, Any]]
     nonce: Mapped[str] = mapped_column(Text)
@@ -73,11 +71,11 @@ class ModerationResult(Base):
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     invocation_id: Mapped[UUID | None] = mapped_column(ForeignKey("invocations.id", ondelete="CASCADE"))
-    stage: Mapped[str] = mapped_column(Text)  # input | ack | output
-    verdict: Mapped[str] = mapped_column(Text)  # Safe | Controversial | Unsafe
+    stage: Mapped[str] = mapped_column(Text)
+    verdict: Mapped[str] = mapped_column(Text)
     score: Mapped[float] = mapped_column(Float)
     categories: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
-    action: Mapped[str] = mapped_column(Text)  # pass | review | drop
+    action: Mapped[str] = mapped_column(Text)
     model: Mapped[str] = mapped_column(Text, default="")
     latency_ms: Mapped[int] = mapped_column(default=0)
 
@@ -86,24 +84,24 @@ class ReviewItem(Base):
     __tablename__ = "review_items"
     __table_args__ = (Index("ix_review_items_status", "status", "expires_at"),)
 
-    id: Mapped[int] = mapped_column(Identity(), primary_key=True)  # shown as R<id>
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     invocation_id: Mapped[UUID | None] = mapped_column(ForeignKey("invocations.id", ondelete="SET NULL"))
-    group_id: Mapped[int]
-    user_id: Mapped[int]
-    trigger_qq_message_id: Mapped[int | None]
+    channel_id: Mapped[str] = mapped_column(Text)
+    guild_id: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(Text)
+    trigger_msg_id: Mapped[str | None] = mapped_column(Text)
     request_text: Mapped[str] = mapped_column(Text, default="")
-    reply: Mapped[dict[str, Any]]  # serialized BotReply
+    reply: Mapped[dict[str, Any]]
     verdict: Mapped[dict[str, Any]]
-    status: Mapped[str] = mapped_column(Text, default="pending")  # pending | approved | rejected | expired
+    status: Mapped[str] = mapped_column(Text, default="pending")
     decided_by: Mapped[str | None] = mapped_column(Text)
     decided_at: Mapped[datetime | None]
     expires_at: Mapped[datetime]
 
 
 class BotEvent(Base):
-    """A non-message QQ event worth keeping: requests (with their decision) and notices about
-    the bot itself or members of enabled groups. Shown as E<id>."""
+    """A non-message KOOK event worth keeping (guild/channel changes, pins, member notices)."""
 
     __tablename__ = "bot_events"
     __table_args__ = (
@@ -113,36 +111,33 @@ class BotEvent(Base):
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     at: Mapped[datetime] = mapped_column(server_default=func.now())
-    # request.group.invite | request.group.add | request.friend | notice.group_decrease.kick_me | ...
     kind: Mapped[str] = mapped_column(Text)
-    group_id: Mapped[int | None]
-    user_id: Mapped[int | None]  # who it is about (requester, member, the bot)
-    operator_id: Mapped[int | None]  # who did it (inviter, admin who kicked or banned)
-    data: Mapped[dict[str, Any]] = mapped_column(default=dict)  # raw event (requests keep their flag here)
-    # requests only: pending | approved | rejected | expired | failed
+    guild_id: Mapped[str | None] = mapped_column(Text)
+    channel_id: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[str | None] = mapped_column(Text)
+    operator_id: Mapped[str | None] = mapped_column(Text)
+    data: Mapped[dict[str, Any]] = mapped_column(default=dict)
     status: Mapped[str | None] = mapped_column(Text)
-    handled_by: Mapped[str | None] = mapped_column(Text)  # qq:<id> | email | auto
+    handled_by: Mapped[str | None] = mapped_column(Text)
     handled_at: Mapped[datetime | None]
 
 
 class SandboxJob(Base):
-    """A finished background job (``yggdrasil.sandbox.jobs``), kept for good: running jobs live in Redis and are
-    archived here once their report is settled. ``record`` is the job's Redis hash (``Job.to_hash``), ``events`` its
-    event log oldest first (``[{"at": epoch, "text": ...}]``)."""
+    """A finished background job (``yggdrasil.sandbox.jobs``), archived once reported."""
 
     __tablename__ = "sandbox_jobs"
     __table_args__ = (
         Index("ix_sandbox_jobs_created", text("created_at DESC")),
-        Index("ix_sandbox_jobs_group_created", "group_id", text("created_at DESC")),
+        Index("ix_sandbox_jobs_channel_created", "channel_id", text("created_at DESC")),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
-    group_id: Mapped[int]
-    user_id: Mapped[int]
-    kind: Mapped[str] = mapped_column(Text)  # command | agent
+    channel_id: Mapped[str] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
     workspace: Mapped[str] = mapped_column(Text)
     title: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Text)  # succeeded | failed | timeout | cancelled
+    status: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime]
     ended_at: Mapped[datetime | None]
     record: Mapped[dict[str, Any]]
@@ -151,20 +146,13 @@ class SandboxJob(Base):
 
 
 class Transcript(Base):
-    """The whole conversation of one agent run, for the console (``yggdrasil.transcript``): an invocation's
-    pydantic-ai run, or a background job (omp messages as they arrive, or a command job's script and output).
-
-    ``entries`` is the normalized conversation (``transcript.schema.Entry`` dicts, oldest first); ``context`` holds
-    what the entries point at: QQ message snapshots by id, group cards by QQ number. ``content`` is ``full`` or
-    ``metadata`` (``privacy.capture_llm_content`` off: no text, arguments or images)."""
-
     __tablename__ = "transcripts"
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     invocation_id: Mapped[UUID | None] = mapped_column(ForeignKey("invocations.id", ondelete="CASCADE"), unique=True)
     job_id: Mapped[str | None] = mapped_column(Text, unique=True)
-    source: Mapped[str] = mapped_column(Text)  # pydantic-ai | omp
-    content: Mapped[str] = mapped_column(Text)  # full | metadata
+    source: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
     entries: Mapped[list[Any]] = mapped_column(default=list)
     context: Mapped[dict[str, Any]] = mapped_column(default=dict)
     size_bytes: Mapped[int] = mapped_column(default=0)
@@ -173,8 +161,6 @@ class Transcript(Base):
 
 
 class TranscriptBlob(Base):
-    """An image a transcript shows (prompt images, tool results, renders), stored once per content hash."""
-
     __tablename__ = "transcript_blobs"
 
     sha256: Mapped[str] = mapped_column(Text, primary_key=True)

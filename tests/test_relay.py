@@ -86,7 +86,7 @@ async def client(upstream: Routes) -> AsyncIterator[httpx.AsyncClient]:
 
 async def _token(job_id: str = "job1", **kw: int) -> str:
     args: dict[str, Any] = {"max_input_tokens": 1_000_000, "max_output_tokens": 100_000, "ttl_s": 600, **kw}
-    return await issue_token(group_id=10001, job_id=job_id, models=[MODEL], **args)
+    return await issue_token(channel_id="ch-10001", job_id=job_id, models=[MODEL], **args)
 
 
 def _sse() -> Callable[[httpx.Request], httpx.Response]:
@@ -108,7 +108,7 @@ async def test_token_lifecycle(fake_redis: fakeredis.FakeAsyncRedis) -> None:
     assert len(token) >= 40
     grant = await authenticate(token)
     assert grant is not None
-    assert (grant.group_id, grant.job_id, grant.models) == (10001, "job1", (MODEL,))
+    assert (grant.channel_id, grant.job_id, grant.models) == ("ch-10001", "job1", (MODEL,))
     # Only the hash is stored, and it expires with the grant.
     keys = await fake_redis.keys("ygg:relay:*")
     assert all(token not in str(k) for k in keys)

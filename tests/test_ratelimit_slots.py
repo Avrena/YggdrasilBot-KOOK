@@ -10,7 +10,7 @@ async def test_same_user_requests_queue_instead_of_dropping():
     release_first = asyncio.Event()
 
     async def run(name: str, hold: asyncio.Event | None = None) -> bool:
-        async with slot(1, 42, cfg) as granted:
+        async with slot("ch-1", "42", cfg) as granted:
             if granted:
                 order.append(f"start {name}")
                 if hold:
@@ -34,14 +34,14 @@ async def test_queue_limit_and_timeout_reject():
     hold = asyncio.Event()
 
     async def holder() -> None:
-        async with slot(2, 7, cfg):
+        async with slot("ch-2", "7", cfg):
             await hold.wait()
 
     task = asyncio.create_task(holder())
     await asyncio.sleep(0)
 
     async def try_slot() -> bool:
-        async with slot(2, 7, cfg) as granted:
+        async with slot("ch-2", "7", cfg) as granted:
             return granted
 
     waiter = asyncio.create_task(try_slot())  # queues (1 allowed), then times out

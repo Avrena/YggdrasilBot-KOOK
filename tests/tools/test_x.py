@@ -1,4 +1,4 @@
-from typing import Any, cast
+from typing import Any
 
 import httpx
 import pytest
@@ -384,4 +384,4 @@ async def test_read_url_adapter_returns_post_with_images() -> None:
 async def test_third_party_image_handle_goes_through_ssrf_guard() -> None:
     handle = Handle("img#1", "image", {"url": "http://127.0.0.1:9/a.png", "source": "x"})
     with pytest.raises(ToolError, match="内网"):
-        await media_bytes(cast(Any, None), None, 0, handle, 1024)
+        await media_bytes(handle, 1024)

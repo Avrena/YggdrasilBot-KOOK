@@ -9,14 +9,14 @@ from fastapi.routing import APIRoute
 from yggdrasil import __version__
 from yggdrasil.admin import (
     admins,
+    channels,
     dashboard,
     events_api,
-    groups,
     invocations,
+    kook,
     memory,
     prompts_api,
     providers,
-    qq,
     reviews,
     routes,
     sandbox_api,
@@ -36,8 +36,8 @@ _ROUTERS = (
     search_providers.router,
     routes.router,
     settings_api.router,
-    qq.router,
-    groups.router,
+    kook.router,
+    channels.router,
     triggers.router,
     prompts_api.router,
     admins.router,
@@ -50,11 +50,10 @@ _ROUTERS = (
     transcripts.router,
 )
 # Paths the SPA fallback must never shadow.
-_RESERVED = ("api", "onebot")
+_RESERVED = ("api",)
 
 
 def _operation_id(route: APIRoute) -> str:
-    # Endpoint function names are unique; the generated TS client turns them into listProviders etc.
     return route.name
 
 
@@ -96,16 +95,12 @@ def _mount_spa(app: FastAPI, dist: Path) -> None:
             if file.is_relative_to(root) and file.is_file():
                 cache = "public, max-age=31536000, immutable" if head == "assets" else "no-cache"
                 return FileResponse(file, headers={"Cache-Control": cache})
-            if head == "assets":  # a stale hashed chunk must not turn into index.html
+            if head == "assets":
                 raise HTTPException(404)
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 def mount(app: FastAPI) -> None:
-    """Attach the admin API at ``/api`` and the SPA at ``/``.
-
-    Call after the OneBot adapter registered its routes: the SPA catch-all is a GET
-    route added last, so it never shadows earlier routes or websockets.
-    """
+    """Attach the admin API at ``/api`` and the SPA at ``/``."""
     app.mount("/api", build_api())
     _mount_spa(app, Path(APP_CONFIG.web_dist))

@@ -1,11 +1,10 @@
 """Compiled, immutable trigger index built from ``command_triggers``.
 
-Semantics:
-- Candidate rules = rules scoped to this group (or ``private``) + global rules. If a
-  group defines any rule for a handler, the global rules of that handler are ignored
-  in that group (group overrides global per handler).
-- Candidates are tried in ascending ``priority`` (then id); the first match wins.
-- ``require_mention`` rules only apply when the bot was @'d / replied to / named.
+Four-level inheritance:
+- Channel chats resolve candidate rules along ``channel -> category -> guild -> global``.
+  If an inner scope defines any rule for a handler, outer rules for that same handler are ignored.
+- Direct messages resolve ``private -> global`` (global rules restricted to ``admin.*`` / ``privacy.*``).
+- Candidates are tried in ascending ``(priority, id)``; the first match wins.
 """
 
 import re
@@ -14,6 +13,7 @@ from functools import cached_property
 
 from yggdrasil.runtime import Snapshot, TriggerRule
 
+SCOPES = ("global", "guild", "category", "channel", "private")
 MATCH_TYPES = ("keyword_prefix", "keyword_exact", "regex", "mention", "reply_to_bot", "name_mention")
 TARGETS = ("quoted_or_self", "self", "quoted")
 ROLES = ("member", "admin", "owner", "superuser")
@@ -21,12 +21,14 @@ ROLES = ("member", "admin", "owner", "superuser")
 
 @dataclass(frozen=True, slots=True)
 class MatchInput:
-    scope: str  # group | private
-    group_id: int | None
-    text: str  # plaintext (@ segments are not text; a leading/trailing @bot is stripped by the adapter)
-    to_me: bool  # @bot anywhere in the message / reply-to-bot / private chat
-    replied_to_bot: bool
-    role: str  # member | admin | owner | superuser
+    scope: str  # channel | private
+    channel_id: str | None = None
+    category_id: str | None = None
+    guild_id: str | None = None
+    text: str = ""
+    to_me: bool = False
+    replied_to_bot: bool = False
+    role: str = "member"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +39,7 @@ class Resolved:
     captures: tuple[str, ...]
     target: str
     cooldown_s: int
-    named: bool  # the bot's name appeared in the text
+    named: bool
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,6 @@ def _role_ok(rule: TriggerRule, role: str) -> bool:
     if not rule.allowed_roles or role == "superuser":
         return True
     allowed = set(rule.allowed_roles)
-    # owner implies admin
     return role in allowed or (role == "owner" and "admin" in allowed)
 
 
@@ -66,36 +67,49 @@ class TriggerIndex:
         self._rules = compiled
 
     @cached_property
-    def _by_scope(self) -> dict[tuple[str, int | None], list[_Compiled]]:
-        out: dict[tuple[str, int | None], list[_Compiled]] = {}
+    def _by_scope(self) -> dict[tuple[str, str | None], list[_Compiled]]:
+        out: dict[tuple[str, str | None], list[_Compiled]] = {}
         for c in self._rules:
-            key = (c.rule.scope, c.rule.group_id if c.rule.scope == "group" else None)
-            out.setdefault(key, []).append(c)
+            sid = None if c.rule.scope in ("global", "private") else c.rule.scope_id
+            out.setdefault((c.rule.scope, sid), []).append(c)
         return out
 
-    def _candidates(self, scope: str, group_id: int | None) -> list[_Compiled]:
-        if scope == "private":
-            local = self._by_scope.get(("private", None), [])
-            overridden = {c.rule.handler for c in local}
+    def _candidates(self, inp: MatchInput) -> list[_Compiled]:
+        if inp.scope == "private":
+            chain: list[tuple[str, str | None]] = [("private", None), ("global", None)]
         else:
-            local = self._by_scope.get(("group", group_id), [])
-            overridden = {c.rule.handler for c in local}
-        global_ = [c for c in self._by_scope.get(("global", None), []) if c.rule.handler not in overridden]
-        # Private chats only see global rules that are explicitly private-safe (admin/privacy handlers).
-        if scope == "private":
-            global_ = [c for c in global_ if c.rule.handler.startswith(("admin.", "privacy."))]
-        return sorted(local + global_, key=lambda c: (c.rule.priority, c.rule.id))
+            chain = []
+            if inp.channel_id:
+                chain.append(("channel", inp.channel_id))
+            if inp.category_id:
+                chain.append(("category", inp.category_id))
+            if inp.guild_id:
+                chain.append(("guild", inp.guild_id))
+            chain.append(("global", None))
 
-    def names(self, group_id: int | None) -> list[str]:
-        persona = self._snap.settings(group_id).persona
+        selected: list[_Compiled] = []
+        overridden: set[str] = set()
+        for scope_name, sid in chain:
+            layer = self._by_scope.get((scope_name, sid), [])
+            if inp.scope == "private" and scope_name == "global":
+                layer = [c for c in layer if c.rule.handler.startswith(("admin.", "privacy."))]
+            kept = [c for c in layer if c.rule.handler not in overridden]
+            selected.extend(kept)
+            overridden.update(c.rule.handler for c in kept)
+        return sorted(selected, key=lambda c: (c.rule.priority, c.rule.id))
+
+    def names(self, inp: MatchInput) -> list[str]:
+        persona = self._snap.settings(
+            channel_id=inp.channel_id, guild_id=inp.guild_id, category_id=inp.category_id
+        ).persona
         return [n for n in [persona.name, *persona.aliases] if n]
 
     def match(self, inp: MatchInput) -> Resolved | None:
         text = inp.text.strip()
         lowered = text.lower()
-        named = any(n.lower() in lowered for n in self.names(inp.group_id))
+        named = any(n.lower() in lowered for n in self.names(inp))
         mentioned = inp.to_me or named
-        for c in self._candidates(inp.scope, inp.group_id):
+        for c in self._candidates(inp):
             rule = c.rule
             if rule.require_mention and not mentioned:
                 continue

@@ -7,7 +7,7 @@ import {
   putGlobalSettingsMutation,
 } from "@/client/@tanstack/react-query.gen";
 import { Disclosure, Field, JsonEditor, PageHeader, PendingButton, Pre, QueryState } from "@/components/common";
-import { QQConnectionCard } from "@/components/qq-connection";
+import { KookConnectionCard } from "@/components/kook-connection";
 import { type JsonSchema, resolveSchema, SECTION_LABELS, SchemaObject, sparseDiff } from "@/components/schema-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,7 +48,7 @@ export function SettingsPage() {
     <div className="max-w-4xl">
       <PageHeader
         title="设置"
-        description="全局设置；群级覆盖在「群管理」里编辑。只保存与默认值不同的项。"
+        description="全局默认设置；服务器 / 分组 / 频道级覆盖在「服务器与频道」里编辑。只保存与默认值不同的项。"
         actions={
           <PendingButton pending={save.isPending} disabled={!dirty} onClick={() => save.mutate({ body: doc })}>
             {dirty ? "保存" : "已保存"}
@@ -56,7 +56,7 @@ export function SettingsPage() {
         }
       />
       <div className="mb-6">
-        <QQConnectionCard />
+        <KookConnectionCard />
       </div>
       <Tabs defaultValue="form">
         <TabsList>

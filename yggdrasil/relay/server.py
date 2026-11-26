@@ -231,9 +231,9 @@ async def _account(grant: Grant, rid: str, target: Target, usage: _Usage, starte
         USAGE_TASK, target.label, input_tokens=usage.total_input, output_tokens=usage.output, cached=usage.cache_read
     )
     LOGGER.info(
-        "relay {} group={} job={} model={} in={} cached={} out={} {:.1f}s",
+        "relay {} channel={} job={} model={} in={} cached={} out={} {:.1f}s",
         status,
-        grant.group_id,
+        grant.channel_id,
         grant.job_id,
         target.label,
         usage.total_input,
@@ -413,7 +413,7 @@ class Relay:
 
 
 class _Server(uvicorn.Server):
-    """A second server inside the bot process: NoneBot's own server owns the signal handlers."""
+    """A second server inside the bot process: the main uvicorn server owns the signal handlers."""
 
     def __init__(self, config: uvicorn.Config) -> None:
         super().__init__(config)

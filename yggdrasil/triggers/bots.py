@@ -1,59 +1,98 @@
-"""Other bots in a group never start a run.
+"""Bot-user detection and anti-loop guard for KOOK bot-to-bot interaction.
 
-Their messages are stored like anyone's, but bots answering bots can loop, and the bots in these groups imitate
-members (replying "tldr" to a message) without anyone having asked for anything. A sender counts as a bot when
+Other bots' messages are always recorded in channel history like anyone else's, and when
+``interaction.allow_bot_triggers`` is enabled they may even invoke chat / tldr — subject to three independent
+anti-loop guards so two bots can never ping-pong endlessly (even with slow 30s+ long-text replies):
 
-- it is listed in ``interaction.ignore_users``;
-- its name (group card, else nickname) carries the ``[bot]`` tag (``name[bot]``, as on GitHub) the bot accounts
-  here use. Looser hints ("bot" anywhere in a name, "测试中") turn up in people's names too;
-- QQ classifies it as an official bot (``Member.is_robot``: Tencent's robot UIN ranges). Message events don't say
-  so, so it is looked up once per sender, and only for a message that matched a trigger. Milky doesn't tell at all
-  (``is_robot`` None): there the first two decide alone.
-
-The caller exempts superusers.
+1. **Cooldown** (``bot_cooldown_s``): minimum gap between triggers from the same bot in a channel, refreshed both on
+   admission and when our reply finishes sending.
+2. **Consecutive bot-turn breaker** (``bot_max_consecutive_turns``): counts consecutive bot-triggered runs in a
+   channel without any human message in between; resets immediately when any non-bot user speaks in that channel.
+3. **Rolling window cap** (``bot_max_per_window`` / ``bot_window_s``): hard cap on replies to a given bot within a
+   longer window (default 3 per 10 minutes), defeating slow ping-pong loops regardless of reply latency.
 """
 
-import math
-import time
-
-from yggdrasil.core.log import LOGGER
-from yggdrasil.qq.client import QQ
-from yggdrasil.qq.model import Incoming, QQError
-from yggdrasil.settings import Settings
+from yggdrasil.kook.model import Incoming
+from yggdrasil.kv import redis_client
+from yggdrasil.settings import InteractionSettings, Settings
 
 _TAG = "[bot]"
-_LOOKUP_TIMEOUT_S = 3.0
-_RETRY_AFTER_S = 600.0
-# user id → (official QQ bot, monotonic time to ask again). An account never changes kind, so answers are kept;
-# a failed lookup, or a protocol that can't tell, counts as "a person" for a while instead of delaying each of the
-# sender's requests.
-_official: dict[int, tuple[bool, float]] = {}
+_CHAIN_TTL_S = 1800  # 30 minutes of silence also clears consecutive bot-turn counter
 
 
-async def sent_by_bot(qq: QQ, incoming: Incoming, settings: Settings) -> bool:
-    """Whether the sender of the group message ``incoming`` is another bot; ``qq`` is our own connection (for the
-    member lookup)."""
-    if incoming.user_id in settings.interaction.ignore_users:
-        return True
-    if _TAG in incoming.sender.name.lower():
-        return True
-    if incoming.group_id is None:
-        return False
-    return await _official_bot(qq, incoming.group_id, incoming.user_id)
+def is_ignored_user(incoming: Incoming, settings: Settings) -> bool:
+    """Explicitly ignored user IDs never trigger any handler."""
+    return incoming.user_id in settings.interaction.ignore_users
 
 
-async def _official_bot(qq: QQ, group_id: int, user_id: int) -> bool:
-    known = _official.get(user_id)
-    if known is not None and time.monotonic() < known[1]:
-        return known[0]
+def is_bot_sender(incoming: Incoming) -> bool:
+    """Whether KOOK marked the author as a bot (``author.bot == true``) or their name carries ``[bot]``."""
+    return bool(incoming.sender.is_bot) or (_TAG in incoming.sender.name.lower())
+
+
+def sent_by_bot(incoming: Incoming, settings: Settings) -> bool:
+    """Backward-compatible helper: True when sender is explicitly ignored or is another bot."""
+    return is_ignored_user(incoming, settings) or is_bot_sender(incoming)
+
+
+async def note_human_message(channel_id: str) -> None:
+    """Reset the consecutive bot-turn circuit breaker when a real human speaks in ``channel_id``."""
     try:
-        info = await qq.member(group_id, user_id, reply_timeout=_LOOKUP_TIMEOUT_S)
-    except QQError as e:
-        LOGGER.warning("member info of {} in group {} unavailable, treated as a person: {}", user_id, group_id, e)
-        _official[user_id] = (False, time.monotonic() + _RETRY_AFTER_S)
-        return False
-    if info.is_robot is None:
-        _official[user_id] = (False, time.monotonic() + _RETRY_AFTER_S)
-        return False
-    _official[user_id] = (info.is_robot, math.inf)
-    return info.is_robot
+        await redis_client().delete(f"ygg:bot_chain:{channel_id}")
+    except Exception:
+        pass
+
+
+async def touch_bot_cooldown(channel_id: str | None, bot_user_id: str, cooldown_s: int) -> None:
+    """Refresh the per-bot cooldown when our reply finishes sending so slow replies can't bypass cooldown."""
+    if channel_id is None or cooldown_s <= 0:
+        return
+    try:
+        await redis_client().set(f"ygg:bot_cd:{channel_id}:{bot_user_id}", "1", ex=cooldown_s)
+    except Exception:
+        pass
+
+
+async def check_bot_trigger(
+    channel_id: str,
+    bot_user_id: str,
+    handler: str,
+    cfg: InteractionSettings,
+) -> str | None:
+    """Return None if another bot's trigger is allowed, or a short reason string when blocked."""
+    if not cfg.allow_bot_triggers:
+        return "bot_triggers_disabled"
+    # Other bots may only invoke normal conversation / summary handlers, never admin or privacy commands.
+    if handler not in ("chat", "tldr"):
+        return f"bot_handler_disallowed:{handler}"
+
+    r = redis_client()
+
+    # 1. Per-bot cooldown (checked first without incrementing other counters).
+    cd_key = f"ygg:bot_cd:{channel_id}:{bot_user_id}"
+    if cfg.bot_cooldown_s > 0:
+        if await r.exists(cd_key):
+            return "bot_cooldown"
+
+    # 2. Consecutive bot-turn breaker (defeats slow 30s+ long-text ping-pong loops).
+    chain_key = f"ygg:bot_chain:{channel_id}"
+    cur_chain = await r.get(chain_key)
+    if cur_chain is not None and int(cur_chain) >= cfg.bot_max_consecutive_turns:
+        return "bot_consecutive_limit"
+
+    # 3. Longer rolling window cap per (channel, bot).
+    win_key = f"ygg:bot_win:{channel_id}:{bot_user_id}"
+    cur_win = await r.get(win_key)
+    if cur_win is not None and int(cur_win) >= cfg.bot_max_per_window:
+        return "bot_window_limit"
+
+    # Admit and update all three guards atomically via pipeline.
+    pipe = r.pipeline()
+    if cfg.bot_cooldown_s > 0:
+        pipe.set(cd_key, "1", ex=cfg.bot_cooldown_s)
+    pipe.incr(chain_key)
+    pipe.expire(chain_key, _CHAIN_TTL_S)
+    pipe.incr(win_key)
+    pipe.expire(win_key, cfg.bot_window_s, nx=True)
+    await pipe.execute()
+    return None

@@ -1,45 +1,44 @@
-"""Process-wide bot state: identity cache, connection and heartbeat tracking (keyed by the bot's ``self_id``)."""
+"""Process-wide bot state: identity cache, connection tracking and per-channel latest message (for quote-when-busy)."""
 
 import time
 from dataclasses import dataclass
 
-from yggdrasil.qq.client import QQ
-from yggdrasil.qq.model import QQError
+from yggdrasil.kook.client import Kook
+from yggdrasil.kook.model import KookError
 
 
 @dataclass(slots=True)
 class Identity:
-    self_id: int
+    self_id: str
     nickname: str
 
 
 _identities: dict[str, Identity] = {}
 connected: dict[str, float] = {}
 last_heartbeat: dict[str, float] = {}
-# Accounts the protocol reported logged out (``notice.bot_offline``) while the connection stays up; cleared on
-# reconnect.
-offline: set[str] = set()
-# Latest message id from someone other than the bot, per group (for quote-when-busy).
-last_group_message: dict[int, int] = {}
+# Latest non-bot message id per channel (for quote-when-busy).
+last_channel_message: dict[str, str] = {}
 
 
-def should_quote(group_id: int | None, trigger_message_id: int, mode: str) -> bool:
-    if group_id is None or mode == "never":
+def should_quote(channel_id: str | None, trigger_message_id: str, mode: str) -> bool:
+    if not trigger_message_id or mode == "never":
         return False
     if mode == "always":
         return True
-    return last_group_message.get(group_id, trigger_message_id) != trigger_message_id
+    if channel_id is None:
+        return False
+    return last_channel_message.get(channel_id, trigger_message_id) != trigger_message_id
 
 
-async def identity(qq: QQ) -> Identity:
-    key = str(qq.self_id)
+async def identity(kook: Kook) -> Identity:
+    key = kook.self_id
     ident = _identities.get(key)
     if ident is None:
         try:
-            login = await qq.login()
-            ident = Identity(login.user_id, login.nickname)
-        except QQError:
-            ident = Identity(qq.self_id, "Bot")
+            login = await kook.login()
+            ident = Identity(login.user_id, login.username)
+        except KookError:
+            ident = Identity(kook.self_id, "Bot")
         _identities[key] = ident
     return ident
 
@@ -47,7 +46,6 @@ async def identity(qq: QQ) -> Identity:
 def mark_connected(self_id: str) -> None:
     connected[self_id] = time.time()
     last_heartbeat[self_id] = time.time()
-    offline.discard(self_id)
 
 
 def mark_disconnected(self_id: str) -> None:

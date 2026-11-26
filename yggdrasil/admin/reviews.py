@@ -23,8 +23,9 @@ class ReviewOut(BaseModel):
     id: int
     created_at: datetime
     invocation_id: UUID | None
-    group_id: int
-    user_id: int
+    channel_id: str
+    guild_id: str | None
+    user_id: str
     request_text: str
     reply: BotReply
     verdict: VerdictOut
@@ -50,7 +51,8 @@ def _out(r: ReviewItem) -> ReviewOut:
         id=r.id,
         created_at=r.created_at,
         invocation_id=r.invocation_id,
-        group_id=r.group_id,
+        channel_id=r.channel_id,
+        guild_id=r.guild_id,
         user_id=r.user_id,
         request_text=r.request_text,
         reply=BotReply.model_validate(r.reply),
@@ -65,13 +67,16 @@ def _out(r: ReviewItem) -> ReviewOut:
 @router.get("")
 async def list_reviews(
     status: ReviewStatus | None = None,
-    group_id: int | None = None,
+    guild_id: str | None = None,
+    channel_id: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> Page[ReviewOut]:
     cond = [ReviewItem.status == status] if status else []
-    if group_id is not None:
-        cond.append(ReviewItem.group_id == group_id)
+    if guild_id:
+        cond.append(ReviewItem.guild_id == guild_id)
+    if channel_id:
+        cond.append(ReviewItem.channel_id == channel_id)
     async with get_session() as s:
         total = await s.scalar(select(func.count()).select_from(ReviewItem).where(*cond)) or 0
         rows = await s.scalars(

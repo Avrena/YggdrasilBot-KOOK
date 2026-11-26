@@ -2,14 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { getStatsOptions } from "@/client/@tanstack/react-query.gen";
 import { Empty, PageHeader, QueryState } from "@/components/common";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function OverviewPage() {
   const stats = useQuery({ ...getStatsOptions(), refetchInterval: 30_000 });
   const s = stats.data;
-  const totalMessages = s?.messages_24h.reduce((a, g) => a + g.count, 0) ?? 0;
+  const totalMessages = s?.messages_24h.reduce((a, c) => a + c.count, 0) ?? 0;
   const totalInvocations = s?.invocations_24h.reduce((a, g) => a + g.count, 0) ?? 0;
   return (
     <div>
@@ -19,19 +19,21 @@ export function OverviewPage() {
         <div className="grid gap-4 md:grid-cols-3">
           <Card>
             <CardHeader>
-              <CardDescription>消息</CardDescription>
+              <CardDescription>频道消息</CardDescription>
               <CardTitle className="text-3xl">{totalMessages}</CardTitle>
             </CardHeader>
             <CardContent className="text-sm">
               {s.messages_24h.length === 0 && <Empty>没有消息</Empty>}
               <dl className="grid grid-cols-[1fr_auto] gap-x-2 gap-y-1">
-                {s.messages_24h.map((g) => (
-                  <div key={g.group_id} className="contents">
+                {s.messages_24h.map((c) => (
+                  <div key={c.channel_id} className="contents">
                     <dt className="flex min-w-0 items-center gap-1">
-                      <span className="truncate">{g.name || g.group_id}</span>
-                      {!g.enabled && <Badge variant="outline">未启用</Badge>}
+                      <span className="truncate">
+                        {c.guild_name ? `${c.guild_name} / ` : ""}#{c.name || c.channel_id}
+                      </span>
+                      {!c.enabled && <Badge variant="outline">未启用</Badge>}
                     </dt>
-                    <dd className="font-mono tabular-nums">{g.count}</dd>
+                    <dd className="font-mono tabular-nums">{c.count}</dd>
                   </div>
                 ))}
               </dl>

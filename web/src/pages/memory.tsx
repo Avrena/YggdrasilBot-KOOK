@@ -23,13 +23,14 @@ import {
 } from "@/client/@tanstack/react-query.gen";
 import type { GlossaryIn, GlossaryOut } from "@/client/types.gen";
 import {
+  ChannelSelect,
   ConfirmButton,
   DateRangePicker,
   DetailDialog,
   Empty,
   Field,
   FormDialog,
-  GroupSelect,
+  GuildSelect,
   Hint,
   Meta,
   NumberInput,
@@ -40,8 +41,9 @@ import {
   QueryState,
   SectionHeader,
   TagInput,
+  useChannelName,
   useDebounced,
-  useGroupName,
+  useGuildName,
 } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -55,12 +57,11 @@ import { fmtTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export function MemoryPage() {
-  const [groupId, setGroupId] = useState<number | null>(null);
-  // One group choice shared by the tabs; each tab puts it in its own filter row, after its search box.
-  const group = <GroupSelect className="w-56" value={groupId} onChange={setGroupId} />;
+  const [guildId, setGuildId] = useState<string | null>(null);
+  const guild = <GuildSelect className="w-56" value={guildId} onChange={setGuildId} />;
   return (
     <div>
-      <PageHeader title="记忆" description="话题时间线、每日摘要、黑话词典、用户画像和整理流水线的水位。" />
+      <PageHeader title="记忆" description="频道话题时间线，以及服务器内共享的每日摘要、黑话词典、用户画像和流水线水位。" />
       <Tabs defaultValue="topics">
         <TabsList>
           <TabsTrigger value="topics">话题</TabsTrigger>
@@ -70,16 +71,16 @@ export function MemoryPage() {
           <TabsTrigger value="pipelines">流水线</TabsTrigger>
         </TabsList>
         <TabsContent value="topics">
-          <Topics groupId={groupId} group={group} />
+          <Topics guildId={guildId} guild={guild} />
         </TabsContent>
         <TabsContent value="digests">
-          <Digests groupId={groupId} group={group} />
+          <Digests guildId={guildId} guild={guild} />
         </TabsContent>
         <TabsContent value="glossary">
-          <Glossary groupId={groupId} group={group} />
+          <Glossary guildId={guildId} guild={guild} />
         </TabsContent>
         <TabsContent value="profiles">
-          <Profiles groupId={groupId} group={group} />
+          <Profiles guildId={guildId} guild={guild} />
         </TabsContent>
         <TabsContent value="pipelines">
           <Pipelines />
@@ -98,7 +99,7 @@ const TOPIC_STATUS = [
 type TopicFilters = {
   status: string | null;
   q: string;
-  user_id: number | null;
+  user_id: string;
   min_messages: number | null;
   max_messages: number | null;
   min_participants: number | null;
@@ -108,29 +109,36 @@ type TopicFilters = {
 const NO_FILTERS: TopicFilters = {
   status: null,
   q: "",
-  user_id: null,
+  user_id: "",
   min_messages: null,
   max_messages: null,
   min_participants: null,
   max_participants: null,
 };
 
-type TabProps = { groupId: number | null; group: ReactNode };
+type TabProps = { guildId: string | null; guild: ReactNode };
 
-function Topics({ groupId, group }: TabProps) {
-  const groupName = useGroupName();
+function Topics({ guildId, guild }: TabProps) {
+  const channelName = useChannelName();
+  const [channelId, setChannelId] = useState<string | null>(null);
   const [range, setRange] = useState<DateRange | undefined>();
   const [filters, setFilters] = useState<TopicFilters>(NO_FILTERS);
   const [offset, setOffset] = useState(0);
   const q = useDebounced(filters.q);
+  const userId = useDebounced(filters.user_id);
   const limit = 30;
   const topics = useQuery(
     listTopicsOptions({
       query: {
-        ...filters,
         status: filters.status as "open" | "closed" | "archived" | null,
         q: q.trim() || null,
-        group_id: groupId,
+        user_id: userId.trim() || null,
+        min_messages: filters.min_messages,
+        max_messages: filters.max_messages,
+        min_participants: filters.min_participants,
+        max_participants: filters.max_participants,
+        guild_id: guildId,
+        channel_id: channelId,
         since: range?.from ? startOfDay(range.from).toISOString() : null,
         until: range?.from ? endOfDay(range.to ?? range.from).toISOString() : null,
         limit,
@@ -157,7 +165,16 @@ function Topics({ groupId, group }: TabProps) {
           value={filters.q}
           onChange={(e) => set({ q: e.target.value })}
         />
-        {group}
+        {guild}
+        <ChannelSelect
+          className="w-56"
+          guildId={guildId}
+          value={channelId}
+          onChange={(v) => {
+            setChannelId(v);
+            setOffset(0);
+          }}
+        />
         <DateRangePicker
           value={range}
           onChange={(v) => {
@@ -173,12 +190,12 @@ function Topics({ groupId, group }: TabProps) {
           options={TOPIC_STATUS}
           noneLabel="全部状态"
         />
-        <NumberInput
-          aria-label="参与人 QQ"
-          className="w-32"
-          placeholder="参与人 QQ"
+        <Input
+          aria-label="参与人 ID"
+          className="w-36"
+          placeholder="参与人 KOOK ID"
           value={filters.user_id}
-          onChange={(user_id) => set({ user_id })}
+          onChange={(e) => set({ user_id: e.target.value })}
         />
         <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
           消息数
@@ -216,13 +233,20 @@ function Topics({ groupId, group }: TabProps) {
             onChange={(v) => set({ max_participants: v })}
           />
         </div>
-        <Button variant="ghost" onClick={() => set(NO_FILTERS)}>
+        <Button
+          variant="ghost"
+          onClick={() => {
+            setChannelId(null);
+            setRange(undefined);
+            set(NO_FILTERS);
+          }}
+        >
           清空筛选
         </Button>
         <div className="ml-auto">
-          <Hint content={groupId === null ? "先选择群" : null}>
+          <Hint content={channelId === null ? "先选择频道" : null}>
             <span>
-              {groupId === null ? (
+              {channelId === null ? (
                 <Button variant="outline" disabled>
                   <ArchiveIcon data-icon="inline-start" /> 按阈值归档
                 </Button>
@@ -230,9 +254,9 @@ function Topics({ groupId, group }: TabProps) {
                 <ConfirmButton
                   variant="outline"
                   size="default"
-                  title={`按当前阈值整理群 ${groupId} 的已结束话题？`}
+                  title={`按当前阈值整理频道 ${channelName(channelId)} 的已结束话题？`}
                   description="消息数和参与人数都低于阈值（设置中的 memory.topic_archive_below_*），或整理任务算出的权重低于 memory.topic_archive_below_weight 的已结束话题会被归档，agent 搜不到，这里仍可查看。手动恢复过的话题也会再次归档。"
-                  onConfirm={() => archiveSmall.mutate({ body: { group_id: groupId } })}
+                  onConfirm={() => archiveSmall.mutate({ body: { channel_id: channelId } })}
                 >
                   <ArchiveIcon data-icon="inline-start" /> 按阈值归档
                 </ConfirmButton>
@@ -259,7 +283,7 @@ function Topics({ groupId, group }: TabProps) {
                     <time dateTime={t.start_at}>{fmtTime(t.start_at)}</time> 至{" "}
                     <time dateTime={t.end_at}>{fmtTime(t.end_at)}</time>
                   </>,
-                  groupId === null && groupName(t.group_id),
+                  channelId === null && channelName(t.channel_id),
                   `${t.msg_count} 条消息`,
                   `${t.participants.length} 人参与`,
                   t.importance !== null && (
@@ -312,14 +336,14 @@ function Topics({ groupId, group }: TabProps) {
   );
 }
 
-function Digests({ groupId, group }: TabProps) {
-  const groupName = useGroupName();
+function Digests({ guildId, guild }: TabProps) {
+  const guildName = useGuildName();
   const [offset, setOffset] = useState(0);
   const limit = 14;
-  const digests = useQuery(listDigestsOptions({ query: { group_id: groupId, limit, offset } }));
+  const digests = useQuery(listDigestsOptions({ query: { guild_id: guildId, limit, offset } }));
   return (
     <div className="grid gap-4">
-      <div className="flex flex-wrap items-center gap-2">{group}</div>
+      <div className="flex flex-wrap items-center gap-2">{guild}</div>
       <QueryState isLoading={digests.isLoading} error={digests.error} />
       {digests.data?.items.length === 0 && <Empty />}
       {digests.data?.items.map((d) => (
@@ -327,7 +351,7 @@ function Digests({ groupId, group }: TabProps) {
           <CardHeader>
             <CardTitle className="text-base">
               {d.day}
-              {groupId === null && <span className="ml-2 text-sm font-normal text-muted-foreground">{groupName(d.group_id)}</span>}
+              {guildId === null && <span className="ml-2 text-sm font-normal text-muted-foreground">{guildName(d.guild_id)}</span>}
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm whitespace-pre-wrap">{d.summary}</CardContent>
@@ -338,15 +362,15 @@ function Digests({ groupId, group }: TabProps) {
   );
 }
 
-function Glossary({ groupId, group }: TabProps) {
-  const groupName = useGroupName();
+function Glossary({ guildId, guild }: TabProps) {
+  const guildName = useGuildName();
   const [q, setQ] = useState("");
   const debouncedQ = useDebounced(q);
   const [offset, setOffset] = useState(0);
   const limit = 50;
   const terms = useQuery(
     listGlossaryOptions({
-      query: { group_id: groupId, q: debouncedQ || null, limit, offset },
+      query: { guild_id: guildId, q: debouncedQ || null, limit, offset },
     }),
   );
   const lock = useMutation(lockGlossaryTermMutation());
@@ -368,11 +392,10 @@ function Glossary({ groupId, group }: TabProps) {
             setOffset(0);
           }}
         />
-        {group}
-        {/* span: a disabled button gets no pointer events, so the hint needs a wrapper */}
-        <Hint content={groupId === null ? "先选择群" : null}>
+        {guild}
+        <Hint content={guildId === null ? "先选择服务器" : null}>
           <span>
-            <Button onClick={() => setEditing("new")} disabled={groupId === null}>
+            <Button onClick={() => setEditing("new")} disabled={guildId === null}>
               <PlusIcon data-icon="inline-start" /> 新增词条
             </Button>
           </span>
@@ -397,7 +420,7 @@ function Glossary({ groupId, group }: TabProps) {
                 <TableCell>
                   <div className="font-medium">{t.term}</div>
                   {!!t.aliases.length && <div className="text-xs text-muted-foreground">{t.aliases.join("、")}</div>}
-                  {groupId === null && <div className="text-xs text-muted-foreground">{groupName(t.group_id)}</div>}
+                  {guildId === null && <div className="text-xs text-muted-foreground">{guildName(t.guild_id)}</div>}
                 </TableCell>
                 <TableCell className="max-w-xl text-sm whitespace-pre-wrap">{t.definition}</TableCell>
                 <TableCell>
@@ -443,7 +466,7 @@ function Glossary({ groupId, group }: TabProps) {
       {editing && (
         <GlossaryDialog
           term={editing === "new" ? null : editing}
-          groupId={editing === "new" ? (groupId ?? 0) : editing.group_id}
+          guildId={editing === "new" ? (guildId ?? "") : editing.guild_id}
           onClose={() => setEditing(null)}
         />
       )}
@@ -453,15 +476,16 @@ function Glossary({ groupId, group }: TabProps) {
 
 function GlossaryDialog({
   term,
-  groupId,
+  guildId,
   onClose,
 }: {
   term: GlossaryOut | null;
-  groupId: number;
+  guildId: string;
   onClose: () => void;
 }) {
+  const guildName = useGuildName();
   const [form, setForm] = useState<GlossaryIn>({
-    group_id: groupId,
+    guild_id: guildId,
     term: term?.term ?? "",
     aliases: term?.aliases ?? [],
     definition: term?.definition ?? "",
@@ -478,7 +502,7 @@ function GlossaryDialog({
     <FormDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title={term ? `编辑「${term.term}」` : `新增词条（群 ${groupId}）`}
+      title={term ? `编辑「${term.term}」` : `新增词条（${guildName(guildId)}）`}
       description="管理员编辑的词条会被锁定，整理流水线不再覆盖。"
       pending={create.isPending || update.isPending}
       submitDisabled={!form.term.trim() || !form.definition.trim()}
@@ -504,20 +528,20 @@ function GlossaryDialog({
   );
 }
 
-function Profiles({ groupId, group }: TabProps) {
-  const groupName = useGroupName();
+function Profiles({ guildId, guild }: TabProps) {
+  const guildName = useGuildName();
   const [q, setQ] = useState("");
   const debouncedQ = useDebounced(q);
   const [offset, setOffset] = useState(0);
   const limit = 50;
   const profiles = useQuery(
     listProfilesOptions({
-      query: { group_id: groupId, q: debouncedQ || null, limit, offset },
+      query: { guild_id: guildId, q: debouncedQ || null, limit, offset },
     }),
   );
   const [selected, setSelected] = useState<{
-    group_id: number;
-    user_id: number;
+    guild_id: string;
+    user_id: string;
   } | null>(null);
   const remove = useMutation({
     ...deleteProfileMutation(),
@@ -531,7 +555,7 @@ function Profiles({ groupId, group }: TabProps) {
       <div className="flex flex-wrap items-center gap-2">
         <Input
           className="w-64"
-          placeholder="搜索昵称、QQ 号或摘要"
+          placeholder="搜索昵称、用户 ID 或摘要"
           aria-label="搜索画像"
           value={q}
           onChange={(e) => {
@@ -539,7 +563,7 @@ function Profiles({ groupId, group }: TabProps) {
             setOffset(0);
           }}
         />
-        {group}
+        {guild}
       </div>
       <QueryState isLoading={profiles.isLoading} error={profiles.error} />
       {profiles.data?.items.length === 0 && <Empty />}
@@ -556,13 +580,12 @@ function Profiles({ groupId, group }: TabProps) {
           </TableHeader>
           <TableBody>
             {profiles.data.items.map((p) => (
-              <TableRow key={`${p.group_id}:${p.user_id}`}>
+              <TableRow key={`${p.guild_id}:${p.user_id}`}>
                 <TableCell>
                   <div className="font-medium">{p.display_name || p.user_id}</div>
-                  {groupId === null && <div className="text-xs text-muted-foreground">{groupName(p.group_id)}</div>}
+                  {guildId === null && <div className="text-xs text-muted-foreground">{guildName(p.guild_id)}</div>}
                   {p.opted_out && <Badge variant="outline">已退出记忆</Badge>}
                 </TableCell>
-                {/* TableCell defaults to nowrap; long profile text must wrap and stay short (full text in 查看). */}
                 <TableCell className="min-w-80 max-w-xl text-sm whitespace-normal">
                   <div className="line-clamp-3">{p.summary}</div>
                 </TableCell>
@@ -577,7 +600,7 @@ function Profiles({ groupId, group }: TabProps) {
                       variant="outline"
                       onClick={() =>
                         setSelected({
-                          group_id: p.group_id,
+                          guild_id: p.guild_id,
                           user_id: p.user_id,
                         })
                       }
@@ -589,7 +612,7 @@ function Profiles({ groupId, group }: TabProps) {
                       description="同时删除画像下的全部事实。"
                       onConfirm={() =>
                         remove.mutate({
-                          path: { group_id: p.group_id, user_id: p.user_id },
+                          path: { guild_id: p.guild_id, user_id: p.user_id },
                         })
                       }
                     >
@@ -615,9 +638,9 @@ const ARCHIVE_REASON: Record<string, string> = {
   outdated: "被新消息推翻",
 };
 
-function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_id: number; onClose: () => void }) {
-  const groupName = useGroupName();
-  const profile = useQuery(getProfileOptions({ path: { group_id, user_id } }));
+function ProfileDialog({ guild_id, user_id, onClose }: { guild_id: string; user_id: string; onClose: () => void }) {
+  const guildName = useGuildName();
+  const profile = useQuery(getProfileOptions({ path: { guild_id, user_id } }));
   const removeFact = useMutation({ ...deleteProfileFactMutation(), onSuccess: () => toast.success("已删除") });
   const restoreFact = useMutation({ ...restoreProfileFactMutation(), onSuccess: () => toast.success("已恢复") });
   const [showArchived, setShowArchived] = useState(false);
@@ -628,12 +651,12 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
     <DetailDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title={p?.display_name || String(user_id)}
+      title={p?.display_name || user_id}
       description={
         <span className="inline-flex flex-wrap gap-x-3">
-          <span>{groupName(group_id)}</span>
+          <span>{guildName(guild_id)}</span>
           <span>
-            QQ <span className="font-mono">{user_id}</span>
+            KOOK ID <span className="font-mono">{user_id}</span>
           </span>
         </span>
       }
@@ -702,7 +725,7 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
                           size="xs"
                           variant="outline"
                           disabled={restoreFact.isPending}
-                          onClick={() => restoreFact.mutate({ path: { group_id, user_id, fact_id: f.id } })}
+                          onClick={() => restoreFact.mutate({ path: { guild_id, user_id, fact_id: f.id } })}
                         >
                           <ArchiveRestoreIcon data-icon="inline-start" /> 恢复
                         </Button>
@@ -713,7 +736,7 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
                         title="删除这条事实？"
                         description={f.fact}
                         disabled={removeFact.isPending}
-                        onConfirm={() => removeFact.mutate({ path: { group_id, user_id, fact_id: f.id } })}
+                        onConfirm={() => removeFact.mutate({ path: { guild_id, user_id, fact_id: f.id } })}
                       >
                         删除
                       </ConfirmButton>
@@ -729,7 +752,11 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
   );
 }
 
+const CHANNEL_PIPELINES = new Set(["chunk", "topic"]);
+
 function Pipelines() {
+  const guildName = useGuildName();
+  const channelName = useChannelName();
   const pipelines = useQuery(listPipelinesOptions());
   return (
     <div className="grid gap-4">
@@ -740,7 +767,7 @@ function Pipelines() {
           <TableHeader>
             <TableRow>
               <TableHead>流水线</TableHead>
-              <TableHead>群</TableHead>
+              <TableHead>作用域</TableHead>
               <TableHead>水位（消息 id）</TableHead>
               <TableHead>积压</TableHead>
               <TableHead>状态</TableHead>
@@ -749,9 +776,12 @@ function Pipelines() {
           </TableHeader>
           <TableBody>
             {pipelines.data.map((p) => (
-              <TableRow key={`${p.pipeline}:${p.group_id}`}>
+              <TableRow key={`${p.pipeline}:${p.scope_id}`}>
                 <TableCell className="font-mono">{p.pipeline}</TableCell>
-                <TableCell className="font-mono">{p.group_id}</TableCell>
+                <TableCell>
+                  <div>{CHANNEL_PIPELINES.has(p.pipeline) ? channelName(p.scope_id) : guildName(p.scope_id)}</div>
+                  <div className="font-mono text-xs text-muted-foreground">{p.scope_id}</div>
+                </TableCell>
                 <TableCell className="font-mono">{p.last_msg_id}</TableCell>
                 <TableCell>{p.backlog >= 10000 ? "10000 以上" : p.backlog}</TableCell>
                 <TableCell>

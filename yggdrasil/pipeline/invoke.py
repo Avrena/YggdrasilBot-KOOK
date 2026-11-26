@@ -1,4 +1,4 @@
-"""One triggered run (chat / tldr): moderation, quick ack, agent, delivery, bookkeeping."""
+"""One triggered run (chat / tldr): moderation, status reactions, agent execution, adaptive delivery, bookkeeping."""
 
 import asyncio
 import contextlib
@@ -9,7 +9,7 @@ from uuid import UUID
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic_ai import Agent, ModelRetry, RunContext, Tool
+from pydantic_ai import Agent, Tool
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
@@ -28,8 +28,9 @@ from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, INVOCATIONS
 from yggdrasil.core.telemetry import TRACER, current_trace_id
-from yggdrasil.delivery.forward import send_forward, strip_markdown
-from yggdrasil.delivery.send import MessageDropped, react, send_plain, send_text
+from yggdrasil.delivery.send import react, send_kmarkdown, send_reply
+from yggdrasil.kook.client import Kook
+from yggdrasil.kook.model import Incoming
 from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
@@ -37,8 +38,6 @@ from yggdrasil.pipeline import ack as ack_mod
 from yggdrasil.pipeline import ratelimit, recalls, record, repeats
 from yggdrasil.pipeline import session as sessions
 from yggdrasil.pipeline.prompt import inline_images, instructions, now_text
-from yggdrasil.qq.client import QQ
-from yggdrasil.qq.model import Incoming
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import Session, manager
 from yggdrasil.settings import Settings
@@ -48,53 +47,56 @@ from yggdrasil.transcript.notes import TraceNotes
 from yggdrasil.triggers.index import Resolved
 
 Handler = Literal["chat", "tldr"]
-# How long before the answer's conversation was kept its newest seen chat message may have been sent.
 _SEEN_SLACK = timedelta(hours=1)
 
 
-async def run(qq: QQ, incoming: Incoming, resolved: Resolved, handler: Handler, request_text: str) -> None:
+async def run(kook: Kook, incoming: Incoming, resolved: Resolved, handler: Handler, request_text: str) -> None:
     snap = snapshot()
-    group_id = incoming.group_id
-    settings = snap.settings(group_id)
+    channel_id = incoming.channel_id
+    guild_id = incoming.guild_id or (snap.guild_of(channel_id) if channel_id else None)
+    settings = snap.settings(channel_id=channel_id, guild_id=guild_id)
     role = speaker_role(incoming, snap.superusers)
     superuser = role == "superuser"
     user_id, message_id = incoming.user_id, incoming.message_id
     repeat = None if superuser else repeats.key(incoming, resolved, handler, request_text)
     if repeat is not None and not await repeats.first(repeat, settings.ratelimit.repeat_window_s):
-        LOGGER.info("repeated {} request ignored user={} group={}", handler, user_id, group_id)
+        LOGGER.info("repeated {} request ignored user={} channel={}", handler, user_id, channel_id)
         INVOCATIONS.add(1, {"handler": handler, "outcome": "repeat"})
-        await react(qq, group_id, message_id, settings.interaction.silent_emoji)
+        if settings.features.status_reactions:
+            await react(kook, channel_id, message_id, settings.interaction.silent_emoji)
         return
     answered = False
     try:
-        if reason := await ratelimit.check(group_id, user_id, settings.ratelimit, superuser=superuser):
-            LOGGER.info("rate limited ({}) user={} group={}", reason, user_id, group_id)
+        if reason := await ratelimit.check(channel_id, user_id, settings.ratelimit, superuser=superuser):
+            LOGGER.info("rate limited ({}) user={} channel={}", reason, user_id, channel_id)
             INVOCATIONS.add(1, {"handler": handler, "outcome": "ratelimited"})
-            await react(qq, group_id, message_id, settings.interaction.ratelimited_emoji)
+            if settings.features.status_reactions:
+                await react(kook, channel_id, message_id, settings.interaction.ratelimited_emoji)
             return
-        with recalls.watch(group_id, message_id) as watch:
-            async with ratelimit.slot(group_id, user_id, settings.ratelimit) as granted:
+        with recalls.watch(channel_id, message_id) as watch:
+            async with ratelimit.slot(channel_id, user_id, settings.ratelimit) as granted:
                 if not granted:
-                    LOGGER.info("request dropped: queue full or timed out user={} group={}", user_id, group_id)
+                    LOGGER.info("request dropped: queue full or timed out user={} channel={}", user_id, channel_id)
                     INVOCATIONS.add(1, {"handler": handler, "outcome": "busy"})
-                    await react(qq, group_id, message_id, settings.interaction.ratelimited_emoji)
+                    if settings.features.status_reactions:
+                        await react(kook, channel_id, message_id, settings.interaction.ratelimited_emoji)
                     return
                 if watch.recalled:
-                    LOGGER.info("{} request recalled while queued user={} group={}", handler, user_id, group_id)
+                    LOGGER.info("{} request deleted while queued user={} channel={}", handler, user_id, channel_id)
                     INVOCATIONS.add(1, {"handler": handler, "outcome": "cancelled"})
                     return
-                inv = Invocator(qq, incoming, resolved, handler, request_text, settings, group_id, role, watch=watch)
+                inv = Invocator(
+                    kook, incoming, resolved, handler, request_text, settings, channel_id, guild_id, role, watch=watch
+                )
                 status = await inv.run()
                 answered = status not in ("failed", "cancelled")
     finally:
         if repeat is not None and not answered:
-            # Nothing came of it (rate limited, queue full, failed, recalled): asking again must work.
             with contextlib.suppress(Exception):
                 await repeats.forget(repeat)
 
 
 def _cancelling() -> bool:
-    """Whether the running task itself is being cancelled."""
     task = asyncio.current_task()
     return task is not None and task.cancelling() > 0
 
@@ -102,25 +104,28 @@ def _cancelling() -> bool:
 class Invocator:
     def __init__(
         self,
-        qq: QQ,
+        kook: Kook,
         incoming: Incoming,
         resolved: Resolved,
         handler: Handler,
         request_text: str,
         settings: Settings,
-        group_id: int | None,
+        channel_id: str | None,
+        guild_id: str | None,
         role: Role = "member",
         *,
         watch: recalls.Watch | None = None,
     ) -> None:
         self._setup(
-            qq,
+            kook,
             handler,
             settings,
-            group_id,
+            channel_id,
+            guild_id,
             user_id=incoming.user_id,
             trigger_message_id=incoming.message_id,
             role=role,
+            chat_code=incoming.chat_code,
         )
         self.incoming, self.resolved, self.request_text = incoming, resolved, request_text
         self.rule_id = resolved.rule_id
@@ -129,49 +134,47 @@ class Invocator:
 
     def _setup(
         self,
-        qq: QQ,
+        kook: Kook,
         handler: Handler,
         settings: Settings,
-        group_id: int | None,
+        channel_id: str | None,
+        guild_id: str | None,
         *,
-        user_id: int,
-        trigger_message_id: int,
+        user_id: str,
+        trigger_message_id: str | None,
         role: Role,
         record_handler: str | None = None,
+        chat_code: str | None = None,
     ) -> None:
-        """State shared by every kind of run; ``record_handler`` names it in records and metrics when it differs
-        from the route ``handler`` (a job report runs on the chat route)."""
-        self.qq, self.handler, self.settings, self.group_id = qq, handler, settings, group_id
+        self.kook, self.handler, self.settings = kook, handler, settings
+        self.channel_id, self.guild_id = channel_id, guild_id
         self.user_id, self.trigger_message_id = user_id, trigger_message_id
+        self.chat_code = chat_code
         self.record_handler: str = record_handler or handler
         self.rule_id: int | None = None
         self.role: Role = role
-        self.reply_qq_message_id: int | None = None
+        self.reply_msg_id: str | None = None
         self.started = time.perf_counter()
         self.meta = record.Meta()
         self.invocation_id: UUID | None = None
         self.ack_kind: str | None = None
         self._finished = False
-        self.deps: Deps | None = None  # the agent run's, once it ran: delivery sends the pictures it holds
-        self.sandbox: Session | None = None  # set when this run gets the workspace suite
-        # How a chat/tldr run's agent was built and its prompt's block nonce: set, the delivered answer's run is kept
-        # for replies to it (``pipeline.session``).
+        self.deps: Deps | None = None
+        self.sandbox: Session | None = None
         self._keep: tuple[sessions.Setup, str] | None = None
-        # The run's conversation for the console; every agent this invocator builds records into it.
         self.recorder = TranscriptRecorder()
         self.notes = TraceNotes(full=settings.privacy.capture_llm_content)
-        # Recalling the trigger message stops the run before it answers; a run without one is never recalled.
         self.watch = recalls.Watch()
-        self._slow: asyncio.Task[None] | None = None  # adds slow_emoji unless the run has its answer by then
+        self._slow: asyncio.Task[None] | None = None
 
     def elapsed(self) -> float:
         return time.perf_counter() - self.started
 
     async def run(self) -> str:
-        """Run, record and return the status (``failed`` when it raised)."""
         attrs = {
             "ygg.handler": self.record_handler,
-            "ygg.group_id": self.group_id or 0,
+            "ygg.channel_id": self.channel_id or "",
+            "ygg.guild_id": self.guild_id or "",
             "ygg.rule_id": self.rule_id or 0,
         }
         with TRACER.start_as_current_span(
@@ -199,20 +202,21 @@ class Invocator:
                 if not self._finished:
                     await self._finish(status, error)
                 if self.sandbox is not None:
-                    # Kills leftover processes, renews the claim, releases the workspace; never raises.
                     with contextlib.suppress(Exception):
                         await self.sandbox.close()
                 if self.invocation_id is not None and (self.recorder.history or self.recorder.tools):
-                    await transcripts.save_invocation(self.invocation_id, self.recorder, self.notes, self.group_id)
+                    await transcripts.save_invocation(
+                        self.invocation_id, self.recorder, self.notes, self.channel_id, self.guild_id
+                    )
         return status
 
-    # --- bookkeeping -------------------------------------------------------
     async def _start_row(self, request_text: str) -> None:
         self.invocation_id = await record.start_row(
-            group_id=self.group_id,
+            channel_id=self.channel_id,
+            guild_id=self.guild_id,
             user_id=self.user_id,
             handler=self.record_handler,
-            trigger_message_id=self.trigger_message_id,
+            trigger_msg_id=self.trigger_message_id,
             request_text=request_text,
             trace_id=self.meta.trace_id,
         )
@@ -225,34 +229,29 @@ class Invocator:
     async def _finish(self, status: str, error: str | None, **extra: object) -> None:
         self._finished = True
         self.meta.total_s = self.elapsed()
-        await ratelimit.add_tokens(self.group_id, self._billable_tokens())
+        await ratelimit.add_tokens(self.channel_id, self._billable_tokens())
         if self.invocation_id is None:
             return
         await record.finish_row(self.invocation_id, status, error, self.meta, self.ack_kind, **extra)
 
     def _billable_tokens(self) -> int:
-        """Tokens this run adds to the group's daily budget."""
         return self.meta.tokens_in + self.meta.tokens_out
 
-    # --- main flow ---------------------------------------------------------
     async def _run(self) -> str:
-        ident = await identity(self.qq)
+        ident = await identity(self.kook)
         persona = self.settings.persona.name
         self.notes.bot = (ident.self_id, persona)
         replied_bot_msg = self._replied_bot_message(ident.self_id)
         recall_target = (
             replied_bot_msg
             if replied_bot_msg is not None
-            and self.group_id is not None
-            and await may_recall(self.role, self.user_id, self.group_id, replied_bot_msg)
+            and self.channel_id is not None
+            and await may_recall(self.role, self.user_id, self.channel_id, replied_bot_msg)
             else None
         )
-        # Replying to one of the bot's messages: the speaker may or may not have it recalled.
         recall = None if replied_bot_msg is None else recall_target is not None
         session = await self._session(replied_bot_msg)
-        if session is not None and replied_bot_msg is not None and self.group_id is not None:
-            # The answer's agent again (route, instructions, tools), so everything before the new turn is what the
-            # provider already has cached.
+        if session is not None and replied_bot_msg is not None and self.channel_id is not None:
             route, sandbox_on = session.setup.handler, session.setup.sandbox
             ctx = await build_followup_context(
                 self.incoming,
@@ -262,9 +261,8 @@ class Invocator:
                 request_text=self.request_text,
                 handles=session.handles,
                 nonce=session.nonce,
-                answer_qq_id=replied_bot_msg,
+                answer_msg_id=replied_bot_msg,
                 seen_message_id=session.seen_message_id,
-                # The id does the cut; the time only keeps the query on recent partitions.
                 since=session.created_at - (_SEEN_SLACK if session.seen_message_id is not None else timedelta()),
                 now=now_text(),
                 recall=bool(recall),
@@ -295,8 +293,9 @@ class Invocator:
 
         mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
         deps = Deps(
-            self.qq,
-            self.group_id,
+            self.kook,
+            self.channel_id,
+            self.guild_id,
             self.user_id,
             self.settings,
             ctx.handles,
@@ -304,6 +303,7 @@ class Invocator:
             recall_target=recall_target,
             self_id=ident.self_id,
             bot_nickname=ident.nickname,
+            chat_code=self.chat_code,
             trigger_message_id=self.trigger_message_id,
             invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
             request_text=ctx.request_text or ctx.trigger.text,
@@ -313,11 +313,11 @@ class Invocator:
             self.notes.context = ctx.display
         tools_cfg = self.settings.tools
         tool_list = session.setup.tools if session else tool_names(tools_cfg.enabled, self.handler)
-        skill_list = session.setup.skills if session else skill_names(self.settings, self.handler, self.group_id)
+        skill_list = session.setup.skills if session else skill_names(self.settings, self.handler, self.channel_id)
         suite = sandbox_tools.Suite()
-        if sandbox_on and self.group_id is not None:
+        if sandbox_on and self.channel_id is not None:
             self.sandbox = deps.sandbox = manager().session(
-                self.group_id,
+                self.channel_id,
                 invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
                 cfg=tools_cfg,
             )
@@ -328,7 +328,8 @@ class Invocator:
             else instructions(
                 self.handler,
                 self.settings,
-                self.group_id,
+                self.channel_id,
+                guild_id=self.guild_id,
                 tools=tool_list + suite.names,
                 sandbox=tools_cfg if sandbox_on else None,
                 report=False,
@@ -342,9 +343,7 @@ class Invocator:
             capabilities=suite.capabilities + skills_for(skill_list),
             instructions=system,
         )
-        prompt = await inline_images(
-            ctx, self.qq, self.group_id, self.user_id, route, self.settings.context.inline_images, self.notes
-        )
+        prompt = await inline_images(ctx, route, self.settings.context.inline_images, self.notes)
         return await self._execute(
             agent, prompt, deps, resolved_model, mod_text, history=session.messages if session else None
         )
@@ -353,7 +352,7 @@ class Invocator:
         return suite_enabled(
             self.settings,
             handler,
-            self.group_id,
+            self.channel_id,
             global_settings=snapshot().settings(),
             configured=manager().configured,
         )
@@ -372,24 +371,12 @@ class Invocator:
             deps_type=Deps,
             instructions=instructions,
             tools=tools,
-            # The recorder sees every call, the budget's skipped ones too; the skipped ones reach no other wrapper.
             capabilities=[self.recorder, self._budget(), *capabilities],
             name=self.handler,
             retries=2,
         )
         agent.output_validator(check_reply_images)
-        agent.output_validator(self._check_plain)
         return agent
-
-    def _check_plain(self, ctx: RunContext[Deps], reply: BotReply) -> BotReply:
-        """mode=plain is for short chat answers only (not tldr, not a job report)."""
-        if reply.mode != "plain":
-            return reply
-        if self.record_handler != "chat":
-            raise ModelRetry("这里不能用 mode=plain，用 forward")
-        if problem := reply.plain_problem(len(ctx.deps.images)):
-            raise ModelRetry(problem)
-        return reply
 
     async def _execute(
         self,
@@ -401,14 +388,12 @@ class Invocator:
         *,
         history: list[ModelMessage] | None = None,
     ) -> str:
-        """Run the agent (after ``history``, an earlier answer's conversation) next to input moderation, then
-        moderate, deliver and record the reply."""
         if self.watch.recalled:
             return await self._recalled()
         budget = self._budget()
-        run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
+        run_usage = RunUsage()
         run_stats = RunStats()
-        stats_token = RUN_STATS.set(run_stats)  # the task copies the context, sub-agents included
+        stats_token = RUN_STATS.set(run_stats)
         agent_task = asyncio.create_task(
             agent.run(
                 prompt,
@@ -422,7 +407,9 @@ class Invocator:
             )
         )
         RUN_STATS.reset(stats_token)
-        input_task = asyncio.create_task(moderate("input", mod_text, group_id=self.group_id))
+        input_task = asyncio.create_task(
+            moderate("input", mod_text, channel_id=self.channel_id, guild_id=self.guild_id)
+        )
         self.watch.guard(agent_task)
         self.watch.guard(input_task)
         blocked: Verdict | None = None
@@ -434,16 +421,14 @@ class Invocator:
             else:
                 result = await agent_task
         except asyncio.CancelledError:
-            # The recall cancelled what this run waits for; a cancel of the run itself (shutdown) goes on up.
             if not self.watch.recalled or _cancelling():
                 raise
         finally:
             for t in (agent_task, input_task):
                 if not t.done():
                     t.cancel()
-            self._stop_slow()  # the answer is in: moderation and sending are quick
+            self._stop_slow()
             self._account(resolved_model.label, run_usage, deps, run_stats)
-            # No sh / py runs any more: the code it started can't call the bot from here on.
             await bridge.close_run(deps)
         if self.watch.recalled:
             return await self._recalled()
@@ -455,7 +440,7 @@ class Invocator:
 
                 cats = ",".join(blocked.categories)
                 await notify_admins(
-                    self.qq, f"输入被拦截（{blocked.verdict} {blocked.score:.2f} {cats}）\n{mod_text[:500]}"
+                    self.kook, f"输入被拦截（{blocked.verdict} {blocked.score:.2f} {cats}）\n{mod_text[:500]}"
                 )
             await self._finish("blocked_input", None, input_verdict=blocked.as_dict())
             return "blocked_input"
@@ -467,45 +452,42 @@ class Invocator:
             await self._status(self.settings.interaction.action_emoji)
             await self._finish("done", None, reply=reply.model_dump())
             return "done"
-        if reply.mode not in ("forward", "plain"):  # silent, or "done" without having done anything
+        if reply.mode != "reply":
             return await self._stay_silent(reply)
 
-        v_out = await moderate("output", mod_text, reply.full_text(), group_id=self.group_id)
+        v_out = await moderate(
+            "output", mod_text, reply.full_text(), channel_id=self.channel_id, guild_id=self.guild_id
+        )
         await self._save_verdict(v_out)
         checked = [f"输入 {v_in.verdict}"] if v_in.verdict != "Skipped" else []
         if v_out.verdict != "Skipped":
             checked.append(f"输出 {v_out.verdict}({v_out.score:.2f})")
         self.meta.moderation = " · ".join(checked)
         verdicts = {"input_verdict": v_in.as_dict(), "output_verdict": v_out.as_dict(), "reply": reply.model_dump()}
-        if self.watch.recalled:  # while output moderation ran; once the answer is going out, it goes out
+        if self.watch.recalled:
             return await self._recalled(**verdicts)
 
         if v_out.action == "pass":
             await self._keep_session(result.all_messages(), deps.handles)
-            try:
-                await self.deliver(reply)
-            except MessageDropped:
-                # QQ swallowed it (content filter, most likely); the group got a short notice instead.
-                await self._status(self.settings.interaction.review_emoji)
-                await self._finish("dropped", None, **verdicts)
-                return "dropped"
-            await self._finish("ok", None, reply_qq_message_id=self.reply_qq_message_id, **verdicts)
+            await self.deliver(reply)
+            await self._finish("ok", None, reply_msg_id=self.reply_msg_id, **verdicts)
             return "ok"
-        if v_out.action == "review" and self.group_id is not None:
+        if v_out.action == "review" and self.channel_id is not None:
             from yggdrasil.moderation.review import create_review
 
             await create_review(
-                self.qq,
+                self.kook,
                 invocation_id=self.invocation_id,
-                group_id=self.group_id,
+                channel_id=self.channel_id,
+                guild_id=self.guild_id,
                 user_id=self.user_id,
-                trigger_qq_message_id=self.trigger_message_id,
+                trigger_msg_id=self.trigger_message_id,
                 request_text=mod_text,
                 reply=reply,
                 verdict=v_out,
                 expire_minutes=self.settings.moderation.review_expire_minutes,
             )
-            if self.settings.moderation.notify_group_on_review:
+            if self.settings.moderation.notify_channel_on_review:
                 with contextlib.suppress(Exception):
                     notice = await ack_mod.review_notice(mod_text, self.settings)
                     if notice:
@@ -518,38 +500,39 @@ class Invocator:
         return "rejected"
 
     async def _send_text(self, text: str, *, allow_quote: bool = True) -> None:
-        ident = await identity(self.qq)
-        quote = allow_quote and should_quote(
-            self.group_id, self.trigger_message_id, self.settings.interaction.quote_reply
+        ident = await identity(self.kook)
+        quote = (
+            self.trigger_message_id
+            if allow_quote
+            and self.trigger_message_id
+            and should_quote(self.channel_id, self.trigger_message_id, self.settings.interaction.quote_reply)
+            else None
         )
-        await send_text(
-            self.qq,
-            group_id=self.group_id,
+        await send_kmarkdown(
+            self.kook,
+            channel_id=self.channel_id,
+            guild_id=self.guild_id,
             user_id=self.user_id,
-            reply_to=self.trigger_message_id if quote else None,
-            text=text,
+            reply_to=quote,
+            content=text,
             self_id=ident.self_id,
             nickname=ident.nickname,
+            chat_code=self.chat_code,
         )
 
     def _mark_ack(self, kind: str) -> None:
-        """Record the first visible response's latency."""
         self.ack_kind = kind
         if self.meta.ack_s is None:
             self.meta.ack_s = self.elapsed()
             INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.record_handler, "kind": kind})
 
     async def _status(self, emoji: str) -> bool:
-        """Add a status reaction to the trigger message (QQ has none in private chats). Reactions are never
-        removed: frequent add/remove pairs look automated to QQ's risk control."""
-        if not emoji or self.group_id is None:
+        if not self.settings.features.status_reactions or not emoji or not self.trigger_message_id:
             return False
-        await react(self.qq, self.group_id, self.trigger_message_id, emoji)
+        await react(self.kook, self.channel_id, self.trigger_message_id, emoji)
         return True
 
     async def _mark_slow(self) -> None:
-        """``slow_emoji`` once the run has gone ``slow_after_s`` without its answer, so the requester knows it is
-        still working (long sandbox runs, slow pages)."""
         await asyncio.sleep(self.settings.interaction.slow_after_s)
         with contextlib.suppress(Exception):
             await self._status(self.settings.interaction.slow_emoji)
@@ -560,14 +543,12 @@ class Invocator:
             self._slow = None
 
     def _budget(self) -> ToolBudget:
-        # Workspace sessions (write, run, read the error, fix) need far more steps than a plain reply.
         cfg = self.settings.tools
         if self.sandbox is not None:
             return ToolBudget(requests=cfg.sandbox_request_limit, tool_calls=cfg.sandbox_tool_calls_limit)
         return ToolBudget(requests=cfg.request_limit, tool_calls=cfg.tool_calls_limit)
 
     def _account(self, model_label: str, usage: RunUsage, deps: Deps, stats: RunStats) -> None:
-        """Add what the agent run spent to the invocation (also for failed or cancelled runs)."""
         self.meta.models.append(model_label)
         self.meta.tokens_in += usage.input_tokens
         self.meta.tokens_out += usage.output_tokens
@@ -591,7 +572,6 @@ class Invocator:
         )
 
     async def _stay_silent(self, reply: BotReply) -> str:
-        """The model chose not to answer: send nothing, only mark the trigger with silent_emoji."""
         reason = (reply.silent_reason or "").strip()[:200]
         LOGGER.info("{} stays silent: {}", self.handler, reason or "(no reason)")
         trace.get_current_span().set_attribute("ygg.silent_reason", reason)
@@ -600,26 +580,22 @@ class Invocator:
         return "silent"
 
     async def _recalled(self, **extra: object) -> str:
-        """The trigger message was recalled before the answer went out: stop, send nothing (not even a reaction)."""
-        LOGGER.info("{} trigger {} recalled; run stopped", self.handler, self.trigger_message_id)
-        await self._finish("cancelled", "原消息已撤回", **extra)
+        LOGGER.info("{} trigger {} deleted; run stopped", self.handler, self.trigger_message_id)
+        await self._finish("cancelled", "原消息已删除", **extra)
         return "cancelled"
 
-    def _replied_bot_message(self, self_id: int) -> int | None:
-        """QQ id of the bot's own group message this chat request replies to (recall candidate)."""
+    def _replied_bot_message(self, self_id: str) -> str | None:
         r = self.incoming.reply
-        if self.handler != "chat" or self.group_id is None or r is None or r.sender.user_id != self_id:
+        if self.handler != "chat" or self.channel_id is None or r is None or r.sender.user_id != self_id:
             return None
         return r.message_id
 
-    async def _session(self, answer: int | None) -> sessions.Session | None:
-        """The kept run of the bot answer ``answer`` this chat request replies to, when it is recent enough and its
-        agent can still be rebuilt as it was."""
+    async def _session(self, answer: str | None) -> sessions.Session | None:
         minutes = self.settings.context.continue_minutes
-        if answer is None or self.group_id is None or minutes <= 0 or not self.settings.privacy.capture_llm_content:
+        if answer is None or self.channel_id is None or minutes <= 0 or not self.settings.privacy.capture_llm_content:
             return None
         try:
-            found = await sessions.load(self.group_id, answer, timedelta(minutes=minutes))
+            found = await sessions.load(self.channel_id, answer, timedelta(minutes=minutes))
         except Exception:
             LOGGER.exception("session lookup failed")
             return None
@@ -629,7 +605,7 @@ class Invocator:
         if (
             any(name not in ALL_TOOLS for name in setup.tools)
             or (setup.sandbox and not self._suite_enabled(setup.handler))
-            or not set(setup.skills) <= set(skill_names(self.settings, self.handler, self.group_id))
+            or not set(setup.skills) <= set(skill_names(self.settings, self.handler, self.channel_id))
         ):
             LOGGER.info("invocation {} used tools this run can't have; starting over", found.invocation_id)
             return None
@@ -637,54 +613,48 @@ class Invocator:
         return found
 
     async def _keep_session(self, messages: list[ModelMessage], handles: Handles) -> None:
-        """Keep this answer's run for replies to it (``pipeline.session``)."""
         if (
             self._keep is None
             or self.invocation_id is None
-            or self.group_id is None
+            or self.channel_id is None
+            or not self.trigger_message_id
             or not self.settings.privacy.capture_llm_content
         ):
             return
-        from yggdrasil.memory.search import find_by_qq_id
+        from yggdrasil.memory.search import find_by_msg_id
 
         try:
-            seen = await find_by_qq_id(self.group_id, self.trigger_message_id)
+            seen = await find_by_msg_id(self.channel_id, self.trigger_message_id)
         except Exception:
             LOGGER.exception("trigger lookup failed")
             seen = None
         setup, nonce = self._keep
         await sessions.save(self.invocation_id, setup, messages, handles, nonce, seen.id if seen else None)
 
+    def _channel_map(self) -> dict[str, str]:
+        """``channel_name -> channel_id`` map in this guild for ``#频道名`` -> ``(chn)id(chn)``."""
+        if not self.guild_id:
+            return {}
+        return {c.name: c.channel_id for c in snapshot().guild_channels(self.guild_id, enabled_only=False) if c.name}
+
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction
-        ident = await identity(self.qq)
+        ident = await identity(self.kook)
         deps = self.deps
         images = await reply_images(deps, reply) if deps is not None else {}
         self.meta.total_s = self.elapsed()
-        if reply.mode == "plain":
-            text = strip_markdown(reply.full_text())
-            pictures = [images[k][0] for s in reply.sections for k in s.images if k in images]
-            pictures += [p for p, _ in (deps.images if deps is not None else ())]
-            if not text and not pictures:  # an image-only answer whose pictures were all refused or lost
-                LOGGER.warning("plain answer has nothing left to send")
-                return
-            quote = should_quote(self.group_id, self.trigger_message_id, cfg.quote_reply)
-            self.reply_qq_message_id = await send_plain(
-                self.qq,
-                group_id=self.group_id,
-                user_id=self.user_id,
-                reply_to=self.trigger_message_id if quote else None,
-                text=text,
-                images=pictures,
-                self_id=ident.self_id,
-                nickname=ident.nickname,
-            )
-            return
+        quote = (
+            self.trigger_message_id
+            if self.trigger_message_id and should_quote(self.channel_id, self.trigger_message_id, cfg.quote_reply)
+            else None
+        )
         meta_text = self.meta.render(list(cfg.metadata_fields)) if cfg.metadata_node else None
-        self.reply_qq_message_id = await send_forward(
-            self.qq,
-            group_id=self.group_id,
+        self.reply_msg_id = await send_reply(
+            self.kook,
+            channel_id=self.channel_id,
+            guild_id=self.guild_id,
             user_id=self.user_id,
+            reply_to=quote,
             reply=reply,
             meta_text=meta_text,
             cfg=cfg,
@@ -692,4 +662,13 @@ class Invocator:
             nickname=ident.nickname,
             images=images,
             attached=deps.images if deps is not None else (),
+            channel_map=self._channel_map(),
+            force_card=self.record_handler in ("tldr", "report"),
+            chat_code=self.chat_code,
         )
+        # If triggered by another KOOK bot, refresh cooldown from reply completion so slow long replies cannot loop.
+        incoming = getattr(self, "incoming", None)
+        if incoming is not None and incoming.sender.is_bot and self.channel_id is not None:
+            from yggdrasil.triggers.bots import touch_bot_cooldown
+
+            await touch_bot_cooldown(self.channel_id, self.user_id, cfg.bot_cooldown_s)

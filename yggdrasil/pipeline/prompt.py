@@ -1,5 +1,4 @@
-"""What the agent of a chat or tldr run is told: its instructions, and the user prompt with the images the request
-is about attached up front."""
+"""What the agent of a chat or tldr run is told: instructions and user prompt with inline images."""
 
 from datetime import datetime
 
@@ -12,27 +11,19 @@ from yggdrasil.core.telemetry import TRACER
 from yggdrasil.llm.registry import sees_images
 from yggdrasil.people import self_label
 from yggdrasil.prompts import render
-from yggdrasil.qq.client import QQ
 from yggdrasil.relay import relay_url
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.transcript.notes import TraceNotes
 
 
-async def inline_images(
-    ctx: BuiltContext, qq: QQ, group_id: int | None, user_id: int, handler: str, limit: int, notes: TraceNotes
-) -> str | list[UserContent]:
-    """Attach the images of the messages the request is about up front when the route can see them.
-
-    They are almost always what the request is about ("总结一下" on a reply to three screenshots),
-    and a view_image round trip per image costs a model turn.
-    """
+async def inline_images(ctx: BuiltContext, handler: str, limit: int, notes: TraceNotes) -> str | list[UserContent]:
     focus = (ctx.handles.get(key) for key in ctx.focus)
     handles = [h for h in focus if h is not None and looks_like_image(h)][:limit]
     if not handles or not sees_images(handler):
         return ctx.prompt
     with TRACER.start_as_current_span("ygg.inline_images") as span:
-        loaded = await load_images(qq, group_id, user_id, handles)
+        loaded = await load_images(handles)
         span.set_attribute("ygg.images", len(loaded))
     if not loaded:
         return ctx.prompt
@@ -48,28 +39,37 @@ async def inline_images(
 def instructions(
     handler: str,
     settings: Settings,
-    group_id: int | None,
+    channel_id: str | None,
     *,
+    guild_id: str | None = None,
     tools: list[str],
     sandbox: ToolSettings | None,
     report: bool,
     nonce: str,
 ) -> str:
-    """The ``<handler>_system`` prompt. ``tools`` names what the run may call; ``sandbox`` is the settings of the
-    workspace suite when the run has it. Nothing about the request goes here (see ``pipeline.session``)."""
-    group_name = ""
-    if group_id is not None:
-        info = snapshot().groups.get(group_id)
-        group_name = info.name if info else ""
+    snap = snapshot()
+    channel_name = snap.channel_name(channel_id) if channel_id else ""
+    guild_id = guild_id or (snap.guild_of(channel_id) if channel_id else None)
+    guild_name = snap.guild_name(guild_id) if guild_id else ""
+    sibling_channels: list[str] = []
+    if guild_id and (not channel_id or settings.memory.share_in_guild):
+        sibling_channels = [
+            f"#{c.name}"
+            for c in snap.guild_channels(guild_id, enabled_only=True)
+            if c.channel_id != channel_id
+            and c.name
+            and snap.settings(channel_id=c.channel_id, guild_id=guild_id).memory.share_in_guild
+        ]
     return render(
         f"{handler}_system",
         persona=settings.persona,
-        group_name=group_name or "本群",
+        channel_name=f"#{channel_name}" if channel_name else "本频道",
+        guild_name=guild_name or "本服务器",
+        sibling_channels=sibling_channels,
         now=now_text(),
         tools=tools,
         sandbox=sandbox,
         sandbox_links=bool(APP_CONFIG.sandbox_link_domain),
-        # Workspace code can call the bot's tools (agent.bridge): the relay is served and the limit allows calls.
         sandbox_bridge=sandbox is not None and sandbox.bridge_run_limit > 0 and relay_url() is not None,
         report=report,
         style=render("style_rules"),

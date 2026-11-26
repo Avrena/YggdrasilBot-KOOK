@@ -1,11 +1,16 @@
-"""Test QQ groups. Database tests key their rows by group and delete them by group, so no two tests may share one:
-every test group id comes from ``fresh_group``, never a literal."""
+"""Fresh KOOK guild/channel IDs for isolated database tests."""
 
 from itertools import count
 
-_ids = count(990_101)
+_guild_ids = count(990_101)
+_channel_ids = count(880_101)
 
 
-def fresh_group() -> int:
-    """A test group (990xxx) that nothing else in this run gets."""
-    return next(_ids)
+def fresh_guild() -> str:
+    """A test guild ID that nothing else in this run gets."""
+    return f"g{next(_guild_ids)}"
+
+
+def fresh_channel() -> str:
+    """A test channel ID that nothing else in this run gets."""
+    return f"ch{next(_channel_ids)}"

@@ -1,5 +1,4 @@
-"""One answer per tldr target. Prod answered twice when two members replied "tldr" to one message a second apart and
-when someone pasted the same link again (two separate QQ messages each time, not a redelivered event)."""
+"""One answer per tldr target in a KOOK channel."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -7,102 +6,115 @@ from typing import Any
 
 import pytest
 
-from tests.support.groups import fresh_group
-from tests.support.qq import FakeQQ, incoming
+from tests.support.groups import fresh_channel, fresh_guild
+from tests.support.kook import FakeKook, make_incoming
+from yggdrasil.kook import segments as seg
+from yggdrasil.kook.model import Incoming, Message, Sender
 from yggdrasil.pipeline import invoke
-from yggdrasil.qq import segments as seg
-from yggdrasil.qq.model import Incoming, Message, Sender
-from yggdrasil.runtime import GroupInfo, Snapshot
+from yggdrasil.runtime import ChannelInfo, GuildInfo, Snapshot
 from yggdrasil.settings import InteractionSettings
 from yggdrasil.triggers.index import Resolved
 
-GROUP, SELF, ALICE, BOB, OWNER = fresh_group(), 10001, 20001, 20002, 20003
-QUOTED, OTHER_QUOTED = 500, 501
+GUILD, CHANNEL, SELF = fresh_guild(), fresh_channel(), "10001"
+ALICE, BOB, OWNER = "20001", "20002", "20003"
+QUOTED, OTHER_QUOTED = "q-500", "q-501"
 TLDR = Resolved("tldr", 1, "", (), "quoted_or_self", 0, False)
 CHAT = Resolved("chat", 2, "", (), "quoted_or_self", 0, False)
 SILENT = InteractionSettings().silent_emoji
-QQ = FakeQQ(self_id=SELF)  # never called: runs and reactions are faked
+KOOK = FakeKook(bot_id=SELF)
 
 
 @dataclass
-class Group:
-    started: list[int] = field(default_factory=list)  # trigger message ids that started a run
-    reactions: list[tuple[int, str]] = field(default_factory=list)
-    outcomes: list[str] = field(default_factory=list)  # statuses the next runs end with ("ok" once empty)
+class ChannelRun:
+    started: list[str] = field(default_factory=list)
+    reactions: list[tuple[str, str]] = field(default_factory=list)
+    outcomes: list[str] = field(default_factory=list)
 
 
 @pytest.fixture
-def group(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]) -> Group:
-    g = Group()
-    no_limits = {"ratelimit": {"user_per_minute": 0, "group_per_minute": 0}}
-    snapshot(groups={GROUP: GroupInfo(GROUP, "g", True, no_limits)}, superusers=frozenset({OWNER}))
+def channel(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]) -> ChannelRun:
+    ch = ChannelRun()
+    no_limits = {"ratelimit": {"user_per_minute": 0, "channel_per_minute": 0}}
+    snapshot(
+        guilds={GUILD: GuildInfo(GUILD, "g", "", {}, enabled=True)},
+        channels={CHANNEL: ChannelInfo(CHANNEL, GUILD, None, False, 0, "ch", True, no_limits)},
+        superusers=frozenset({OWNER}),
+    )
 
-    async def react(_qq: Any, _group_id: int | None, message_id: int, emoji: str) -> None:
-        g.reactions.append((message_id, emoji))
+    async def react(_kook: Any, _channel_id: str | None, message_id: str, emoji: str) -> None:
+        ch.reactions.append((message_id, emoji))
 
     async def run(self: invoke.Invocator) -> str:
-        g.started.append(self.trigger_message_id)
-        return g.outcomes.pop(0) if g.outcomes else "ok"
+        assert self.trigger_message_id is not None
+        ch.started.append(self.trigger_message_id)
+        return ch.outcomes.pop(0) if ch.outcomes else "ok"
 
     monkeypatch.setattr(invoke, "react", react)
     monkeypatch.setattr(invoke.Invocator, "run", run)
-    return g
+    return ch
 
 
-def message(message_id: int, user_id: int, text: str, *, quoting: int | None = None, image: bool = False) -> Incoming:
+def message(message_id: str, user_id: str, text: str, *, quoting: str | None = None, image: bool = False) -> Incoming:
     segs = [seg.reply(quoting)] if quoting is not None else []
     segs.append(seg.text(text))
     if image:
-        segs.append(
-            {
-                "type": "image",
-                "data": {"ref": "r", "url": "https://example.com/cat.png", "summary": "", "sticker": False, "sha1": ""},
-            }
-        )
-    quoted = Message(quoting, GROUP, Sender(20009, "老王"), 1760000000, [seg.text("很长的一段话")]) if quoting else None
-    return incoming(
-        segs, group_id=GROUP, user_id=user_id, self_id=SELF, message_id=message_id, name="群友", reply=quoted
+        segs.append(seg.image("https://img.kookapp.cn/cat.png"))
+    quoted = (
+        Message(quoting, CHANNEL, GUILD, Sender("20009", "老王"), 1760000000, [seg.text("很长的一段话")])
+        if quoting
+        else None
+    )
+    return make_incoming(
+        text,
+        channel_id=CHANNEL,
+        guild_id=GUILD,
+        user_id=user_id,
+        self_id=SELF,
+        message_id=message_id,
+        username="群友",
+        reply=quoted,
+        segments=segs,
     )
 
 
 async def tldr(m: Incoming, words: str = "") -> None:
-    await invoke.run(QQ, m, TLDR, "tldr", words)
+    await invoke.run(KOOK, m, TLDR, "tldr", words)
 
 
-async def test_one_answer_per_target(group: Group) -> None:
-    await tldr(message(1, ALICE, "tldr", quoting=QUOTED))
-    await tldr(message(2, BOB, "tldr", quoting=QUOTED))  # another member, a second later
-    await tldr(message(3, ALICE, "tldr https://example.com/post"), "https://example.com/post")
-    await tldr(message(4, ALICE, "tldr  https://example.com/post "), " https://example.com/post ")  # pasted again
-    assert group.started == [1, 3]
-    assert group.reactions == [(2, SILENT), (4, SILENT)]
+async def test_one_answer_per_target(channel: ChannelRun) -> None:
+    await tldr(message("m1", ALICE, "tldr", quoting=QUOTED))
+    await tldr(message("m2", BOB, "tldr", quoting=QUOTED))
+    await tldr(message("m3", ALICE, "tldr https://example.com/post"), "https://example.com/post")
+    await tldr(message("m4", ALICE, "tldr  https://example.com/post "), " https://example.com/post ")
+    assert channel.started == ["m1", "m3"]
+    assert channel.reactions == [("m2", SILENT), ("m4", SILENT)]
 
 
-async def test_links_that_differ_only_in_case_are_different_targets(group: Group) -> None:
-    await tldr(message(1, ALICE, "tldr https://example.com/s/aBc12"), "https://example.com/s/aBc12")
-    await tldr(message(2, BOB, "tldr https://example.com/s/AbC12"), "https://example.com/s/AbC12")  # another video
-    assert group.started == [1, 2]
-    assert group.reactions == []
+async def test_links_that_differ_only_in_case_are_different_targets(channel: ChannelRun) -> None:
+    await tldr(message("m1", ALICE, "tldr https://example.com/s/aBc12"), "https://example.com/s/aBc12")
+    await tldr(message("m2", BOB, "tldr https://example.com/s/AbC12"), "https://example.com/s/AbC12")
+    assert channel.started == ["m1", "m2"]
+    assert channel.reactions == []
 
 
-async def test_other_requests_still_run(group: Group) -> None:
-    await tldr(message(1, ALICE, "tldr", quoting=QUOTED))
-    await tldr(message(2, BOB, "tldr 只说价格", quoting=QUOTED), "只说价格")  # a focus asks something else
-    await tldr(message(3, BOB, "tldr", quoting=OTHER_QUOTED))
-    await tldr(message(4, ALICE, "tldr"))  # a bare tldr's target, the recent chat, moves on
-    await tldr(message(5, ALICE, "tldr"))
-    await tldr(message(6, BOB, "tldr", image=True))  # attachments can't be told apart
-    await tldr(message(7, BOB, "tldr", image=True))
-    await tldr(message(8, OWNER, "tldr", quoting=QUOTED))  # superusers re-run on purpose
-    for i in (9, 10):  # a chat answer is a conversation with its asker
-        await invoke.run(QQ, message(i, ALICE, "早", quoting=QUOTED), CHAT, "chat", "早")
-    assert group.started == list(range(1, 11))
-    assert group.reactions == []
+async def test_other_requests_still_run(channel: ChannelRun) -> None:
+    await tldr(message("m1", ALICE, "tldr", quoting=QUOTED))
+    await tldr(message("m2", BOB, "tldr 只说价格", quoting=QUOTED), "只说价格")
+    await tldr(message("m3", BOB, "tldr", quoting=OTHER_QUOTED))
+    await tldr(message("m4", ALICE, "tldr"))
+    await tldr(message("m5", ALICE, "tldr"))
+    await tldr(message("m6", BOB, "tldr", image=True))
+    await tldr(message("m7", BOB, "tldr", image=True))
+    await tldr(message("m8", OWNER, "tldr", quoting=QUOTED))
+    for i in ("m9", "m10"):
+        await invoke.run(KOOK, message(i, ALICE, "早", quoting=QUOTED), CHAT, "chat", "早")
+    assert channel.started == [f"m{i}" for i in range(1, 11)]
+    assert channel.reactions == []
 
 
-async def test_a_failed_run_can_be_asked_for_again(group: Group) -> None:
-    group.outcomes = ["failed"]
-    for i in (1, 2, 3):
+async def test_a_failed_run_can_be_asked_for_again(channel: ChannelRun) -> None:
+    channel.outcomes = ["failed"]
+    for i in ("m1", "m2", "m3"):
         await tldr(message(i, ALICE, "tldr", quoting=QUOTED))
-    assert group.started == [1, 2]  # the retry ran; its answer stands
-    assert group.reactions == [(3, SILENT)]
+    assert channel.started == ["m1", "m2"]
+    assert channel.reactions == [("m3", SILENT)]

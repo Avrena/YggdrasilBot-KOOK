@@ -21,22 +21,23 @@ _CANCEL_WAIT_S = 20.0
 
 
 def _session(ctx: RunContext[Deps]) -> Session:
-    if ctx.deps.sandbox is None or ctx.deps.group_id is None:
+    if ctx.deps.sandbox is None or ctx.deps.channel_id is None:
         raise ToolError("这次没有可用的工作区")
     return ctx.deps.sandbox
 
 
 def _requester(deps: Deps) -> Requester:
     """Who asks for a job, with this run's handles and tool bridge tools for the job's code."""
-    assert deps.group_id is not None
+    assert deps.channel_id is not None
     return Requester(
-        group_id=deps.group_id,
+        channel_id=deps.channel_id,
+        guild_id=deps.guild_id,
         user_id=deps.user_id,
         trigger_message_id=deps.trigger_message_id,
         invocation_id=deps.invocation_id,
         request_text=deps.request_text,
         handles=deps.handles.dump(),
-        tools=allowed_tools(deps.settings, deps.group_id),
+        tools=allowed_tools(deps.settings, deps.channel_id),
     )
 
 
@@ -44,8 +45,8 @@ def _started(job: Job) -> str:
     minutes = int((job.deadline - job.created_at) // 60)
     return (
         f"已在工作区「{job.workspace}」后台开始{KIND_TEXT[job.kind]} {job.id}「{job.title}」，最长 {minutes} 分钟"
-        "（工作区会保留到它结束）。结束后会自动在群里回复请求者结果，不用等它。"
-        "现在直接回复群友：任务已经开始、大概要做什么、做完会自动通知；不要编造结果。"
+        "（工作区会保留到它结束）。结束后会自动在频道里回复请求者结果，不用等它。"
+        "现在直接回复：任务已经开始、大概要做什么、做完会自动通知；不要编造结果。"
     )
 
 
@@ -122,27 +123,27 @@ def describe_job(job: Job, *, now: float, detail: bool = False) -> str:
 
 @chat_tool("jobs")
 async def jobs(ctx: RunContext[Deps]) -> ToolResult:
-    """查看本群的后台任务（运行中的和最近结束的）：编号、状态、用时、进度。"""
-    if ctx.deps.group_id is None:
-        raise ToolError("只有群聊有后台任务")
-    items = await runner().for_group(ctx.deps.group_id, limit=8)
+    """查看本频道的后台任务（运行中的和最近结束的）：编号、状态、用时、进度。"""
+    if ctx.deps.channel_id is None:
+        raise ToolError("只有频道里有后台任务")
+    items = await runner().for_channel(ctx.deps.channel_id, limit=8)
     if not items:
-        return "本群最近没有后台任务"
+        return "本频道最近没有后台任务"
     now = time.time()
     return "\n".join(describe_job(j, now=now, detail=True) for j in items)
 
 
 @chat_tool("cancel_job")
 async def cancel_job(ctx: RunContext[Deps], job_id: str) -> ToolResult:
-    """取消本群一个正在运行的后台任务（job_id 是任务编号，可以先用 jobs 查）。群友要求停掉、取消时用。
-    取消后不会再自动回报，这次回复里直接告诉群友已经停了。"""
-    group_id = ctx.deps.group_id
-    if group_id is None:
-        raise ToolError("只有群聊有后台任务")
+    """取消本频道一个正在运行的后台任务（job_id 是任务编号，可以先用 jobs 查）。请求停掉、取消时用。
+    取消后不会再自动回报，这次回复里直接告诉对方已经停了。"""
+    channel_id = ctx.deps.channel_id
+    if channel_id is None:
+        raise ToolError("只有频道里有后台任务")
     r = runner()
-    job = await r.cancel(job_id.strip().lower(), by=f"chat:{ctx.deps.user_id}", group_id=group_id)
+    job = await r.cancel(job_id.strip().lower(), by=f"chat:{ctx.deps.user_id}", channel_id=channel_id)
     if job is None:
-        raise ToolError(f"本群没有编号为 {job_id} 的后台任务")
+        raise ToolError(f"本频道没有编号为 {job_id} 的后台任务")
     if not job.running:
         return f"任务 {job.id} 已经结束了（{STATUS_TEXT[job.status]}），不用取消"
     done = await r.wait_finished(job.id, within=_CANCEL_WAIT_S)

@@ -38,7 +38,7 @@ def _ctx() -> RunContext[Deps]:
 
 
 def _reply(*images: str) -> BotReply:
-    return BotReply(mode="forward", sections=[Section(content="正文", images=list(images))])
+    return BotReply(mode="reply", sections=[Section(content="正文", images=list(images))])
 
 
 @pytest.fixture

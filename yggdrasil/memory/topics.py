@@ -1,9 +1,8 @@
-"""Topic segmentation (task ``memory_topic``).
+"""Per-channel topic segmentation (task ``memory_topic``).
 
-New messages after the watermark are given to the model together with the open
-topics; it answers with ops (continue an open topic / start a new one). Idle topics
-are closed (small ones archived: hidden from the agent, kept for the dashboard), and
-topics marked dirty by a recall are recomputed without the recalled messages.
+Messages are segmented strictly within each channel so active conversations never cross-contaminate; each topic
+stores both ``channel_id`` and ``guild_id`` so guild-level memory (profiles, digests, cross-channel search) can
+consume and cite it.
 """
 
 import re
@@ -37,15 +36,11 @@ MAX_DIRTY_PER_RUN = 10
 LINE_MAX_CHARS = 300
 TOPIC_CONTEXT_LINES = 3
 TITLE_MAX_CHARS = 60
-# A window whose ops don't fit in the model's output limit is retried with half the messages, down to this size.
 MIN_WINDOW_MESSAGES = 25
-# "：" or ":" between the parts of a title (not the one in "12:30").
 _TITLE_SEP = re.compile(r"(\s*(?:：|:(?!\d))\s*)")
 
 
 class ContinueTopic(BaseModel):
-    """Messages that continue an open topic."""
-
     op: Literal["continue"] = "continue"
     topic_id: int
     message_ids: list[int]
@@ -55,13 +50,11 @@ class ContinueTopic(BaseModel):
 
 
 class NewTopic(BaseModel):
-    """A new topic started in this window."""
-
     op: Literal["new"] = "new"
     title: str
     summary: str
     keywords: list[str] = Field(default_factory=list)
-    participants: list[int] = Field(default_factory=list, description="发言者 QQ 号")
+    participants: list[str] = Field(default_factory=list, description="发言者用户 ID")
     message_ids: list[int]
 
 
@@ -79,8 +72,7 @@ class TopicRewrite(BaseModel):
 
 
 def clean_title(title: str) -> str:
-    """One line, each "X：" part once: title updates used to stack the old title in front ("X：X：…")."""
-    pieces = _TITLE_SEP.split(" ".join(title.split()))  # part, separator, part, …
+    pieces = _TITLE_SEP.split(" ".join(title.split()))
     out, seen = "", set()
     for i in range(0, len(pieces), 2):
         part = pieces[i]
@@ -91,7 +83,6 @@ def clean_title(title: str) -> str:
 
 
 def clean_summary(summary: str, title: str) -> str:
-    """The summary without the title repeated in front of it (the topic block showed "标题：标题：…")."""
     summary = summary.strip()
     if title:
         lead = re.compile(rf"{re.escape(title)}\s*[：:。，,]\s*")
@@ -103,8 +94,6 @@ def clean_summary(summary: str, title: str) -> str:
 def validate_ops(
     ops: Sequence[ContinueTopic | NewTopic], window_ids: Collection[int], open_topic_ids: Collection[int]
 ) -> list[ContinueTopic | NewTopic]:
-    """Drop message ids outside the window or already assigned, ops on unknown topics, untitled
-    new topics, and ops left without messages. Earlier ops win a contested message."""
     window, open_ids = set(window_ids), set(open_topic_ids)
     assigned: set[int] = set()
     out: list[ContinueTopic | NewTopic] = []
@@ -122,12 +111,11 @@ def validate_ops(
 
 
 def participants_of(
-    ids: Sequence[int], views: Mapping[int, MessageView], claimed: Sequence[int] = (), *, existing: Sequence[int] = ()
-) -> list[int]:
-    """Senders of ``ids`` (bot excluded) plus model-claimed users that actually spoke in the window."""
+    ids: Sequence[int], views: Mapping[int, MessageView], claimed: Sequence[str] = (), *, existing: Sequence[str] = ()
+) -> list[str]:
     speakers = {v.user_id for v in views.values() if not v.is_self}
     out = list(existing)
-    for uid in [*(views[i].user_id for i in ids if not views[i].is_self), *claimed]:
+    for uid in [*(views[i].user_id for i in ids if not views[i].is_self), *(str(c) for c in claimed)]:
         if uid in speakers and uid not in out:
             out.append(uid)
     return out
@@ -143,7 +131,7 @@ async def _topic_messages(session: AsyncSession, topic: Topic, *, last: int | No
         .join(TopicMessage, TopicMessage.message_id == Message.id)
         .where(
             TopicMessage.topic_id == topic.id,
-            Message.group_id == topic.group_id,
+            Message.channel_id == topic.channel_id,
             Message.recalled.is_(False),
             Message.sent_at.between(topic.start_at, topic.end_at),
         )
@@ -161,7 +149,11 @@ async def _link(session: AsyncSession, topic_id: int, ids: Sequence[int]) -> Non
 
 
 async def _apply(
-    session: AsyncSession, group_id: int, ops: Sequence[ContinueTopic | NewTopic], views: Mapping[int, MessageView]
+    session: AsyncSession,
+    channel_id: str,
+    guild_id: str,
+    ops: Sequence[ContinueTopic | NewTopic],
+    views: Mapping[int, MessageView],
 ) -> list[Topic]:
     changed: list[Topic] = []
     for op in ops:
@@ -171,7 +163,8 @@ async def _apply(
         if isinstance(op, NewTopic):
             title = clean_title(op.title)
             topic = Topic(
-                group_id=group_id,
+                channel_id=channel_id,
+                guild_id=guild_id,
                 title=title,
                 summary=clean_summary(op.summary, title),
                 keywords=[k.strip() for k in op.keywords if k.strip()][:10],
@@ -188,7 +181,7 @@ async def _apply(
             await _link(session, topic.id, op.message_ids)
         else:
             topic = await session.get(Topic, op.topic_id)
-            if topic is None or topic.group_id != group_id:
+            if topic is None or topic.channel_id != channel_id:
                 continue
             await _link(session, topic.id, op.message_ids)
             topic.start_at, topic.end_at = min(topic.start_at, start), max(topic.end_at, end)
@@ -211,34 +204,35 @@ async def _apply(
     return changed
 
 
-async def _segment_window(group_id: int, force: bool, limit: int) -> tuple[int, int, int] | None:
-    """Process up to ``limit`` messages after the watermark. Returns (messages, new, continued) or None if not due."""
+async def _segment_window(channel_id: str, guild_id: str, force: bool, limit: int) -> tuple[int, int, int] | None:
     snap = snapshot()
-    mem = snap.settings(group_id).memory
+    settings = snap.settings(channel_id=channel_id, guild_id=guild_id)
+    mem = settings.memory
     async with get_session() as session:
-        st = await pipeline_state(session, PIPELINE, group_id)
+        st = await pipeline_state(session, PIPELINE, channel_id)
         rows = await session.execute(
             select(*VIEW_COLUMNS)
-            .where(Message.group_id == group_id, Message.recalled.is_(False), Message.id > st.last_msg_id)
+            .where(Message.channel_id == channel_id, Message.recalled.is_(False), Message.id > st.last_msg_id)
             .order_by(Message.id)
             .limit(limit)
         )
         loaded = [MessageView(*r) for r in rows]
         window = [v for v in loaded if v.text.strip()]
-        # A full window is due even with few text messages (e.g. one cut down after a truncated answer).
         if not loaded or (len(window) < mem.topic_min_new_messages and len(loaded) < limit and not force):
             return None
         open_rows = (
             await session.scalars(
                 select(Topic)
-                .where(Topic.group_id == group_id, Topic.status == "open")
+                .where(Topic.channel_id == channel_id, Topic.status == "open")
                 .order_by(Topic.end_at.desc())
                 .limit(MAX_OPEN_TOPICS)
             )
         ).all()
         tails = {t.id: await _topic_messages(session, t, last=TOPIC_CONTEXT_LINES) for t in open_rows}
-    bot_name = snap.settings(group_id).persona.name
-    people = await people_for(group_id, [*window, *(v for tail in tails.values() for v in tail)], bot_name=bot_name)
+    if loaded and not guild_id:
+        guild_id = loaded[0].guild_id
+    bot_name = settings.persona.name
+    people = await people_for(guild_id, [*window, *(v for tail in tails.values() for v in tail)], bot_name=bot_name)
     open_topics = [
         {
             "id": t.id,
@@ -262,23 +256,25 @@ async def _segment_window(group_id: int, force: bool, limit: int) -> tuple[int, 
         result = await llm.run_structured(TASK, TopicOps, prompt)
         ops = validate_ops(result.ops, views.keys(), [t["id"] for t in open_topics])
     async with get_session() as session:
-        changed = await _apply(session, group_id, ops, views)
+        changed = await _apply(session, channel_id, guild_id, ops, views)
         await delete_vectors(session, "topic", [t.id for t in changed])
-        st = await pipeline_state(session, PIPELINE, group_id)
+        st = await pipeline_state(session, PIPELINE, channel_id)
         st.last_msg_id = loaded[-1].id
-    await try_embed("topic", [(t.id, group_id, topic_text(t.title, t.summary, t.keywords)) for t in changed])
+    await try_embed(
+        "topic",
+        [(t.id, guild_id, channel_id, topic_text(t.title, t.summary, t.keywords)) for t in changed],
+    )
     new = sum(isinstance(op, NewTopic) for op in ops)
     return len(window), new, len(ops) - new
 
 
-async def _recompute_dirty(group_id: int) -> tuple[int, int]:
-    """Rewrite topics that lost messages to recalls. Returns (recomputed, deleted)."""
+async def _recompute_dirty(channel_id: str, guild_id: str) -> tuple[int, int]:
     snap = snapshot()
     recomputed = deleted = 0
     async with get_session() as session:
         dirty = (
             await session.scalars(
-                select(Topic).where(Topic.group_id == group_id, Topic.dirty.is_(True)).limit(MAX_DIRTY_PER_RUN)
+                select(Topic).where(Topic.channel_id == channel_id, Topic.dirty.is_(True)).limit(MAX_DIRTY_PER_RUN)
             )
         ).all()
     for topic in dirty:
@@ -286,8 +282,8 @@ async def _recompute_dirty(group_id: int) -> tuple[int, int]:
             remaining = await _topic_messages(session, topic)
         rewrite: TopicRewrite | None = None
         if remaining:
-            bot_name = snap.settings(group_id).persona.name
-            people = await people_for(group_id, remaining, bot_name=bot_name)
+            bot_name = snap.settings(channel_id=channel_id, guild_id=guild_id).persona.name
+            people = await people_for(guild_id, remaining, bot_name=bot_name)
             prompt = render(
                 TASK,
                 mode="recompute",
@@ -332,48 +328,47 @@ async def _recompute_dirty(group_id: int) -> tuple[int, int]:
             )
             text = topic_text(title, summary, keywords)
         recomputed += 1
-        await try_embed("topic", [(topic.id, group_id, text)])
+        await try_embed("topic", [(topic.id, guild_id, channel_id, text)])
     return recomputed, deleted
 
 
-async def consolidate_group(group_id: int, *, now: datetime | None = None) -> dict[str, int]:
-    """One consolidation pass for a group (see module docstring). Only runs when due:
-    enough new messages, idle open topics, or dirty topics."""
+async def consolidate_channel(channel_id: str, *, now: datetime | None = None) -> dict[str, int]:
     now = now or datetime.now(UTC)
-    mem = snapshot().settings(group_id).memory
+    snap = snapshot()
+    guild_id = snap.guild_of(channel_id) or ""
+    mem = snap.settings(channel_id=channel_id, guild_id=guild_id).memory
     idle_before = now - timedelta(minutes=mem.topic_close_after_minutes)
     async with get_session() as session:
-        st = await pipeline_state(session, PIPELINE, group_id)
+        st = await pipeline_state(session, PIPELINE, channel_id)
         pending = await session.scalar(
             select(func.count()).select_from(
                 select(Message.id)
-                .where(Message.group_id == group_id, Message.recalled.is_(False), Message.id > st.last_msg_id)
+                .where(Message.channel_id == channel_id, Message.recalled.is_(False), Message.id > st.last_msg_id)
                 .limit(mem.topic_min_new_messages)
                 .subquery()
             )
         )
         idle = await session.scalar(
-            select(exists().where(Topic.group_id == group_id, Topic.status == "open", Topic.end_at < idle_before))
+            select(exists().where(Topic.channel_id == channel_id, Topic.status == "open", Topic.end_at < idle_before))
         )
-        dirty = await session.scalar(select(exists().where(Topic.group_id == group_id, Topic.dirty.is_(True))))
+        dirty = await session.scalar(select(exists().where(Topic.channel_id == channel_id, Topic.dirty.is_(True))))
     stats = {"messages": 0, "new": 0, "continued": 0, "recomputed": 0, "deleted": 0, "closed": 0, "archived": 0}
     if not (pending or 0) >= mem.topic_min_new_messages and not idle and not dirty:
         return stats
     if not llm.available(TASK):
-        LOGGER.info("group {}: task {} not configured; only closing idle topics", group_id, TASK)
+        LOGGER.info("channel {}: task {} not configured; only closing idle topics", channel_id, TASK)
     else:
         force = bool(idle and pending)
         limit = mem.topic_window_messages
         windows = 0
         while windows < MAX_WINDOWS_PER_RUN:
             try:
-                done = await _segment_window(group_id, force, limit)
+                done = await _segment_window(channel_id, guild_id, force, limit)
             except IncompleteToolCall:
-                # Too many messages for the output limit: an unhandled failure would retry the same window forever.
                 if limit <= MIN_WINDOW_MESSAGES:
                     raise
                 limit = max(MIN_WINDOW_MESSAGES, limit // 2)
-                LOGGER.warning("group {}: topic ops hit the output limit; retrying with {} messages", group_id, limit)
+                LOGGER.warning("channel {}: topic ops hit output limit; retrying with {} messages", channel_id, limit)
                 continue
             if done is None:
                 break
@@ -383,8 +378,8 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
             stats["new"] += done[1]
             stats["continued"] += done[2]
         if dirty:
-            stats["recomputed"], stats["deleted"] = await _recompute_dirty(group_id)
-    idle_open = (Topic.group_id == group_id, Topic.status == "open", Topic.end_at < idle_before)
+            stats["recomputed"], stats["deleted"] = await _recompute_dirty(channel_id, guild_id)
+    idle_open = (Topic.channel_id == channel_id, Topic.status == "open", Topic.end_at < idle_before)
     async with get_session() as session:
         archived = await session.execute(
             update(Topic).where(*idle_open, archivable(mem)).values(status="archived", closed_at=func.now())
@@ -396,8 +391,6 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
 
 
 def archivable(mem: MemorySettings) -> ColumnElement[bool]:
-    """Not worth searching: below both the message and the participant threshold, or scored by curation
-    (``memory.curation``) below the weight threshold."""
     return or_(
         and_(
             Topic.msg_count < mem.topic_archive_below_messages,
@@ -407,13 +400,11 @@ def archivable(mem: MemorySettings) -> ColumnElement[bool]:
     )
 
 
-async def archive_closed(session: AsyncSession, group_id: int) -> int:
-    """Apply the group's current thresholds to its closed topics (after the thresholds change).
-    Also re-archives topics an admin restored. Returns how many were archived."""
-    mem = snapshot().settings(group_id).memory
+async def archive_closed(session: AsyncSession, guild_id: str) -> int:
+    mem = snapshot().settings(guild_id=guild_id).memory
     result = await session.execute(
         update(Topic)
-        .where(Topic.group_id == group_id, Topic.status == "closed", archivable(mem))
+        .where(Topic.guild_id == guild_id, Topic.status == "closed", archivable(mem))
         .values(status="archived")
     )
     return result.rowcount or 0  # type: ignore[attr-defined]

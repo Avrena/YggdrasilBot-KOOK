@@ -1,10 +1,11 @@
 from yggdrasil.db.models.chat import Message, Sticker, StickerBlob, StickerDrop, StickerUsage, UserAlias
 from yggdrasil.db.models.config import (
     Admin,
+    Channel,
     CommandTrigger,
     ConfigAudit,
     EmbedSpace,
-    Group,
+    Guild,
     PipelineState,
     Prompt,
     PromptVersion,
@@ -38,13 +39,14 @@ from yggdrasil.db.models.ops import (
 __all__ = [
     "Admin",
     "BotEvent",
+    "Channel",
     "CommandTrigger",
     "ConfigAudit",
     "DailyDigest",
     "EmbedSpace",
     "GlossaryCandidate",
     "GlossaryTerm",
-    "Group",
+    "Guild",
     "Invocation",
     "InvocationSession",
     "MemoryVector",

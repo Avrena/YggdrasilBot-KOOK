@@ -1,29 +1,40 @@
-"""Sending messages: text and images (each recorded as the bot's own message), reactions, and the notice when QQ
-drops a message. Merged forwards are sent by ``delivery.forward``."""
+"""Sending KOOK messages (adaptive KMarkdown / CardMessage, images, files, reactions) and recording self messages."""
 
-import base64
+import asyncio
+import json
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from yggdrasil.agent.media import media_type
+from yggdrasil.agent.schema import BotReply
 from yggdrasil.core.log import LOGGER
+from yggdrasil.delivery.render import UploadedPicture, render_reply
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
-from yggdrasil.qq import segments as seg
-from yggdrasil.qq.client import QQ
-from yggdrasil.qq.model import Dropped, QQError, Unconfirmed
-from yggdrasil.qq.segments import Segment
+from yggdrasil.kook import segments as seg
+from yggdrasil.kook.client import Kook
+from yggdrasil.kook.segments import Segment
+from yggdrasil.settings import InteractionSettings
 from yggdrasil.transcript.notes import Blob, blob_id
 from yggdrasil.transcript.store import store_blobs
 
+type Picture = tuple[bytes, str]  # (image bytes, caption)
 
-def record_self(group_id: int, self_id: int, nickname: str, message_id: int, segments: list[Segment]) -> None:
-    """Log a message the bot sent as its own (stored-schema ``segments``), so the history (and a later reply to it)
-    can read it."""
+
+def record_self(
+    channel_id: str,
+    guild_id: str,
+    self_id: str,
+    nickname: str,
+    message_id: str,
+    segments: list[Segment],
+) -> None:
+    """Log a message the bot sent so history and continuation sessions can read it back."""
     WRITER.submit(
         IncomingMessage(
-            group_id=group_id,
+            channel_id=channel_id,
+            guild_id=guild_id,
             user_id=self_id,
-            qq_message_id=message_id,
-            message_seq=None,
+            kook_message_id=message_id,
             sent_at=datetime.now(UTC),
             sender_name=nickname,
             segments=segments,
@@ -32,155 +43,178 @@ def record_self(group_id: int, self_id: int, nickname: str, message_id: int, seg
     )
 
 
-async def react(qq: QQ, group_id: int | None, message_id: int, emoji: str) -> None:
-    """Put the QQ face ``emoji`` on a group message; nothing in private chats (QQ has no reactions there) or without
-    an emoji. Failures are logged, never raised."""
-    if group_id is None or not emoji:
+async def react(kook: Kook, channel_id: str | None, message_id: str, emoji: str) -> None:
+    """Add an emoji reaction to a channel or direct message; failures are logged, never raised."""
+    if not emoji or not message_id:
         return
     try:
-        await qq.react(group_id=group_id, message_id=message_id, emoji=emoji)
+        await kook.react(channel_id=channel_id, msg_id=message_id, emoji=emoji)
     except Exception as e:
-        LOGGER.warning("reaction {} on {} failed: {}", emoji, message_id, e)
+        LOGGER.warning("KOOK reaction {} on {} failed: {}", emoji, message_id, e)
 
 
-class MessageDropped(Exception):
-    """QQ took the send but never posted it (``qq.model.Dropped``); a short notice went out instead."""
+async def send_kmarkdown(
+    kook: Kook,
+    *,
+    channel_id: str | None,
+    guild_id: str | None,
+    user_id: str,
+    reply_to: str | None,
+    content: str,
+    self_id: str,
+    nickname: str,
+    chat_code: str | None = None,
+) -> str:
+    msg_id = await kook.send_kmarkdown(
+        channel_id=channel_id, user_id=user_id, content=content, quote=reply_to, chat_code=chat_code
+    )
+    if channel_id is not None:
+        segs = ([seg.reply(reply_to)] if reply_to else []) + [seg.kmarkdown(content)]
+        record_self(channel_id, guild_id or "", self_id, nickname, msg_id, segs)
+    return msg_id
 
 
-# On 2026-11-01 both a forward and its plain-text copy describing a proxy client were dropped within a second: QQ's
-# content filter, as far as we can tell, so sending the same content again in another form doesn't help.
-DROPPED_NOTICE = "这条回复没能发出来：QQ 收下了但没有发到群里，可能是内容触发了 QQ 的拦截。"
-
-
-async def notify_dropped(qq: QQ, group_id: int, self_id: int, nickname: str) -> None:
-    """Say in the group that the answer didn't get through (the notice carries none of the dropped content)."""
-    segments = [seg.text(DROPPED_NOTICE)]
+async def _upload_picture(kook: Kook, data: bytes, caption: str, index: int) -> UploadedPicture:
+    mime = media_type(data)
+    ext = mime.removeprefix("image/").replace("jpeg", "jpg")
+    sha = blob_id(data)
+    url = await kook.upload_asset(data, f"image-{index}.{ext}")
     try:
-        message_id = await qq.send(group_id=group_id, user_id=0, segments=segments)
-    except QQError as e:
-        LOGGER.warning("the dropped-reply notice to {} didn't go out either: {}", group_id, e)
-        return
-    record_self(group_id, self_id, nickname, message_id, segments)
-
-
-async def send_text(
-    qq: QQ, *, group_id: int | None, user_id: int, reply_to: int | None, text: str, self_id: int, nickname: str
-) -> int:
-    """Raises :class:`MessageDropped` (after posting a notice) when QQ swallows the group message."""
-    segments = ([seg.reply(reply_to)] if reply_to else []) + [seg.text(text)]
-    try:
-        message_id = await qq.send(group_id=group_id, user_id=user_id, segments=segments)
-    except Dropped as e:
-        if group_id is None:
-            raise
-        LOGGER.warning("text to {} was dropped by QQ: {}", group_id, e)
-        await notify_dropped(qq, group_id, self_id, nickname)
-        raise MessageDropped(str(e)) from e
-    if group_id is not None:
-        record_self(group_id, self_id, nickname, message_id, segments)
-    return message_id
-
-
-# Uploading a picture can take QQ well over the adapter's 30 s api_timeout.
-SEND_IMAGE_TIMEOUT_S = 120.0
+        await store_blobs({sha: Blob(data, mime)})
+    except Exception as e:
+        LOGGER.warning("storing sent picture blob failed: {}", e)
+    return UploadedPicture(url=url, caption=caption, blob=sha)
 
 
 async def send_image(
-    qq: QQ,
+    kook: Kook,
     *,
-    group_id: int | None,
-    user_id: int,
-    reply_to: int | None,
+    channel_id: str | None,
+    guild_id: str | None,
+    user_id: str,
+    reply_to: str | None,
     images: list[bytes],
-    text: str,
-    self_id: int,
+    text: str = "",
+    self_id: str,
     nickname: str,
     sticker: bool = False,
-) -> int | None:
-    """Images (with an optional line of text) as one plain message, replying to the trigger; ``sticker`` sends them
-    as stickers.
-
-    None: QQ didn't confirm (``Unconfirmed``, e.g. no answer within ``SEND_IMAGE_TIMEOUT_S``). The message almost
-    always went out anyway (it did when the first drawing hit the default timeout), so callers must not send it again.
-    """
-    segments = [seg.reply(reply_to)] if reply_to else []
-    if text:
-        segments.append(seg.text(text))
-    segments += [seg.image("base64://" + base64.b64encode(png).decode(), sticker=sticker) for png in images]
-    try:
-        message_id = await qq.send(
-            group_id=group_id, user_id=user_id, segments=segments, reply_timeout=SEND_IMAGE_TIMEOUT_S
-        )
-    except Unconfirmed as e:
-        LOGGER.warning("sending images to {} was not confirmed: {}", group_id or user_id, e)
-        return None
-    if group_id is None:
-        return message_id
-    # Record the message as QQ stored it (image segments with ref and url, not our base64), so a later reply to it
-    # can load the picture again (e.g. "make it bluer").
-    try:
-        stored = (await qq.message(group_id=group_id, user_id=user_id, message_id=message_id)).segments
-    except Exception as e:
-        LOGGER.warning("fetching the sent images back failed: {}", e)
-        stored = [_unseen_image() if s["type"] == "image" else s for s in segments]
-    record_self(group_id, self_id, nickname, message_id, await _keep_pictures(stored, images))
-    return message_id
-
-
-async def send_plain(
-    qq: QQ,
-    *,
-    group_id: int | None,
-    user_id: int,
-    reply_to: int | None,
-    text: str,
-    images: list[bytes],
-    self_id: int,
-    nickname: str,
-) -> int | None:
-    """A short answer (``BotReply`` mode=plain) as one ordinary message: its text, then its pictures. Like
-    :func:`send_text`, raises :class:`MessageDropped` when QQ swallows it in a group; like :func:`send_image`, None
-    when QQ didn't confirm a message with pictures."""
-    if not images:
-        return await send_text(
-            qq, group_id=group_id, user_id=user_id, reply_to=reply_to, text=text, self_id=self_id, nickname=nickname
-        )
-    try:
-        return await send_image(
-            qq,
-            group_id=group_id,
+    chat_code: str | None = None,
+) -> str | None:
+    """Send optional KMarkdown text followed by one or more images (uploaded via ``/asset/create``)."""
+    first_id: str | None = None
+    if text.strip():
+        first_id = await send_kmarkdown(
+            kook,
+            channel_id=channel_id,
+            guild_id=guild_id,
             user_id=user_id,
             reply_to=reply_to,
-            images=images,
-            text=text,
+            content=text,
             self_id=self_id,
             nickname=nickname,
+            chat_code=chat_code,
         )
-    except Dropped as e:
-        if group_id is None:
-            raise
-        LOGGER.warning("plain answer to {} was dropped by QQ: {}", group_id, e)
-        await notify_dropped(qq, group_id, self_id, nickname)
-        raise MessageDropped(str(e)) from e
+    for idx, data in enumerate(images, 1):
+        uploaded = await _upload_picture(kook, data, "", idx)
+        quote = reply_to if first_id is None else None
+        mid = await kook.send_image_url(
+            channel_id=channel_id, user_id=user_id, url=uploaded.url, quote=quote, chat_code=chat_code
+        )
+        if first_id is None:
+            first_id = mid
+        if channel_id is not None:
+            segs = ([seg.reply(quote)] if quote else []) + [
+                seg.image(uploaded.url, sticker=sticker, blob=uploaded.blob)
+            ]
+            record_self(channel_id, guild_id or "", self_id, nickname, mid, segs)
+    return first_id
 
 
-def _unseen_image() -> Segment:
-    """A picture we sent but couldn't fetch back from QQ: no ref or url, only the kept copy (``_keep_pictures``)."""
-    return {"type": "image", "data": {"ref": "", "url": "", "summary": "[图片]", "sticker": False, "sha1": ""}}
+async def send_reply(
+    kook: Kook,
+    *,
+    channel_id: str | None,
+    guild_id: str | None,
+    user_id: str,
+    reply_to: str | None,
+    reply: BotReply,
+    meta_text: str | None,
+    cfg: InteractionSettings,
+    self_id: str,
+    nickname: str,
+    images: Mapping[str, Picture] | None = None,
+    attached: Sequence[Picture] = (),
+    channel_map: Mapping[str, str] | None = None,
+    force_card: bool = False,
+    theme: str = "primary",
+    chat_code: str | None = None,
+) -> str | None:
+    """Adaptively render and send ``reply`` as KMarkdown or KOOK CardMessage(s); returns the first sent msg_id."""
+    images = images or {}
+    # Upload referenced & attached pictures concurrently to KOOK CDN.
+    keys = [k for s in reply.sections for k in s.images if k in images]
+    unique_keys = list(dict.fromkeys(keys))
+    upload_coros = [_upload_picture(kook, images[k][0], images[k][1], i + 1) for i, k in enumerate(unique_keys)]
+    offset = len(unique_keys)
+    upload_coros += [_upload_picture(kook, p[0], p[1], offset + i + 1) for i, p in enumerate(attached)]
+    uploaded_all = await asyncio.gather(*upload_coros) if upload_coros else []
+    uploaded_by_key = dict(zip(unique_keys, uploaded_all[:offset], strict=True))
+    uploaded_attached = uploaded_all[offset:]
 
+    plan = render_reply(
+        reply,
+        meta_text,
+        cfg,
+        images=uploaded_by_key,
+        attached=uploaded_attached,
+        channel_map=channel_map,
+        force_card=force_card,
+        theme=theme,
+    )
 
-async def _keep_pictures(segments: list[Segment], pictures: list[bytes]) -> list[Segment]:
-    """Stamp each image segment with the sha256 of the picture we sent, stored in ``transcript_blobs``: QQ may hand
-    our own pictures back without a usable url, which left them unreadable to a later reply."""
-    shown = [s for s in segments if s.get("type") == "image"]
-    if len(shown) != len(pictures):
-        return segments
-    blobs = {blob_id(p): Blob(p, media_type(p)) for p in pictures}
-    try:
-        await store_blobs(blobs)
-    except Exception as e:
-        LOGGER.warning("keeping sent pictures failed: {}", e)
-        return segments
-    for s, picture in zip(shown, pictures, strict=True):
-        s["data"] = {**(s.get("data") or {}), "blob": blob_id(picture)}
-    return segments
+    if plan.kind == "kmarkdown":
+        first_id: str | None = None
+        if plan.kmarkdown.strip():
+            first_id = await send_kmarkdown(
+                kook,
+                channel_id=channel_id,
+                guild_id=guild_id,
+                user_id=user_id,
+                reply_to=reply_to,
+                content=plan.kmarkdown,
+                self_id=self_id,
+                nickname=nickname,
+                chat_code=chat_code,
+            )
+        for pic in plan.pictures:
+            quote = reply_to if first_id is None else None
+            mid = await kook.send_image_url(
+                channel_id=channel_id, user_id=user_id, url=pic.url, quote=quote, chat_code=chat_code
+            )
+            if first_id is None:
+                first_id = mid
+            if channel_id is not None:
+                segs = ([seg.reply(quote)] if quote else []) + [seg.image(pic.url, blob=pic.blob)]
+                record_self(channel_id, guild_id or "", self_id, nickname, mid, segs)
+        return first_id
+
+    # CardMessage delivery (one or more batches).
+    first_card_id: str | None = None
+    for idx, batch in enumerate(plan.card_batches):
+        quote = reply_to if idx == 0 else None
+        card_json = json.dumps(batch, ensure_ascii=False)
+        mid = await kook.send_card(
+            channel_id=channel_id, user_id=user_id, card_json=card_json, quote=quote, chat_code=chat_code
+        )
+        if first_card_id is None:
+            first_card_id = mid
+        if channel_id is not None:
+            modules = [m for card in batch for m in card.get("modules", [])]
+            segs: list[Segment] = ([seg.reply(quote)] if quote else []) + [
+                seg.card(modules, plan.plain_text if idx == 0 else "")
+            ]
+            if idx == 0:
+                for pic in plan.pictures:
+                    segs.append(seg.image(pic.url, name=pic.caption, blob=pic.blob))
+            record_self(channel_id, guild_id or "", self_id, nickname, mid, segs)
+    return first_card_id

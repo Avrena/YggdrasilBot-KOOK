@@ -19,17 +19,17 @@ import { listProvidersOptions } from "@/client/@tanstack/react-query.gen";
 import type {
   BotReply,
   BridgeCall,
+  ChatContextDisplay,
+  ChatMessage,
   Entry,
   HitsDisplay,
   OpsReply,
   PageDisplay,
-  QqContextDisplay,
-  QqMessage,
   ToolCallPart,
   TranscriptOut,
 } from "@/client/types.gen";
 import { Disclosure, Empty, ExternalLink, Hint, Meta } from "@/components/common";
-import { type Names, QQForwardCard, QQMessageList, QQMessageView, ReplyView, type Segment } from "@/components/qq";
+import { KookMessageList, KookMessageView, type Names, ReplyView } from "@/components/kook";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
@@ -90,9 +90,9 @@ type Ctx = {
   times: number[];
   live: boolean;
   names: Names;
-  messages: Record<string, QqMessage>;
-  lookup: (qqMessageId: number) => QqMessage | undefined;
-  bot?: { user_id: number; name: string } | null;
+  messages: Record<string, ChatMessage>;
+  lookup: (kookMessageId: string) => ChatMessage | undefined;
+  bot?: { user_id: string; name: string } | null;
 };
 
 const TranscriptContext = createContext<Ctx | null>(null);
@@ -278,22 +278,21 @@ function SubHeading({ children, actions }: { children: ReactNode; actions?: Reac
   );
 }
 
-/** The user turn of an invocation as the group saw it: recent chat, what the quoted message replies to, the quoted
- * message and the trigger. */
-function QQContext({ entry, display }: { entry: Entry; display: QqContextDisplay }) {
+/** The user turn of an invocation as the channel saw it: recent chat, quote chain, quoted message and trigger. */
+function ChatContext({ entry, display }: { entry: Entry; display: ChatContextDisplay }) {
   const { messages, names, lookup } = useTranscript();
   const [all, setAll] = useState(false);
   const chain = display.chain ?? [];
   const own = new Set([display.trigger?.id, display.quoted?.id, ...chain.map((m) => m.id)].filter((id) => id != null));
   const recent = (display.recent ?? [])
     .map((id) => messages[String(id)])
-    .filter((m): m is QqMessage => !!m && !(m.id != null && own.has(m.id)));
+    .filter((m): m is ChatMessage => !!m && !(m.id != null && own.has(m.id)));
   const hidden = all ? 0 : Math.max(0, recent.length - RECENT_SHOWN);
   return (
-    <section aria-label="群聊上下文" className="grid gap-3 rounded-xl border bg-muted/30 p-3">
+    <section aria-label="频道聊天上下文" className="grid gap-3 rounded-xl border bg-muted/30 p-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <MessagesSquareIcon className="size-3.5" aria-hidden />
-        <span className="font-medium text-foreground">群聊上下文</span>
+        <span className="font-medium text-foreground">频道聊天上下文</span>
         {!!display.blocks?.length && <span className="truncate">提示词包含：{display.blocks.join("、")}</span>}
         <span className="ml-auto">
           <At at={entry.at} />
@@ -310,27 +309,27 @@ function QQContext({ entry, display }: { entry: Entry; display: QqContextDisplay
               )
             }
           >
-            最近群聊（{recent.length}）
+            最近聊天（{recent.length}）
           </SubHeading>
-          <QQMessageList messages={recent.slice(hidden)} names={names} lookup={lookup} />
+          <KookMessageList messages={recent.slice(hidden)} names={names} lookup={lookup} />
         </div>
       )}
       {chain.length > 0 && (
         <div className="grid gap-2">
           <SubHeading>引用的消息回复的</SubHeading>
-          <QQMessageList messages={chain} names={names} lookup={lookup} />
+          <KookMessageList messages={chain} names={names} lookup={lookup} />
         </div>
       )}
       {display.quoted && (
         <div className="grid gap-2">
           <SubHeading>引用的消息</SubHeading>
-          <QQMessageView message={display.quoted} names={names} lookup={lookup} />
+          <KookMessageView message={display.quoted} names={names} lookup={lookup} />
         </div>
       )}
       {display.trigger && (
         <div className="grid gap-2">
           <SubHeading>触发消息</SubHeading>
-          <QQMessageView message={display.trigger} names={names} lookup={lookup} highlight />
+          <KookMessageView message={display.trigger} names={names} lookup={lookup} highlight />
         </div>
       )}
       <Disclosure label="查看原始提示词">
@@ -342,7 +341,7 @@ function QQContext({ entry, display }: { entry: Entry; display: QqContextDisplay
 
 function UserEntry({ entry, source }: { entry: Entry; source: string }) {
   const parts = entry.parts ?? [];
-  if (entry.display?.kind === "qq_context") return <QQContext entry={entry} display={entry.display} />;
+  if (entry.display?.kind === "chat_context") return <ChatContext entry={entry} display={entry.display} />;
   const { text, chars, missing } = joinText(parts);
   const images = imagesOf(parts);
   return (
@@ -466,28 +465,16 @@ function ToolResult({ entry, terminal }: { entry: Entry; terminal: boolean }) {
   const d = entry.display;
   const failed = entry.outcome === "error" || entry.outcome === "retry";
   let rich: ReactNode = null;
-  if (d?.kind === "qq_messages") {
-    const list = (d.message_ids ?? []).map((id) => messages[String(id)]).filter((m): m is QqMessage => !!m);
+  if (d?.kind === "chat_messages") {
+    const list = (d.message_ids ?? []).map((id) => messages[String(id)]).filter((m): m is ChatMessage => !!m);
     rich = list.length ? (
       <ScrollArea className="rounded-lg border" viewportClassName="max-h-[32rem]">
         <div className="p-2">
-          <QQMessageList messages={list} names={names} lookup={lookup} />
+          <KookMessageList messages={list} names={names} lookup={lookup} />
         </div>
       </ScrollArea>
     ) : (
       <p className="text-xs text-muted-foreground">消息没有保存</p>
-    );
-  } else if (d?.kind === "qq_forward") {
-    rich = (
-      <QQForwardCard
-        names={names}
-        nodes={(d.nodes ?? []).map((n) => ({
-          userId: n.user_id ?? 0,
-          name: n.sender_name ?? "",
-          sentAt: n.sent_at,
-          segments: (n.segments ?? []) as Segment[],
-        }))}
-      />
     );
   } else if (d?.kind === "hits") {
     rich = <Hits display={d} />;
@@ -523,7 +510,7 @@ function toolIcon(entry: Entry | undefined, terminal: boolean): ReactNode {
   const kind = entry?.display?.kind;
   if (kind === "hits") return <SearchIcon />;
   if (kind === "page") return <GlobeIcon />;
-  if (kind === "qq_messages" || kind === "qq_forward") return <MessagesSquareIcon />;
+  if (kind === "chat_messages") return <MessagesSquareIcon />;
   if (kind === "images" || (entry && imagesOf(entry.parts ?? []).length)) return <ImageIcon />;
   return <WrenchIcon />;
 }
@@ -772,13 +759,13 @@ function EventEntry({ entry }: { entry: Entry }) {
 export function Transcript({ transcript: t, startedAt }: { transcript: TranscriptOut; startedAt: string }) {
   const ctx = useMemo<Ctx>(() => {
     const messages = t.messages ?? {};
-    const byQQ = new Map<number, QqMessage>();
-    const add = (m: QqMessage | null | undefined) => {
-      if (m?.qq_message_id != null) byQQ.set(m.qq_message_id, m);
+    const byKook = new Map<string, ChatMessage>();
+    const add = (m: ChatMessage | null | undefined) => {
+      if (m?.kook_message_id) byKook.set(m.kook_message_id, m);
     };
     Object.values(messages).forEach(add);
     for (const e of t.entries) {
-      if (e.display?.kind === "qq_context") {
+      if (e.display?.kind === "chat_context") {
         add(e.display.quoted);
         add(e.display.trigger);
         e.display.chain?.forEach(add);
@@ -790,7 +777,7 @@ export function Transcript({ transcript: t, startedAt }: { transcript: Transcrip
       live: !!t.live,
       names: t.names ?? {},
       messages,
-      lookup: (id) => byQQ.get(id),
+      lookup: (id) => byKook.get(id),
       bot: t.bot,
     };
   }, [t, startedAt]);

@@ -12,7 +12,7 @@ import {
   Empty,
   Field,
   FilterBar,
-  GroupSelect,
+  GuildSelect,
   Meta,
   OptionSelect,
   PageHeader,
@@ -37,7 +37,6 @@ const STATUS_LABELS: Record<StickerOut["status"], string> = {
   failed: "失败",
 };
 
-// Error codes the collector stores as-is; anything else is a free-text message.
 const ERROR_LABELS: Record<string, string> = {
   too_large: "文件超过 5MB，没有保存原图",
 };
@@ -49,14 +48,14 @@ const UNSAFE_LABELS: Record<string, string> = {
   personal_data: "个人隐私",
 };
 
-const hasImage = (s: StickerOut) => s.kind === "image" && !!s.mime;
+const hasImage = (s: StickerOut) => !!s.mime;
 
 export function StickersPage() {
   const [kind, setKind] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [enabled, setEnabled] = useState<string | null>(null);
   const [flagged, setFlagged] = useState<string | null>(null);
-  const [groupId, setGroupId] = useState<number | null>(null);
+  const [guildId, setGuildId] = useState<string | null>(null);
   const [order, setOrder] = useState<string | null>("seen");
   const [q, setQ] = useState("");
   const debouncedQ = useDebounced(q);
@@ -69,7 +68,7 @@ export function StickersPage() {
         status: status as StickerOut["status"] | null,
         enabled: enabled === null ? null : enabled === "true",
         flagged: flagged === null ? null : flagged === "true",
-        group_id: groupId,
+        guild_id: guildId,
         q: debouncedQ || null,
         order: order === "recent" ? "recent" : "seen",
         limit: LIMIT,
@@ -79,7 +78,6 @@ export function StickersPage() {
   );
   const toggle = useMutation(setStickerEnabledMutation());
   const setStickerEnabled = (id: number, on: boolean) => toggle.mutate({ path: { sticker_id: id }, body: { enabled: on } });
-  // Every filter change starts from the first page.
   const filter =
     <T,>(set: (v: T) => void) =>
     (v: T) => {
@@ -90,7 +88,7 @@ export function StickersPage() {
     <div>
       <PageHeader
         title="表情包"
-        description="群里出现过的表情包：自定义表情在出现时保存原图，由「表情包打标」任务写描述、打标签并做审核标记；商城表情只记录 id。下载失败的默认不显示，在状态里选「失败」查看。点卡片看大图和详细信息。"
+        description="服务器中出现过的表情包：包含 KOOK 服务器自定义表情和单发 GIF/小图表情，由「表情包打标」任务写描述、打标签并做审核标记。下载失败的默认不显示，在状态里选「失败」查看。点卡片看大图和详细信息。"
       />
       <FilterBar>
         <Input
@@ -100,16 +98,16 @@ export function StickersPage() {
           value={q}
           onChange={(e) => filter(setQ)(e.target.value)}
         />
-        <GroupSelect className="w-56" value={groupId} onChange={filter(setGroupId)} />
+        <GuildSelect className="w-56" value={guildId} onChange={filter(setGuildId)} />
         <OptionSelect
-          className="w-28"
+          className="w-32"
           aria-label="类型"
           value={kind}
           onChange={filter(setKind)}
           noneLabel="全部类型"
           options={[
-            { value: "image", label: "自定义" },
-            { value: "mface", label: "商城" },
+            { value: "image", label: "图片表情" },
+            { value: "emoji", label: "服务器表情" },
           ]}
         />
         <OptionSelect
@@ -183,6 +181,7 @@ function StickerBadges({ sticker: s }: { sticker: StickerOut }) {
   return (
     <div className="flex flex-wrap items-center gap-1">
       <Badge variant={s.status === "failed" ? "destructive" : "secondary"}>{STATUS_LABELS[s.status]}</Badge>
+      {s.kind === "emoji" && <Badge variant="outline">服务器表情</Badge>}
       {s.unsafe_category && (
         <Badge variant="destructive">审核：{UNSAFE_LABELS[s.unsafe_category] ?? s.unsafe_category}</Badge>
       )}
@@ -194,7 +193,7 @@ function StickerBadges({ sticker: s }: { sticker: StickerOut }) {
 function Placeholder({ sticker: s }: { sticker: StickerOut }) {
   return (
     <span className="px-2 text-center text-xs text-muted-foreground">
-      {s.kind === "mface" ? `商城表情「${s.summary || "—"}」` : STATUS_LABELS[s.status]}
+      {s.kind === "emoji" ? `服务器表情「${s.summary || "—"}」` : STATUS_LABELS[s.status]}
     </span>
   );
 }
@@ -209,7 +208,6 @@ function StickerCard({
   onToggle: (enabled: boolean) => void;
 }) {
   return (
-    // A div, not a <button>: the card contains a switch.
     <div
       role="button"
       tabIndex={0}
@@ -241,7 +239,7 @@ function StickerCard({
         <Meta
           items={[
             `出现 ${s.seen_count} 次`,
-            `${s.group_count} 个群`,
+            `${s.guild_count} 个服务器`,
             <time dateTime={s.last_seen}>{fmtTime(s.last_seen)}</time>,
           ]}
         />
@@ -268,8 +266,8 @@ function StickerDialog({ id, onClose, onToggle }: { id: number; onClose: () => v
         : `${(d.size_bytes / 1024).toFixed(0)} KB`;
   const facts: [string, ReactNode][] = d
     ? [
-        ["类型", d.kind === "mface" ? "商城表情" : "自定义表情"],
-        [d.kind === "mface" ? "表情包与表情 id" : "md5", <span className="font-mono break-all select-all">{d.ref}</span>],
+        ["类型", d.kind === "emoji" ? "服务器表情" : "图片表情"],
+        [d.kind === "emoji" ? "Emoji ID" : "SHA256", <span className="font-mono break-all select-all">{d.emoji_id || d.ref}</span>],
         ["格式", d.mime || "—"],
         ["大小", size],
         [
@@ -286,7 +284,7 @@ function StickerDialog({ id, onClose, onToggle }: { id: number; onClose: () => v
         ["帧数", d.frames ?? "—"],
         ["情绪", d.emotions.join("、") || "—"],
         ["出现次数", d.seen_count],
-        ["出现群数", d.group_count],
+        ["出现服务器数", d.guild_count],
         ["首次出现", fmtTime(d.first_seen)],
         ["最近出现", fmtTime(d.last_seen)],
         ["打标时间", fmtTime(d.tagged_at)],
@@ -300,89 +298,89 @@ function StickerDialog({ id, onClose, onToggle }: { id: number; onClose: () => v
       onOpenChange={(o) => !o && onClose()}
       className="sm:max-w-4xl"
       title={`表情包 #${id}`}
-      description={d?.summary || "大图、打标结果和各群出现次数"}
+      description={d?.summary || "大图、打标结果和各服务器出现次数"}
     >
       <QueryState isLoading={detail.isLoading} error={detail.error} variant="card" />
       {d && (
-          <div className="grid gap-4 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <div className="flex flex-col gap-2">
-              <div className="flex min-h-48 items-center justify-center rounded-md bg-muted/40 p-2">
-                {hasImage(d) ? (
-                  <img
-                    src={`/api/stickers/${d.id}/image`}
-                    alt={d.description || d.summary}
-                    className="max-h-[60svh] max-w-full object-contain"
-                  />
-                ) : (
-                  <Placeholder sticker={d} />
-                )}
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                {hasImage(d) ? (
-                  <Button size="sm" variant="outline" asChild>
-                    <a href={`/api/stickers/${d.id}/image`} target="_blank" rel="noreferrer noopener">
-                      打开原图 <ExternalLinkIcon data-icon="inline-end" />
-                    </a>
-                  </Button>
-                ) : (
-                  <span />
-                )}
-                <Field orientation="horizontal" label={d.enabled ? "已启用" : "已禁用"} className="w-auto">
-                  <Switch checked={d.enabled} onCheckedChange={onToggle} />
-                </Field>
-              </div>
-            </div>
-            <div className="flex flex-col gap-3">
-              <StickerBadges sticker={d} />
-              {d.description && <p>{d.description}</p>}
-              {d.usage && (
-                <p>
-                  <span className="text-muted-foreground">适合：</span>
-                  {d.usage}
-                </p>
+        <div className="grid gap-4 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="flex flex-col gap-2">
+            <div className="flex min-h-48 items-center justify-center rounded-md bg-muted/40 p-2">
+              {hasImage(d) ? (
+                <img
+                  src={`/api/stickers/${d.id}/image`}
+                  alt={d.description || d.summary}
+                  className="max-h-[60svh] max-w-full object-contain"
+                />
+              ) : (
+                <Placeholder sticker={d} />
               )}
-              {d.ocr_text && (
-                <div>
-                  <span className="text-muted-foreground">图中文字：</span>
-                  <p className="whitespace-pre-wrap">{d.ocr_text}</p>
-                </div>
-              )}
-              {d.error && <p className="break-all text-destructive">错误：{ERROR_LABELS[d.error] ?? d.error}</p>}
-              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
-                {facts.map(([label, value]) => (
-                  <div key={label} className="contents">
-                    <dt className="text-muted-foreground">{label}</dt>
-                    <dd>{value}</dd>
-                  </div>
-                ))}
-              </dl>
             </div>
-            {d.groups.length > 0 && (
-              <div className="md:col-span-2">
-                <SectionHeader level={3} title="各群出现次数" />
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>群</TableHead>
-                      <TableHead className="w-24 text-right">次数</TableHead>
-                      <TableHead className="w-48">最近</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {d.groups.map((g) => (
-                      <TableRow key={g.group_id}>
-                        <TableCell>
-                          {g.group_name || "—"} <span className="font-mono text-xs text-muted-foreground">{g.group_id}</span>
-                        </TableCell>
-                        <TableCell className="text-right">{g.count}</TableCell>
-                        <TableCell>{fmtTime(g.last_seen)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+            <div className="flex items-center justify-between gap-2">
+              {hasImage(d) ? (
+                <Button size="sm" variant="outline" asChild>
+                  <a href={`/api/stickers/${d.id}/image`} target="_blank" rel="noreferrer noopener">
+                    打开原图 <ExternalLinkIcon data-icon="inline-end" />
+                  </a>
+                </Button>
+              ) : (
+                <span />
+              )}
+              <Field orientation="horizontal" label={d.enabled ? "已启用" : "已禁用"} className="w-auto">
+                <Switch checked={d.enabled} onCheckedChange={onToggle} />
+              </Field>
+            </div>
+          </div>
+          <div className="flex flex-col gap-3">
+            <StickerBadges sticker={d} />
+            {d.description && <p>{d.description}</p>}
+            {d.usage && (
+              <p>
+                <span className="text-muted-foreground">适合：</span>
+                {d.usage}
+              </p>
+            )}
+            {d.ocr_text && (
+              <div>
+                <span className="text-muted-foreground">图中文字：</span>
+                <p className="whitespace-pre-wrap">{d.ocr_text}</p>
               </div>
             )}
+            {d.error && <p className="break-all text-destructive">错误：{ERROR_LABELS[d.error] ?? d.error}</p>}
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+              {facts.map(([label, value]) => (
+                <div key={label} className="contents">
+                  <dt className="text-muted-foreground">{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
+          {d.guilds.length > 0 && (
+            <div className="md:col-span-2">
+              <SectionHeader level={3} title="各服务器出现次数" />
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>服务器</TableHead>
+                    <TableHead className="w-24 text-right">次数</TableHead>
+                    <TableHead className="w-48">最近</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {d.guilds.map((g) => (
+                    <TableRow key={g.guild_id}>
+                      <TableCell>
+                        {g.guild_name || "—"} <span className="font-mono text-xs text-muted-foreground">{g.guild_id}</span>
+                      </TableCell>
+                      <TableCell className="text-right">{g.count}</TableCell>
+                      <TableCell>{fmtTime(g.last_seen)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </div>
       )}
     </DetailDialog>
   );

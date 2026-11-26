@@ -18,17 +18,18 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtTime } from "@/lib/format";
 
-const KIND_LABELS: Record<AdminIn["kind"], string> = { qq: "QQ（超级用户）", email: "邮箱（控制台）" };
+const KIND_LABELS: Record<AdminIn["kind"], string> = { kook: "KOOK（超级用户）", email: "邮箱（控制台）" };
 
 export function AdminsPage() {
   const admins = useQuery(listAdminsOptions());
   const [form, setForm] = useState<AdminIn>({ kind: "email", value: "", note: "" });
-  const add = useMutation({ ...addAdminMutation(),
-      onSuccess: () => {
-        toast.success("已添加");
-        setForm({ ...form, value: "", note: "" });
-      },
-    });
+  const add = useMutation({
+    ...addAdminMutation(),
+    onSuccess: () => {
+      toast.success("已添加");
+      setForm({ ...form, value: "", note: "" });
+    },
+  });
   const remove = useMutation({ ...removeAdminMutation(), onSuccess: () => toast.success("已移除") });
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -38,23 +39,22 @@ export function AdminsPage() {
     <div className="max-w-4xl">
       <PageHeader
         title="管理员"
-        description="QQ 超级用户可以私聊处理审核、查看状态；邮箱管理员可以登录这个控制台。环境变量里的管理员只能在部署配置里修改。"
+        description="KOOK 超级用户可以私聊处理审核、使用 ops 管理指令、查看状态；邮箱管理员可以登录控制台。环境变量里的管理员只能在部署配置里修改。"
       />
       <Card className="mb-6">
         <CardContent>
           <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
-            <Field label="类型" className="w-44">
+            <Field label="类型" className="w-48">
               <OptionSelect
                 value={form.kind}
                 onChange={(v) => v && setForm({ ...form, kind: v as AdminIn["kind"] })}
                 options={Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }))}
               />
             </Field>
-            <Field label={form.kind === "qq" ? "QQ 号" : "邮箱"} className="w-64">
+            <Field label={form.kind === "kook" ? "KOOK 用户 ID" : "邮箱"} className="w-64">
               <Input
                 required
                 type={form.kind === "email" ? "email" : "text"}
-                inputMode={form.kind === "qq" ? "numeric" : undefined}
                 value={form.value}
                 onChange={(e) => setForm({ ...form, value: e.target.value })}
               />
@@ -70,7 +70,7 @@ export function AdminsPage() {
         </CardContent>
       </Card>
       <QueryState isLoading={admins.isLoading} error={admins.error} />
-      {admins.data?.length === 0 && <Empty description="在上面添加 QQ 超级用户或控制台邮箱。">还没有管理员</Empty>}
+      {admins.data?.length === 0 && <Empty description="在上面添加 KOOK 超级用户或控制台邮箱。">还没有管理员</Empty>}
       {!!admins.data?.length && (
         <Table>
           <TableHeader>

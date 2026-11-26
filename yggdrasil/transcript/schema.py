@@ -1,22 +1,16 @@
-"""The normalized conversation format, shared by pydantic-ai runs and omp jobs.
-
-A transcript is a list of :class:`Entry` (oldest first). Entries carry content only in ``full`` mode; in ``metadata``
-mode (``privacy.capture_llm_content`` off) texts and arguments are replaced by their size and images keep only
-their size. ``display`` holds what a tool result *showed* to the model in a form the console can render (QQ
-messages, a forward, a page), alongside the text the model actually read.
-"""
+"""The normalized conversation format, shared by pydantic-ai runs and omp jobs."""
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-VERSION = 1
+VERSION = 2
 
 
 class TextPart(BaseModel):
     type: Literal["text"] = "text"
-    text: str | None = None  # None in metadata mode
+    text: str | None = None
     chars: int = 0
 
 
@@ -24,12 +18,12 @@ class ThinkingPart(BaseModel):
     type: Literal["thinking"] = "thinking"
     text: str | None = None
     chars: int = 0
-    redacted: bool = False  # the provider returned it encrypted
+    redacted: bool = False
 
 
 class ImagePart(BaseModel):
     type: Literal["image"] = "image"
-    blob: str | None = None  # sha256 in transcript_blobs; None in metadata mode or for URL images
+    blob: str | None = None
     url: str | None = None
     mime: str = ""
     bytes: int = 0
@@ -39,14 +33,11 @@ class ToolCallPart(BaseModel):
     type: Literal["tool_call"] = "tool_call"
     id: str
     name: str
-    args: dict[str, Any] | None = None  # None in metadata mode
+    args: dict[str, Any] | None = None
     chars: int = 0
 
 
 class OutputPart(BaseModel):
-    """The run's structured output when the model returned it as text (native or prompted output mode) instead of
-    calling ``final_result``. Not stored: the admin API sets it when it reads a transcript."""
-
     type: Literal["output"] = "output"
     value: dict[str, Any]
     chars: int = 0
@@ -61,13 +52,13 @@ class Usage(BaseModel):
     cached: int = 0
 
 
-class QQMessage(BaseModel):
-    """A QQ message as it was when the run used it. ``segments`` are ``qq.segments`` segments; the API adds ``src``
-    to image and market face data when it can serve the picture, and ``name`` to faces."""
+class ChatMessage(BaseModel):
+    """A KOOK message snapshot as seen by a run."""
 
-    id: int | None = None  # messages.id; None for forward nodes and messages that were never stored
-    qq_message_id: int | None = None
-    user_id: int
+    id: int | None = None
+    kook_message_id: str | None = None
+    channel_id: str | None = None
+    user_id: str
     sender_name: str = ""
     sent_at: datetime | None = None
     segments: list[dict[str, Any]] = []
@@ -75,34 +66,18 @@ class QQMessage(BaseModel):
     recalled: bool = False
 
 
-class QQContextDisplay(BaseModel):
-    """The user turn of an invocation: the group chat the prompt included, the quoted message and the trigger."""
-
-    kind: Literal["qq_context"] = "qq_context"
-    recent: list[int] = []  # message ids, oldest first
-    quoted: QQMessage | None = None
-    trigger: QQMessage | None = None
-    blocks: list[str] = []  # names of the prompt blocks, in order (最近群聊, 被引用的消息, 请求, ...)
-    # What the quoted message itself replies to, oldest first (up to two levels): QQ messages from the history
-    chain: list[QQMessage] = []
+class ChatContextDisplay(BaseModel):
+    kind: Literal["chat_context"] = "chat_context"
+    recent: list[int] = []
+    quoted: ChatMessage | None = None
+    trigger: ChatMessage | None = None
+    blocks: list[str] = []
+    chain: list[ChatMessage] = []
 
 
-class QQMessagesDisplay(BaseModel):
-    kind: Literal["qq_messages"] = "qq_messages"
+class ChatMessagesDisplay(BaseModel):
+    kind: Literal["chat_messages"] = "chat_messages"
     message_ids: list[int] = []
-
-
-class ForwardNode(BaseModel):
-    depth: int = 0
-    user_id: int = 0
-    sender_name: str = ""
-    sent_at: datetime | None = None
-    segments: list[dict[str, Any]] = []
-
-
-class QQForwardDisplay(BaseModel):
-    kind: Literal["qq_forward"] = "qq_forward"
-    nodes: list[ForwardNode] = []
 
 
 class PageDisplay(BaseModel):
@@ -133,14 +108,12 @@ class ShownImage(BaseModel):
 
 
 class ImagesDisplay(BaseModel):
-    """Images a tool produced or posted (render_*, sandbox show) rather than returned to the model."""
-
     kind: Literal["images"] = "images"
     images: list[ShownImage] = []
 
 
 Display = Annotated[
-    QQContextDisplay | QQMessagesDisplay | QQForwardDisplay | PageDisplay | HitsDisplay | ImagesDisplay,
+    ChatContextDisplay | ChatMessagesDisplay | PageDisplay | HitsDisplay | ImagesDisplay,
     Field(discriminator="kind"),
 ]
 
@@ -148,38 +121,29 @@ Outcome = Literal["ok", "error", "retry", "cancelled"]
 
 
 class BridgeCall(BaseModel):
-    """A bot tool (or ``media``, a fetch of an attachment's bytes) that code in a workspace called through the tool
-    bridge. Kept on the ``sh`` / ``py`` tool entry whose code made it (a job's on an event entry); like entries, it
-    carries arguments and result text only in ``full`` mode."""
-
     name: str
     at: datetime | None = None
     args: dict[str, Any] | None = None
-    chars: int = 0  # of the arguments as JSON
-    parts: list[Part] = []  # the result text the code got
+    chars: int = 0
+    parts: list[Part] = []
     outcome: Outcome = "ok"
     duration_ms: int | None = None
     display: Display | None = None
 
 
 class Entry(BaseModel):
-    """One turn. Fields beyond ``kind``/``at``/``parts`` apply to some kinds only (noted per field)."""
-
     kind: Literal["system", "user", "assistant", "tool", "event"]
     at: datetime | None = None
     parts: list[Part] = []
-    display: Display | None = None  # user (qq_context) and tool entries
-    # assistant
+    display: Display | None = None
     model: str | None = None
-    duration_ms: int | None = None  # assistant and tool entries
+    duration_ms: int | None = None
     usage: Usage | None = None
     finish: str | None = None
-    error: str | None = None  # assistant (provider error) and tool entries
-    # tool
+    error: str | None = None
     call_id: str | None = None
     name: str | None = None
     outcome: Outcome | None = None
-    bridge: list[BridgeCall] | None = None  # tool (sh / py) and event (job) entries: the code's tool bridge calls
-    # event
+    bridge: list[BridgeCall] | None = None
     text: str | None = None
     level: Literal["info", "warn", "error"] | None = None

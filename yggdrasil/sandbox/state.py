@@ -32,39 +32,36 @@ _CLAIM_MAX = 63
 _CLAIM_SUFFIX = 6
 
 
-def ws_key(group_id: int, name: str) -> str:
-    return f"{WS_KEY_PREFIX}{group_id}:{name}"
+def ws_key(channel_id: str, name: str) -> str:
+    return f"{WS_KEY_PREFIX}{channel_id}:{name}"
 
 
-def parse_ws_key(key: str) -> tuple[int, str] | None:
-    """``(group_id, name)`` of a workspace record key; ``None`` for anything else."""
-    gid, sep, name = key.removeprefix(WS_KEY_PREFIX).partition(":")
-    if not sep or not valid_name(name):
+def parse_ws_key(key: str) -> tuple[str, str] | None:
+    """``(channel_id, name)`` of a workspace record key; ``None`` for anything else."""
+    cid, sep, name = key.removeprefix(WS_KEY_PREFIX).partition(":")
+    if not sep or not cid or not valid_name(name):
         return None
-    try:
-        return int(gid), name
-    except ValueError:
-        return None
+    return cid, name
 
 
-def index_key(group_id: int) -> str:
-    """Set of the group's workspace names (members whose record expired are pruned on read)."""
-    return f"{INDEX_KEY_PREFIX}{group_id}"
+def index_key(channel_id: str) -> str:
+    """Set of the channel's workspace names (members whose record expired are pruned on read)."""
+    return f"{INDEX_KEY_PREFIX}{channel_id}"
 
 
-def lock_key(group_id: int, name: str) -> str:
+def lock_key(channel_id: str, name: str) -> str:
     """Held while attaching to a workspace and during its last release (reap, pending recreate)."""
-    return f"{LOCK_KEY_PREFIX}{group_id}:{name}"
+    return f"{LOCK_KEY_PREFIX}{channel_id}:{name}"
 
 
-def group_lock_key(group_id: int) -> str:
-    """Held while reserving a new workspace, so the per-group cap holds across invocations and replicas."""
-    return f"{GROUP_LOCK_KEY_PREFIX}{group_id}"
+def channel_lock_key(channel_id: str) -> str:
+    """Held while reserving a new workspace, so the per-channel cap holds across invocations and replicas."""
+    return f"{GROUP_LOCK_KEY_PREFIX}{channel_id}"
 
 
-def keep_key(group_id: int, name: str) -> str:
+def keep_key(channel_id: str, name: str) -> str:
     """Hash of processes the end-of-invocation reap must spare: ``kernel`` -> pid, ``job:<id>`` -> pid."""
-    return f"{KEEP_KEY_PREFIX}{group_id}:{name}"
+    return f"{KEEP_KEY_PREFIX}{channel_id}:{name}"
 
 
 def valid_name(name: str) -> bool:
@@ -90,9 +87,10 @@ def random_id(n: int) -> str:
     return "".join(secrets.choice(_ALNUM) for _ in range(n))
 
 
-def claim_name(group_id: int, name: str) -> str:
-    """``ygg-sbx-<gid>-<name>-<random>``, the name cut so the whole fits a 63-character object name."""
-    prefix = f"ygg-sbx-{group_id}-"
+def claim_name(channel_id: str, name: str) -> str:
+    """``ygg-sbx-<cid>-<name>-<random>``, the name cut so the whole fits a 63-character object name."""
+    safe_cid = re.sub(r"[^a-z0-9]", "", channel_id.lower())[:20] or "ch"
+    prefix = f"ygg-sbx-{safe_cid}-"
     room = _CLAIM_MAX - len(prefix) - 1 - _CLAIM_SUFFIX
     trimmed = name[: max(room, 0)].rstrip("-")
     middle = f"{trimmed}-" if trimmed else ""
@@ -134,7 +132,7 @@ class Link:
 
 @dataclass(frozen=True)
 class WorkspaceInfo:
-    group_id: int
+    channel_id: str
     name: str
     description: str
     claim: str  # "" while pending
@@ -199,11 +197,11 @@ class LinkRecord:
 
 @dataclass
 class Mapping:
-    """``ygg:sandbox:ws:<gid>:<name>`` as a Redis hash; ``active`` is changed only with HINCRBY. ``claim`` is ""
+    """``ygg:sandbox:ws:<cid>:<name>`` as a Redis hash; ``active`` is changed only with HINCRBY. ``claim`` is ""
     while the workspace is pending. ``max_until`` is the hard cap on the claim's lifetime: creation plus the max
     age, pushed out when a background job starts in it."""
 
-    group_id: int
+    channel_id: str
     name: str
     description: str
     claim: str
@@ -238,7 +236,7 @@ class Mapping:
         }
 
     @classmethod
-    def from_hash(cls, group_id: int, data: dict[str, str]) -> Mapping | None:
+    def from_hash(cls, channel_id: str, data: dict[str, str]) -> Mapping | None:
         """Decode a stored hash; ``None`` for an empty or unusable one (e.g. only a stray ``active`` counter)."""
         name = data.get("name", "")
         if not valid_name(name) or "claim" not in data:
@@ -246,7 +244,7 @@ class Mapping:
         try:
             links = [LinkRecord.from_json(x) for x in json.loads(data.get("links") or "[]")]
             return cls(
-                group_id=group_id,
+                channel_id=channel_id,
                 name=name,
                 description=data.get("description", ""),
                 claim=data["claim"],
@@ -265,7 +263,7 @@ class Mapping:
 
     def info(self, jobs: tuple[str, ...] = ()) -> WorkspaceInfo:
         return WorkspaceInfo(
-            group_id=self.group_id,
+            channel_id=self.channel_id,
             name=self.name,
             description=self.description,
             claim=self.claim,

@@ -5,19 +5,19 @@ import { toast } from "sonner";
 import { decideReviewMutation, listReviewsOptions } from "@/client/@tanstack/react-query.gen";
 import type { ReviewOut } from "@/client/types.gen";
 import {
+  ChannelSelect,
   ConfirmButton,
   Empty,
   FilterBar,
   FormDialog,
-  GroupSelect,
   Meta,
   OptionSelect,
   PageHeader,
   Pager,
   QueryState,
-  useGroupName,
+  useChannelName,
 } from "@/components/common";
-import { ReplyView } from "@/components/qq";
+import { ReplyView } from "@/components/kook";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,23 +30,26 @@ const LIMIT = 20;
 
 export function ReviewsPage() {
   const [status, setStatus] = useState<Status | null>("pending");
-  const [groupId, setGroupId] = useState<number | null>(null);
+  const [channelId, setChannelId] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
-  const reviews = useQuery(listReviewsOptions({ query: { status, group_id: groupId, limit: LIMIT, offset } }));
-  const decide = useMutation({ ...decideReviewMutation(), onSuccess: (r) => toast.success(`R${r.id} ${STATUS_LABELS[r.status as Status] ?? r.status}`) });
+  const reviews = useQuery(listReviewsOptions({ query: { status, channel_id: channelId, limit: LIMIT, offset } }));
+  const decide = useMutation({
+    ...decideReviewMutation(),
+    onSuccess: (r) => toast.success(`R${r.id} ${STATUS_LABELS[r.status as Status] ?? r.status}`),
+  });
   const [editing, setEditing] = useState<ReviewOut | null>(null);
   const [text, setText] = useState("");
-  const groupName = useGroupName();
+  const channelName = useChannelName();
 
   return (
     <div>
-      <PageHeader title="审核队列" description="被审核模型拦下的回复。也可以在私聊里用 admin.review 指令处理。" />
+      <PageHeader title="审核队列" description="被审核模型拦下的回复。也可以私聊机器人用 admin.review 指令处理。" />
       <FilterBar>
-        <GroupSelect
-          className="w-56"
-          value={groupId}
+        <ChannelSelect
+          className="w-64"
+          value={channelId}
           onChange={(v) => {
-            setGroupId(v);
+            setChannelId(v);
             setOffset(0);
           }}
         />
@@ -84,9 +87,9 @@ export function ReviewsPage() {
               <Meta
                 className="text-sm"
                 items={[
-                  groupName(r.group_id),
+                  channelName(r.channel_id),
                   <>
-                    QQ <span className="font-mono">{r.user_id}</span>
+                    用户 <span className="font-mono">{r.user_id}</span>
                   </>,
                   <>
                     提交于 <time dateTime={r.created_at}>{fmtTime(r.created_at)}</time>
@@ -170,7 +173,7 @@ export function ReviewsPage() {
           onOpenChange={(o) => !o && setEditing(null)}
           className="sm:max-w-2xl"
           title={`修改 R${editing.id} 后发送`}
-          description="编辑后的文本会代替原回复发送到群里。"
+          description="编辑后的 KMarkdown 文本会代替原回复并引用原消息发送到频道。"
           submitLabel="发送"
           pending={decide.isPending}
           submitDisabled={!text.trim()}

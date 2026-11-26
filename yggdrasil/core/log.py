@@ -1,8 +1,6 @@
 """Loguru setup: JSON lines on stdout with OTel trace correlation.
 
-NoneBot installs its own loguru sink on import (``nonebot.log.logger_id``); we
-replace it so every log line, including NoneBot's and stdlib loggers', goes
-through one sink.
+Routes stdlib loggers (uvicorn, sqlalchemy, httpx, taskiq, websockets) through one loguru sink.
 """
 
 import inspect

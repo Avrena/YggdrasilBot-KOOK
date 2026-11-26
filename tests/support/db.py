@@ -12,28 +12,30 @@ from sqlalchemy import delete
 from yggdrasil.db.base import EMBED_DIM, Base
 from yggdrasil.db.models import EmbedSpace, Message, Provider
 from yggdrasil.db.session import get_session
-from yggdrasil.qq.segments import text as text_seg
+from yggdrasil.kook.segments import text as text_seg
 from yggdrasil.runtime import EmbedSpaceInfo
 
 
 async def insert_message(
-    group_id: int,
+    channel_id: str,
     text: str = "",
     *,
-    user_id: int = 20001,
-    sender_name: str = "群友",
+    guild_id: str | None = None,
+    user_id: str = "20001",
+    sender_name: str = "频道成员",
     sent_at: datetime | None = None,
-    qq_message_id: int = 1,
+    kook_message_id: str | None = None,
     segments: list[dict[str, Any]] | None = None,
     recalled: bool = False,
 ) -> int:
-    """Store a chat message (by default a text message sent now); its row id."""
+    """Store a chat message (by default a text message sent now); returns its row id."""
     async with get_session() as s:
         m = Message(
             sent_at=sent_at or datetime.now(UTC),
-            group_id=group_id,
+            channel_id=channel_id,
+            guild_id=guild_id or f"guild-{channel_id}",
             user_id=user_id,
-            qq_message_id=qq_message_id,
+            kook_message_id=kook_message_id or f"msg-{uuid.uuid4().hex[:12]}",
             sender_name=sender_name,
             plain_text=text,
             segments=segments if segments is not None else [text_seg(text)] if text else [],
@@ -45,12 +47,20 @@ async def insert_message(
         return m.id
 
 
-async def purge_groups(*group_ids: int) -> None:
-    """Delete the groups' rows from every table keyed by group."""
+async def purge_channels(*channel_ids: str) -> None:
+    """Delete rows keyed by channel_id or guild_id."""
     async with get_session() as s:
         for table in reversed(Base.metadata.sorted_tables):
-            if "group_id" in table.c:
-                await s.execute(delete(table).where(table.c.group_id.in_(group_ids)))
+            if "channel_id" in table.c:
+                await s.execute(delete(table).where(table.c.channel_id.in_(channel_ids)))
+
+
+async def purge_guilds(*guild_ids: str) -> None:
+    """Delete rows keyed by guild_id."""
+    async with get_session() as s:
+        for table in reversed(Base.metadata.sorted_tables):
+            if "guild_id" in table.c:
+                await s.execute(delete(table).where(table.c.guild_id.in_(guild_ids)))
 
 
 def unit_vector(cos: float) -> list[float]:

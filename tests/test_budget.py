@@ -6,7 +6,7 @@ from pydantic_ai.usage import UsageLimits
 from yggdrasil.agent.budget import SPENT, ToolBudget
 from yggdrasil.agent.schema import BotReply
 
-ANSWER = ToolCallPart("final_result", {"mode": "forward", "title": "答", "sections": [{"content": "根据已读内容"}]})
+ANSWER = ToolCallPart("final_result", {"mode": "reply", "title": "答", "sections": [{"content": "根据已读内容"}]})
 
 
 class _Run:

@@ -58,5 +58,4 @@ async def test_spa_fallback_does_not_shadow_api_or_escape_dist(
         assert (await c.get("/assets/app.js")).text == "console.log(1)"
         assert (await c.get("/assets/missing-abc123.js")).status_code == 404
         assert (await c.get("/api/no-such-endpoint", headers={HEADER: ADMIN})).status_code == 404
-        assert (await c.get("/onebot/v11/ws")).status_code == 404
         assert "secret" not in (await c.get("/%2E%2E/secret.txt")).text

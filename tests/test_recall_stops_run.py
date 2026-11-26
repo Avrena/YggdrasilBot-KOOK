@@ -10,8 +10,8 @@ from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from pydantic_ai.usage import UsageLimits
 
-from tests.support.groups import fresh_group
-from tests.support.qq import FakeQQ, incoming
+from tests.support.groups import fresh_channel, fresh_guild
+from tests.support.kook import FakeKook, make_incoming
 from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.llm.registry import ResolvedModel
@@ -20,10 +20,10 @@ from yggdrasil.pipeline import invoke, recalls
 from yggdrasil.settings import Settings
 from yggdrasil.triggers.index import Resolved
 
-GROUP, SELF, ALICE = fresh_group(), 10001, 20001
-TRIGGER = 7
+GUILD, CHANNEL, SELF, ALICE = fresh_guild(), fresh_channel(), "10001", "20001"
+TRIGGER = "msg-trigger-7"
 CHAT = Resolved("chat", 2, "", (), "quoted_or_self", 0, False)
-ANSWER = '{"mode": "forward", "sections": [{"content": "答案"}]}'
+ANSWER = '{"mode": "reply", "sections": [{"content": "答案"}]}'
 
 
 class Run:
@@ -39,7 +39,7 @@ class Run:
         async def moderate(stage: str, *_a: Any, **_k: Any) -> Verdict:
             return Verdict(stage, "Skipped", 0.0)
 
-        async def react(_qq: Any, _group_id: int | None, _message_id: int, emoji: str) -> None:
+        async def react(_kook: Any, _channel_id: str | None, _message_id: str, emoji: str) -> None:
             self.reactions.append(emoji)
 
         async def deliver(_inv: invoke.Invocator, reply: BotReply) -> None:
@@ -62,14 +62,15 @@ class Run:
         raise AssertionError("agents stream")
 
     async def start(self, watch: recalls.Watch) -> "asyncio.Task[str]":
-        m = incoming("问个问题", group_id=GROUP, user_id=ALICE, self_id=SELF, message_id=TRIGGER, to_me=True)
+        m = make_incoming(
+            "问个问题", channel_id=CHANNEL, guild_id=GUILD, user_id=ALICE, self_id=SELF, message_id=TRIGGER, to_me=True
+        )
         settings = Settings()
-        qq = FakeQQ(self_id=SELF)
-        # No group on the run itself: its rate-limit and invocation bookkeeping stay out of the way.
-        inv = invoke.Invocator(qq, m, CHAT, "chat", "", settings, None, watch=watch)
+        kook = FakeKook(bot_id=SELF)
+        inv = invoke.Invocator(kook, m, CHAT, "chat", "", settings, None, None, watch=watch)
         model = FunctionModel(self._never, stream_function=self.stream)
         agent = Agent(model, output_type=BotReply, deps_type=Deps)
-        deps = Deps(qq, None, ALICE, settings, Handles(), "chat")
+        deps = Deps(kook, None, None, ALICE, settings, Handles(), "chat")
         resolved = ResolvedModel("chat", model, {}, UsageLimits(), "test")
         task = asyncio.create_task(
             inv._execute(agent, "问个问题", deps, resolved, "问个问题")  # pyright: ignore[reportPrivateUsage]
@@ -81,27 +82,26 @@ class Run:
 
 async def test_recalling_the_trigger_stops_the_streaming_run(monkeypatch: pytest.MonkeyPatch) -> None:
     run = Run(monkeypatch)
-    with recalls.watch(GROUP, TRIGGER) as watch:
+    with recalls.watch(CHANNEL, TRIGGER) as watch:
         task = await run.start(watch)
-        assert recalls.recall(GROUP, TRIGGER)
+        assert recalls.recall(CHANNEL, TRIGGER)
         async with asyncio.timeout(5):
             status = await task
     assert status == "cancelled"
     assert run.model_cancelled
     assert run.delivered == []
-    assert run.reactions == []  # the message is gone: nothing is added to it
+    assert run.reactions == []
 
 
 async def test_another_recall_leaves_the_run_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     run = Run(monkeypatch)
-    with recalls.watch(GROUP, TRIGGER) as watch:
+    with recalls.watch(CHANNEL, TRIGGER) as watch:
         task = await run.start(watch)
-        assert not recalls.recall(GROUP, TRIGGER + 1)
-        assert not recalls.recall(GROUP + 1, TRIGGER)
+        assert not recalls.recall(CHANNEL, f"{TRIGGER}-other")
+        assert not recalls.recall(f"{CHANNEL}-other", TRIGGER)
         run.release.set()
         async with asyncio.timeout(5):
             status = await task
     assert status == "ok"
     assert [r.sections[0].content for r in run.delivered] == ["答案"]
-    # Once the run is over, recalling its trigger finds nothing to stop.
-    assert not recalls.recall(GROUP, TRIGGER)
+    assert not recalls.recall(CHANNEL, TRIGGER)

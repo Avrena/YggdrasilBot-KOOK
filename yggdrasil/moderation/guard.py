@@ -95,9 +95,16 @@ def decide_action(verdict: str, score: float, categories: list[str], policy: Mod
     return action
 
 
-async def moderate(stage: Stage, prompt: str, response: str | None = None, *, group_id: int | None = None) -> Verdict:
+async def moderate(
+    stage: Stage,
+    prompt: str,
+    response: str | None = None,
+    *,
+    channel_id: str | None = None,
+    guild_id: str | None = None,
+) -> Verdict:
     snap = snapshot()
-    policy = snap.settings(group_id).moderation
+    policy = snap.settings(channel_id=channel_id, guild_id=guild_id).moderation
     enabled = policy.enabled and {"input": policy.check_input, "output": policy.check_output}[stage]
     if not enabled:
         return Verdict(stage, "Skipped", 0.0)

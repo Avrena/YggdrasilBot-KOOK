@@ -1,15 +1,17 @@
 import pytest
 
-from yggdrasil.runtime import GroupInfo, Snapshot, TriggerRule
+from yggdrasil.runtime import ChannelInfo, GuildInfo, Snapshot, TriggerRule
 from yggdrasil.triggers.index import MatchInput, TriggerIndex
 
-GROUP = 100
+GUILD = "g-100"
+CAT = "cat-100"
+CHANNEL = "ch-100"
 
 
 def rule(id: int, handler: str, match_type: str, patterns=(), **kw) -> TriggerRule:
     base = {
         "scope": "global",
-        "group_id": None,
+        "scope_id": None,
         "arg_template": None,
         "require_mention": False,
         "target": "quoted_or_self",
@@ -25,15 +27,22 @@ def handler_of(resolved) -> str | None:
     return resolved.handler if resolved else None
 
 
-def index(*rules: TriggerRule, group_settings: dict | None = None) -> TriggerIndex:
-    groups = {GROUP: GroupInfo(GROUP, "g", True, group_settings or {})}
-    return TriggerIndex(Snapshot(triggers=rules, groups=groups))
+def index(*rules: TriggerRule, channel_settings: dict | None = None) -> TriggerIndex:
+    guilds = {GUILD: GuildInfo(GUILD, "g", "", {}, True)}
+    channels = {
+        CAT: ChannelInfo(CAT, GUILD, None, True, 0, "cat", True, {}),
+        CHANNEL: ChannelInfo(CHANNEL, GUILD, CAT, False, 0, "ch", True, channel_settings or {}),
+    }
+    return TriggerIndex(Snapshot(triggers=rules, guilds=guilds, channels=channels))
 
 
-def inp(text: str, *, scope="group", to_me=False, replied=False, role="member") -> MatchInput:
+def inp(text: str, *, scope="channel", to_me=False, replied=False, role="member") -> MatchInput:
+    is_ch = scope == "channel"
     return MatchInput(
         scope=scope,
-        group_id=GROUP if scope == "group" else None,
+        channel_id=CHANNEL if is_ch else None,
+        guild_id=GUILD if is_ch else None,
+        category_id=CAT if is_ch else None,
         text=text,
         to_me=to_me,
         replied_to_bot=replied,
@@ -51,13 +60,13 @@ def test_prefix_strips_keyword_and_lower_priority_number_wins():
     assert (got.handler, got.args) == ("tldr", "这篇文章")
 
 
-def test_group_rule_overrides_global_rules_of_same_handler_only():
+def test_channel_rule_overrides_global_rules_of_same_handler_only():
     idx = index(
         rule(1, "tldr", "keyword_prefix", ["tldr"]),
-        rule(2, "tldr", "keyword_prefix", ["总结"], scope="group", group_id=GROUP),
+        rule(2, "tldr", "keyword_prefix", ["总结"], scope="channel", scope_id=CHANNEL),
         rule(3, "chat", "keyword_prefix", ["ygg"]),
     )
-    assert idx.match(inp("tldr x")) is None  # global tldr hidden in this group
+    assert idx.match(inp("tldr x")) is None  # global tldr hidden in this channel
     assert handler_of(idx.match(inp("总结 x"))) == "tldr"
     assert handler_of(idx.match(inp("ygg 你好"))) == "chat"  # other handlers still global
 
@@ -66,7 +75,7 @@ def test_require_mention_accepts_name_in_text():
     idx = index(rule(1, "privacy.optout", "keyword_exact", ["不要记我"], require_mention=True))
     assert idx.match(inp("不要记我")) is None
     assert handler_of(idx.match(inp("不要记我", to_me=True))) == "privacy.optout"
-    named = index(rule(1, "chat", "name_mention"), group_settings={"persona": {"name": "小树", "aliases": []}}).match(
+    named = index(rule(1, "chat", "name_mention"), channel_settings={"persona": {"name": "小树", "aliases": []}}).match(
         inp("小树你好")
     )
     assert named is not None

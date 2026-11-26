@@ -38,16 +38,16 @@ def test_idle_must_outlast_invocation_budget():
         ToolSettings(sandbox_command_timeout_s=200, sandbox_command_max_s=100)
 
 
-def test_suite_only_for_group_chat_with_every_switch_on():
+def test_suite_only_for_channel_chat_with_every_switch_on():
     on, off = Settings(), Settings.model_validate({"tools": {"sandbox_enabled": False}})
-    assert suite_enabled(on, "chat", 1, global_settings=on, configured=True)
-    assert not suite_enabled(on, "tldr", 1, global_settings=on, configured=True)
+    assert suite_enabled(on, "chat", "ch-1", global_settings=on, configured=True)
+    assert not suite_enabled(on, "tldr", "ch-1", global_settings=on, configured=True)
     assert not suite_enabled(on, "chat", None, global_settings=on, configured=True)
-    assert not suite_enabled(on, "chat", 1, global_settings=on, configured=False)
-    # The kill switch is read from the global settings, a group override cannot turn it back on.
-    assert not suite_enabled(on, "chat", 1, global_settings=off, configured=True)
+    assert not suite_enabled(on, "chat", "ch-1", global_settings=on, configured=False)
+    # The kill switch is read from the global settings, a channel override cannot turn it back on.
+    assert not suite_enabled(on, "chat", "ch-1", global_settings=off, configured=True)
     no_sandbox = Settings.model_validate({"tools": {"enabled": ["web_search"]}})
-    assert not suite_enabled(no_sandbox, "chat", 1, global_settings=on, configured=True)
+    assert not suite_enabled(no_sandbox, "chat", "ch-1", global_settings=on, configured=True)
 
 
 def test_plain_tool_lists_never_carry_the_pseudo_name():
@@ -251,7 +251,7 @@ async def test_sh_writes_the_script_and_runs_the_helper():
 
 
 async def test_sandbox_put_keeps_names_and_never_overwrites(monkeypatch: pytest.MonkeyPatch):
-    async def fake_media(_qq: Any, _gid: Any, _uid: int, h: Any, _max: int, **_: Any) -> tuple[bytes, str]:
+    async def fake_media(h: Any, _max: int, **_: Any) -> tuple[bytes, str]:
         return h.data["blob"], str(h.data.get("file_name") or "file")
 
     monkeypatch.setattr(sandbox_tools, "media_bytes", fake_media)
@@ -327,7 +327,7 @@ async def test_py_applies_effects_keeps_the_kernel_and_returns_images(monkeypatc
     assert "show 失败：这个文件不是能发的图片" in text
     assert "另有 2 张图没有返回" in text
     assert ctx.deps.images == []  # shown, not attached: the reply sends it only by naming img#1
-    reply = BotReply(mode="forward", sections=[Section(content="效果如图", images=["img#1"])])
+    reply = BotReply(mode="reply", sections=[Section(content="效果如图", images=["img#1"])])
     assert await reply_images(ctx.deps, reply) == {"img#1": (png("blue"), "蓝图")}
     content = list(cast(Any, result.content))
     assert sum(isinstance(c, BinaryContent) for c in content) == sandbox_tools.PY_MAX_IMAGES

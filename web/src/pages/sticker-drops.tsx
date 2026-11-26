@@ -2,7 +2,17 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import type { StickerDropOut } from "@/client";
 import { listStickerDropsOptions } from "@/client/@tanstack/react-query.gen";
-import { Empty, FilterBar, GroupSelect, Hint, OptionSelect, Pager, QueryState, useGroupName } from "@/components/common";
+import {
+  ChannelSelect,
+  Empty,
+  FilterBar,
+  GuildSelect,
+  Hint,
+  OptionSelect,
+  Pager,
+  QueryState,
+  useChannelName,
+} from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtTime } from "@/lib/format";
@@ -12,7 +22,7 @@ const LIMIT = 50;
 type Outcome = StickerDropOut["outcome"];
 
 const OUTCOMES: Record<Outcome, { label: string; hint: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
-  sent: { label: "已发出", hint: "适合度够、骰子也过了，表情交给 bot 发到群里", variant: "default" },
+  sent: { label: "已发出", hint: "适合度够、骰子也过了，表情交给 bot 发到频道里", variant: "default" },
   dice: { label: "骰子没过", hint: "适合度够，但最后按 chance 掷骰子没发", variant: "secondary" },
   unfit: { label: "不适合", hint: "模型判断这时发表情不合适（低于 min_fit）", variant: "outline" },
   refused: { label: "无效回答", hint: "模型拒答，或挑了不在候选里的表情", variant: "destructive" },
@@ -22,19 +32,34 @@ const pct = (v: number | null) => (v == null ? "—" : `${Math.round(v * 100)}%`
 
 /** Every call to the sticker-drop decision model, newest first: sent or not, and why. */
 export function StickerDrops() {
-  const [groupId, setGroupId] = useState<number | null>(null);
+  const [guildId, setGuildId] = useState<string | null>(null);
+  const [channelId, setChannelId] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [offset, setOffset] = useState(0);
-  const groupName = useGroupName();
-  const list = useQuery(listStickerDropsOptions({ query: { group_id: groupId, outcome, limit: LIMIT, offset } }));
+  const channelName = useChannelName();
+  const list = useQuery(
+    listStickerDropsOptions({
+      query: { guild_id: guildId, channel_id: channelId, outcome, limit: LIMIT, offset },
+    }),
+  );
   return (
     <div>
       <FilterBar>
-        <GroupSelect
+        <GuildSelect
           className="w-56"
-          value={groupId}
+          value={guildId}
           onChange={(v) => {
-            setGroupId(v);
+            setGuildId(v);
+            setChannelId(null);
+            setOffset(0);
+          }}
+        />
+        <ChannelSelect
+          className="w-56"
+          guildId={guildId}
+          value={channelId}
+          onChange={(v) => {
+            setChannelId(v);
             setOffset(0);
           }}
         />
@@ -57,7 +82,7 @@ export function StickerDrops() {
           <TableHeader>
             <TableRow>
               <TableHead>时间</TableHead>
-              <TableHead>群</TableHead>
+              <TableHead>频道</TableHead>
               <TableHead>结果</TableHead>
               <TableHead>适合度</TableHead>
               <TableHead>模型挑的表情</TableHead>
@@ -73,7 +98,7 @@ export function StickerDrops() {
               return (
                 <TableRow key={d.id}>
                   <TableCell className="text-xs whitespace-nowrap">{fmtTime(d.at)}</TableCell>
-                  <TableCell className="max-w-36 truncate text-xs">{groupName(d.group_id)}</TableCell>
+                  <TableCell className="max-w-44 truncate text-xs">{channelName(d.channel_id)}</TableCell>
                   <TableCell>
                     <Hint content={o.hint}>
                       <Badge variant={o.variant}>{o.label}</Badge>

@@ -39,12 +39,12 @@ from pydantic_ai.usage import RunUsage
 from yggdrasil import relay
 from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.media import MediaTooLarge, file_name, is_image, media_bytes, media_type
-from yggdrasil.agent.skills import qq as qq_skill
+from yggdrasil.agent.skills import kook as kook_skill
 from yggdrasil.agent.skills import skill_names
 from yggdrasil.agent.tools import ALL_TOOLS
 from yggdrasil.agent.tools.base import resolve_ref
 from yggdrasil.core.log import LOGGER
-from yggdrasil.qq import client as qq_client
+from yggdrasil.kook import client as kook_client
 from yggdrasil.relay.grants import Grant, ToolScope, count_call
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox.job_model import Job
@@ -66,13 +66,12 @@ TOOLS = (
     "recent_chat",
     "lookup_glossary",
     "get_profile",
-    "expand_forward",
     "read_file",
     "view_image",
 )
-"""Chat tools workspace code may call (when the group has them enabled for chat)."""
-QQ_TOOLS = ("member_info", "group_info", "group_files")
-"""``qq`` skill tools workspace code may call (when the group has the skill)."""
+"""Chat tools workspace code may call (when the channel has them enabled for chat)."""
+KOOK_TOOLS = ("member_info", "channel_info")
+"""``kook`` skill tools workspace code may call (when the channel has the skill)."""
 RENDER_TOOLS = ("render_mermaid", "render_markdown", "render_html")
 """Chat tools only the code of a live chat run's ``sh`` / ``py`` may call: the picture becomes an ``img#N`` handle of
 that run, named in the ``sh`` / ``py`` result, for the reply to embed. A background job has no reply to embed it in."""
@@ -94,21 +93,19 @@ class Refused(Exception):
 @cache
 def _registry() -> dict[str, Tool[Deps]]:
     fns = {name: ALL_TOOLS[name] for name in (*TOOLS, *RENDER_TOOLS)} | {
-        "member_info": qq_skill.member_info,
-        "group_info": qq_skill.group_info,
-        "group_files": qq_skill.group_files,
+        "member_info": kook_skill.member_info,
+        "channel_info": kook_skill.channel_info,
     }
     return {name: Tool(fn, takes_ctx=True, name=name) for name, fn in fns.items()}
 
 
-def allowed_tools(settings: Settings, group_id: int | None, *, live: bool = False) -> tuple[str, ...]:
-    """The bridge tools of a chat run in this group: its enabled tools among ``TOOLS``, plus ``QQ_TOOLS`` when it has
-    the ``qq`` skill, plus ``RENDER_TOOLS`` for the run's own ``sh`` / ``py`` (``live``; not for the jobs it starts).
-    Handler exclusions don't apply: chat leaves ``recent_chat`` out only because its prompt already carries the
-    recent chat, which workspace code doesn't see."""
+def allowed_tools(settings: Settings, channel_id: str | None, *, live: bool = False) -> tuple[str, ...]:
+    """The bridge tools of a chat run in this channel: its enabled tools among ``TOOLS``, plus ``KOOK_TOOLS`` when it
+    has the ``kook`` skill, plus ``RENDER_TOOLS`` for the run's own ``sh`` / ``py`` (``live``; not for the jobs it
+    starts)."""
     names = [name for name in (*TOOLS, *(RENDER_TOOLS if live else ())) if name in settings.tools.enabled]
-    if qq_skill.ID in skill_names(settings, "chat", group_id):
-        names += QQ_TOOLS
+    if kook_skill.ID in skill_names(settings, "chat", channel_id):
+        names += KOOK_TOOLS
     return tuple(names)
 
 
@@ -152,18 +149,18 @@ async def bridge_file(ctx: RunContext[Deps]) -> bytes | None:
     deps = ctx.deps
     url = relay.relay_url()
     limit = deps.settings.tools.bridge_run_limit
-    if url is None or limit <= 0 or deps.group_id is None:
+    if url is None or limit <= 0 or deps.channel_id is None:
         return None
     run = deps.bridge
     if run is None:
         run = deps.bridge = RunBridge(f"run-{deps.invocation_id or secrets.token_hex(8)}")
     async with run.lock:  # parallel first calls share one token
         if run.file is None:
-            tools = allowed_tools(deps.settings, deps.group_id, live=True)
+            tools = allowed_tools(deps.settings, deps.channel_id, live=True)
             scope = ToolScope(tools, deps.user_id, deps.invocation_id, limit)
             try:
                 token = await relay.issue_token(
-                    group_id=deps.group_id,
+                    channel_id=deps.channel_id,
                     job_id=run.subject,
                     models=[],
                     max_input_tokens=0,
@@ -256,9 +253,9 @@ async def _target(grant: Grant, scope: ToolScope) -> _Target:
     live = _LIVE.get(grant.job_id)
     if live is not None and live.bridge is not None and live.bridge.ctx is not None:
         return _Target(grant, live, live.bridge.ctx, None)
-    qq = qq_client.connected()
-    if qq is None:
-        raise Refused(503, "bot 现在没有连上 QQ，稍后再试")
+    kook = kook_client.connected()
+    if kook is None:
+        raise Refused(503, "bot 现在没有连上 KOOK，稍后再试")
     now = time.time()
     for key in [k for k, d in _DETACHED.items() if d.expires_at <= now]:
         del _DETACHED[key]
@@ -268,15 +265,18 @@ async def _target(grant: Grant, scope: ToolScope) -> _Target:
         handles = Handles.load(job.handles) if job is not None else Handles()
         state = _DETACHED[grant.job_id] = _Detached(handles, job, grant.expires_at)
     job = state.job
-    settings = snapshot().settings(grant.group_id)
+    snap = snapshot()
+    guild_id = (job.guild_id if job is not None else None) or snap.guild_of(grant.channel_id)
+    settings = snap.settings(channel_id=grant.channel_id, guild_id=guild_id)
     deps = Deps(
-        qq,
-        grant.group_id,
+        kook,
+        grant.channel_id,
+        guild_id,
         scope.user_id,
         settings,
         state.handles,
         "chat",
-        self_id=qq.self_id,
+        self_id=kook.self_id,
         trigger_message_id=job.trigger_message_id if job is not None else None,
         invocation_id=scope.invocation_id,
         request_text=job.request_text if job is not None else "",
@@ -342,7 +342,7 @@ async def _record(
         duration_ms=int(elapsed * 1000),
         display=notes.displays.pop(call_id, None),
     )
-    LOGGER.bind(audit="sandbox", action="bridge_call", group=grant.group_id, job=grant.job_id).info(
+    LOGGER.bind(audit="sandbox", action="bridge_call", channel=grant.channel_id, job=grant.job_id).info(
         "tool bridge {}: {} {} in {:.1f}s", grant.job_id, name, call.outcome, elapsed
     )
     if target.parent is not None:
@@ -425,9 +425,7 @@ async def _media(ctx: RunContext[Deps], ref: str) -> Media:
         raise Refused(404, str(e)) from e
     max_mb = deps.settings.tools.file_max_mb
     try:
-        blob, _ = await media_bytes(
-            deps.qq, deps.group_id, deps.user_id, h, max_mb * 1024 * 1024, made=deps.made_images
-        )
+        blob, _ = await media_bytes(h, max_mb * 1024 * 1024, made=deps.made_images)
     except MediaTooLarge as e:
         raise Refused(413, str(e)) from e
     except ToolError as e:

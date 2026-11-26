@@ -12,11 +12,12 @@ import {
 } from "@/client/@tanstack/react-query.gen";
 import type { TriggerIn, TriggerMeta, TriggerOut, TriggerTestIn } from "@/client/types.gen";
 import {
+  ChannelSelect,
   ConfirmButton,
   Empty,
   Field,
   FormDialog,
-  GroupSelect,
+  GuildSelect,
   Meta,
   MultiToggle,
   NumberInput,
@@ -26,6 +27,8 @@ import {
   Pre,
   QueryState,
   TagInput,
+  useChannelName,
+  useGuildName,
 } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,12 +50,20 @@ const TARGET_LABELS: Record<string, string> = {
   self: "本条消息",
   quoted: "引用的消息",
 };
-const SCOPE_LABELS: Record<string, string> = { global: "全局", group: "群级", private: "私聊" };
+const SCOPE_LABELS: Record<string, string> = {
+  global: "全局",
+  guild: "服务器",
+  category: "分组",
+  channel: "频道",
+  private: "私聊",
+};
 const PATTERN_TYPES = ["keyword_prefix", "keyword_exact", "regex"];
 
 export function TriggersPage() {
   const triggers = useQuery(listTriggersOptions());
   const meta = useQuery(getTriggerMetaOptions());
+  const guildName = useGuildName();
+  const channelName = useChannelName();
   const [editing, setEditing] = useState<TriggerOut | "new" | null>(null);
   const remove = useMutation({ ...deleteTriggerMutation(), onSuccess: () => toast.success("已删除") });
   const update = useMutation(updateTriggerMutation());
@@ -62,11 +73,18 @@ export function TriggersPage() {
     </Button>
   );
 
+  const scopeTarget = (scope: string, scopeId: string | null | undefined) => {
+    if (!scopeId) return null;
+    if (scope === "guild") return guildName(scopeId);
+    if (scope === "category" || scope === "channel") return channelName(scopeId);
+    return scopeId;
+  };
+
   return (
     <div>
       <PageHeader
-        title="指令"
-        description="什么话触发哪个 handler。群级规则覆盖同 handler 的全局规则；按优先级取第一条命中。"
+        title="指令与触发规则"
+        description="支持「频道 > 分组 > 服务器 > 全局」四级覆盖：同一 handler 优先使用最内层的规则；按优先级取第一条命中。"
         actions={addButton}
       />
       <QueryState isLoading={meta.isLoading} error={meta.error} variant="card" />
@@ -97,8 +115,10 @@ export function TriggersPage() {
                 <TableCell>{t.id}</TableCell>
                 <TableCell className="font-mono text-xs">{t.handler}</TableCell>
                 <TableCell>
-                  {SCOPE_LABELS[t.scope ?? "global"] ?? t.scope}
-                  {t.group_id != null && <div className="font-mono text-xs text-muted-foreground">{t.group_id}</div>}
+                  <div>{SCOPE_LABELS[t.scope ?? "global"] ?? t.scope}</div>
+                  {t.scope_id && (
+                    <div className="text-xs text-muted-foreground">{scopeTarget(t.scope ?? "global", t.scope_id)}</div>
+                  )}
                 </TableCell>
                 <TableCell>
                   <div>{MATCH_LABELS[t.match_type] ?? t.match_type}</div>
@@ -172,7 +192,7 @@ function TriggerDialog({ trigger, meta, onClose }: { trigger: TriggerOut | null;
       : {
           handler: "chat",
           scope: "global",
-          group_id: null,
+          scope_id: null,
           match_type: "keyword_prefix",
           patterns: [],
           arg_template: null,
@@ -187,8 +207,9 @@ function TriggerDialog({ trigger, meta, onClose }: { trigger: TriggerOut | null;
   );
   const create = useMutation({ ...createTriggerMutation(), onSuccess: onClose });
   const update = useMutation({ ...updateTriggerMutation(), onSuccess: onClose });
+  const scoped = form.scope === "guild" || form.scope === "category" || form.scope === "channel";
   const submit = () => {
-    const body = { ...form, group_id: form.scope === "group" ? form.group_id : null };
+    const body = { ...form, scope_id: scoped ? form.scope_id : null };
     if (trigger) update.mutate({ path: { trigger_id: trigger.id }, body });
     else create.mutate({ body });
   };
@@ -198,7 +219,7 @@ function TriggerDialog({ trigger, meta, onClose }: { trigger: TriggerOut | null;
       open
       onOpenChange={(o) => !o && onClose()}
       title={trigger ? `编辑规则 #${trigger.id}` : "新增规则"}
-      description="什么消息、在哪个范围、由谁发出时触发这个 handler；保存后几秒内热更新。"
+      description="支持全局、服务器、分组、频道和私聊；保存后几秒内热更新。"
       onSubmit={submit}
       pending={create.isPending || update.isPending}
       className="sm:max-w-2xl"
@@ -213,7 +234,6 @@ function TriggerDialog({ trigger, meta, onClose }: { trigger: TriggerOut | null;
               label: (
                 <span className="grid gap-0.5">
                   <span className="font-mono">{h.name}</span>
-                  {/* The trigger shows the name only; the field hint carries the description. */}
                   <span className="text-xs text-muted-foreground in-data-[slot=select-value]:hidden">{h.description}</span>
                 </span>
               ),
@@ -223,13 +243,23 @@ function TriggerDialog({ trigger, meta, onClose }: { trigger: TriggerOut | null;
         <Field label="范围">
           <OptionSelect
             value={form.scope ?? "global"}
-            onChange={(v) => v && setForm({ ...form, scope: v as TriggerIn["scope"] })}
+            onChange={(v) => v && setForm({ ...form, scope: v as TriggerIn["scope"], scope_id: null })}
             options={meta.scopes.map((s) => ({ value: s, label: SCOPE_LABELS[s] ?? s }))}
           />
         </Field>
-        {form.scope === "group" && (
-          <Field label="群" className="col-span-2">
-            <GroupSelect value={form.group_id ?? null} onChange={(g) => setForm({ ...form, group_id: g })} allLabel={null} />
+        {form.scope === "guild" && (
+          <Field label="服务器" className="col-span-2">
+            <GuildSelect value={form.scope_id ?? null} onChange={(v) => setForm({ ...form, scope_id: v })} allLabel={null} />
+          </Field>
+        )}
+        {(form.scope === "category" || form.scope === "channel") && (
+          <Field label={form.scope === "category" ? "分组" : "频道"} className="col-span-2">
+            <ChannelSelect
+              value={form.scope_id ?? null}
+              onChange={(v) => setForm({ ...form, scope_id: v })}
+              includeCategories={form.scope === "category"}
+              allLabel={null}
+            />
           </Field>
         )}
         <Field label="匹配方式">
@@ -292,8 +322,8 @@ function TriggerDialog({ trigger, meta, onClose }: { trigger: TriggerOut | null;
 function TryMatch({ meta }: { meta: TriggerMeta }) {
   const [input, setInput] = useState<TriggerTestIn>({
     text: "",
-    scope: "group",
-    group_id: null,
+    scope: "channel",
+    channel_id: null,
     to_me: false,
     replied_to_bot: false,
     role: "member",
@@ -307,7 +337,7 @@ function TryMatch({ meta }: { meta: TriggerMeta }) {
     <Card className="mb-6">
       <CardHeader>
         <CardTitle>试匹配</CardTitle>
-        <CardDescription>与运行时同一份索引代码；规则保存后几秒内热更新到这里。</CardDescription>
+        <CardDescription>与运行时同一份四级索引代码；规则保存后几秒内热更新到这里。</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
         <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
@@ -320,17 +350,21 @@ function TryMatch({ meta }: { meta: TriggerMeta }) {
           </Field>
           <Field label="场景" className="w-28">
             <OptionSelect
-              value={input.scope ?? "group"}
+              value={input.scope ?? "channel"}
               onChange={(v) => v && setInput({ ...input, scope: v as TriggerTestIn["scope"] })}
               options={[
-                { value: "group", label: "群聊" },
+                { value: "channel", label: "频道" },
                 { value: "private", label: "私聊" },
               ]}
             />
           </Field>
-          {input.scope === "group" && (
-            <Field label="群" className="w-56">
-              <GroupSelect value={input.group_id ?? null} onChange={(g) => setInput({ ...input, group_id: g })} allLabel="未指定" />
+          {input.scope === "channel" && (
+            <Field label="频道" className="w-64">
+              <ChannelSelect
+                value={input.channel_id ?? null}
+                onChange={(c) => setInput({ ...input, channel_id: c })}
+                allLabel="未指定"
+              />
             </Field>
           )}
           <Field label="角色" className="w-32">

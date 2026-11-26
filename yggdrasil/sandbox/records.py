@@ -16,7 +16,7 @@ from yggdrasil.sandbox.state import (
     INDEX_KEY_PREFIX,
     WS_KEY_PREFIX,
     Mapping,
-    group_lock_key,
+    channel_lock_key,
     index_key,
     keep_key,
     link_id,
@@ -112,24 +112,24 @@ class Records:
 
     # --- reading ----------------------------------------------------------------------------------------
 
-    async def load(self, group_id: int, name: str) -> Mapping | None:
-        data = cast(dict[str, str], await self._r().hgetall(ws_key(group_id, name)))  # pyright: ignore[reportGeneralTypeIssues]
-        return Mapping.from_hash(group_id, data) if data else None
+    async def load(self, channel_id: str, name: str) -> Mapping | None:
+        data = cast(dict[str, str], await self._r().hgetall(ws_key(channel_id, name)))  # pyright: ignore[reportGeneralTypeIssues]
+        return Mapping.from_hash(channel_id, data) if data else None
 
-    async def group(self, group_id: int) -> list[Mapping]:
-        """The group's records by name; index entries whose record is gone are pruned."""
-        names = cast(set[str], await self._r().smembers(index_key(group_id)))  # pyright: ignore[reportGeneralTypeIssues]
+    async def channel(self, channel_id: str) -> list[Mapping]:
+        """The channel's records by name; index entries whose record is gone are pruned."""
+        names = cast(set[str], await self._r().smembers(index_key(channel_id)))  # pyright: ignore[reportGeneralTypeIssues]
         out: list[Mapping] = []
         for name in sorted(names):
-            m = await self.load(group_id, name)
+            m = await self.load(channel_id, name)
             if m is not None:
                 out.append(m)
             else:  # expired (an unused reservation) or removed: only while the record is really gone
-                await self._r().eval(_PRUNE_INDEX, 2, ws_key(group_id, name), index_key(group_id), name)  # pyright: ignore[reportGeneralTypeIssues]
+                await self._r().eval(_PRUNE_INDEX, 2, ws_key(channel_id, name), index_key(channel_id), name)  # pyright: ignore[reportGeneralTypeIssues]
         return out
 
     async def all(self) -> list[Mapping]:
-        """Every group's records."""
+        """Every channel's records."""
         out: list[Mapping] = []
         async for key in self._r().scan_iter(match=f"{WS_KEY_PREFIX}*", count=100):
             parsed = parse_ws_key(str(key))
@@ -139,40 +139,40 @@ class Records:
 
     async def job_ids(self, m: Mapping) -> tuple[str, ...]:
         """The background jobs running in the workspace (their entries in its keep hash)."""
-        fields = cast(list[str], await self._r().hkeys(keep_key(m.group_id, m.name)))  # pyright: ignore[reportGeneralTypeIssues]
+        fields = cast(list[str], await self._r().hkeys(keep_key(m.channel_id, m.name)))  # pyright: ignore[reportGeneralTypeIssues]
         return tuple(sorted(f.removeprefix("job:") for f in fields if f.startswith("job:")))
 
     async def job_titles(self, ids: Iterable[str]) -> dict[str, str]:
         return {i: str(await self._r().hget(job_key(i), "title") or "") for i in ids}  # pyright: ignore[reportGeneralTypeIssues]
 
-    async def keep(self, group_id: int, name: str) -> dict[str, str]:
+    async def keep(self, channel_id: str, name: str) -> dict[str, str]:
         """The workspace's keep hash: the process trees the reap spares (``kernel``, ``job:<id>`` -> pid)."""
-        return cast(dict[str, str], await self._r().hgetall(keep_key(group_id, name)))  # pyright: ignore[reportGeneralTypeIssues]
+        return cast(dict[str, str], await self._r().hgetall(keep_key(channel_id, name)))  # pyright: ignore[reportGeneralTypeIssues]
 
     # --- writing ----------------------------------------------------------------------------------------
 
     async def add_pending(self, m: Mapping) -> None:
         """Store a new workspace's pending record (it expires unless its pod gets created) and index it."""
         async with self._r().pipeline(transaction=True) as pipe:
-            pipe.hset(ws_key(m.group_id, m.name), mapping=m.to_hash())  # pyright: ignore[reportArgumentType]
-            pipe.expire(ws_key(m.group_id, m.name), _PENDING_TTL)
-            pipe.sadd(index_key(m.group_id), m.name)
+            pipe.hset(ws_key(m.channel_id, m.name), mapping=m.to_hash())  # pyright: ignore[reportArgumentType]
+            pipe.expire(ws_key(m.channel_id, m.name), _PENDING_TTL)
+            pipe.sadd(index_key(m.channel_id), m.name)
             await pipe.execute()
 
-    async def set_description(self, group_id: int, name: str, description: str) -> bool:
-        done = await self._r().eval(_SAVE_IF_EXISTS, 1, ws_key(group_id, name), "description", description)  # pyright: ignore[reportGeneralTypeIssues]
+    async def set_description(self, channel_id: str, name: str, description: str) -> bool:
+        done = await self._r().eval(_SAVE_IF_EXISTS, 1, ws_key(channel_id, name), "description", description)  # pyright: ignore[reportGeneralTypeIssues]
         return int(cast(int, done)) == 1
 
     async def save(self, m: Mapping, *fields: str) -> bool:
         """Write ``fields`` while the record still names ``m.claim``; False when it moved on."""
         data = m.to_hash()
         flat = [x for k in fields for x in (k, data[k])]
-        done = await self._r().eval(_SAVE_IF_CLAIM, 1, ws_key(m.group_id, m.name), m.claim, *flat)  # pyright: ignore[reportGeneralTypeIssues]
+        done = await self._r().eval(_SAVE_IF_CLAIM, 1, ws_key(m.channel_id, m.name), m.claim, *flat)  # pyright: ignore[reportGeneralTypeIssues]
         return int(cast(int, done)) == 1
 
     async def incr_active(self, m: Mapping, delta: int) -> int:
         """Add ``delta`` to ``active`` while the record still names ``m.claim``: the new value, or -1."""
-        value = await self._r().eval(_INCR_IF_CLAIM, 1, ws_key(m.group_id, m.name), m.claim, str(delta))  # pyright: ignore[reportGeneralTypeIssues]
+        value = await self._r().eval(_INCR_IF_CLAIM, 1, ws_key(m.channel_id, m.name), m.claim, str(delta))  # pyright: ignore[reportGeneralTypeIssues]
         return int(cast(int, value))
 
     async def drop(self, m: Mapping) -> bool:
@@ -180,9 +180,9 @@ class Records:
         dropped = await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
             _DROP_IF_CLAIM,
             3,
-            ws_key(m.group_id, m.name),
-            keep_key(m.group_id, m.name),
-            index_key(m.group_id),
+            ws_key(m.channel_id, m.name),
+            keep_key(m.channel_id, m.name),
+            index_key(m.channel_id),
             m.claim,
             m.name,
         )
@@ -201,9 +201,9 @@ class Records:
                 await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
                     _DESTROY_IF_IDLE,
                     3,
-                    ws_key(m.group_id, m.name),
-                    keep_key(m.group_id, m.name),
-                    index_key(m.group_id),
+                    ws_key(m.channel_id, m.name),
+                    keep_key(m.channel_id, m.name),
+                    index_key(m.channel_id),
                     m.claim,
                     str(max_active),
                     "1" if mark_recreate else "0",
@@ -220,9 +220,9 @@ class Records:
         await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
             _DESTROY_IF_IDLE,
             3,
-            ws_key(m.group_id, m.name),
-            keep_key(m.group_id, m.name),
-            index_key(m.group_id),
+            ws_key(m.channel_id, m.name),
+            keep_key(m.channel_id, m.name),
+            index_key(m.channel_id),
             m.claim,
             _RETIRE_ACTIVE,
             "0",
@@ -232,10 +232,10 @@ class Records:
             m.name,
         )
 
-    async def touch_pending(self, group_id: int, name: str, now: float) -> bool:
+    async def touch_pending(self, channel_id: str, name: str, now: float) -> bool:
         """Refresh a pending record whose pod is being created (TTL, LRU position); False when it is gone or no
         longer pending."""
-        key = ws_key(group_id, name)
+        key = ws_key(channel_id, name)
         return bool(int(cast(int, await self._r().eval(_TOUCH_PENDING, 1, key, str(_PENDING_TTL), repr(now)))))  # pyright: ignore[reportGeneralTypeIssues]
 
     async def set_claim(self, m: Mapping) -> bool:
@@ -243,26 +243,26 @@ class Records:
         hash; False when the record was removed or claimed meanwhile."""
         data = m.to_hash()
         flat = [x for k, v in data.items() if k not in ("name", "description") for x in (k, v)]
-        key = ws_key(m.group_id, m.name)
-        return bool(int(cast(int, await self._r().eval(_SET_CLAIM, 2, key, keep_key(m.group_id, m.name), *flat))))  # pyright: ignore[reportGeneralTypeIssues]
+        key = ws_key(m.channel_id, m.name)
+        return bool(int(cast(int, await self._r().eval(_SET_CLAIM, 2, key, keep_key(m.channel_id, m.name), *flat))))  # pyright: ignore[reportGeneralTypeIssues]
 
-    async def extend(self, group_id: int, name: str, claim: str, until: float) -> bool:
+    async def extend(self, channel_id: str, name: str, claim: str, until: float) -> bool:
         """Push ``max_until`` out to at least ``until`` while the record names ``claim``; False when it does not."""
-        raw = await self._r().eval(_EXTEND, 1, ws_key(group_id, name), claim, repr(until))  # pyright: ignore[reportGeneralTypeIssues]
+        raw = await self._r().eval(_EXTEND, 1, ws_key(channel_id, name), claim, repr(until))  # pyright: ignore[reportGeneralTypeIssues]
         return raw is not None
 
-    async def set_kernel(self, group_id: int, name: str, pid: int | None) -> None:
+    async def set_kernel(self, channel_id: str, name: str, pid: int | None) -> None:
         """Keep the workspace's IPython kernel ``pid`` from the reap; ``None`` forgets it."""
-        key = keep_key(group_id, name)
+        key = keep_key(channel_id, name)
         if pid is None:
             await self._r().hdel(key, "kernel")  # pyright: ignore[reportGeneralTypeIssues]
         else:
             await self._r().hset(key, "kernel", str(pid))  # pyright: ignore[reportGeneralTypeIssues]
 
     async def clear(self, mappings: Iterable[Mapping]) -> None:
-        """Delete these records with their keep hashes, and every group's index."""
+        """Delete these records with their keep hashes, and every channel's index."""
         for m in mappings:
-            await self._r().delete(ws_key(m.group_id, m.name), keep_key(m.group_id, m.name))
+            await self._r().delete(ws_key(m.channel_id, m.name), keep_key(m.channel_id, m.name))
         async for key in self._r().scan_iter(match=f"{INDEX_KEY_PREFIX}*", count=100):
             await self._r().delete(key)
 
@@ -287,12 +287,12 @@ class Records:
                 except Exception:
                     LOGGER.exception("releasing sandbox lock {} failed", key)
 
-    def ws_lock(self, group_id: int, name: str, *, wait: float) -> AbstractAsyncContextManager[bool]:
-        """``ygg:sandbox:lock:<gid>:<name>``: attaching and the last release run under it, so a release never
+    def ws_lock(self, channel_id: str, name: str, *, wait: float) -> AbstractAsyncContextManager[bool]:
+        """``ygg:sandbox:lock:<cid>:<name>``: attaching and the last release run under it, so a release never
         reaps or recreates a workspace another invocation is just attaching to."""
-        return self._lock(lock_key(group_id, name), wait=wait, ttl=_LOCK_TTL)
+        return self._lock(lock_key(channel_id, name), wait=wait, ttl=_LOCK_TTL)
 
-    def group_lock(self, group_id: int, *, wait: float) -> AbstractAsyncContextManager[bool]:
-        """The group's lock: reserving a workspace runs under it, so the per-group cap holds across invocations
+    def channel_lock(self, channel_id: str, *, wait: float) -> AbstractAsyncContextManager[bool]:
+        """The channel's lock: reserving a workspace runs under it, so the per-channel cap holds across invocations
         and bot replicas."""
-        return self._lock(group_lock_key(group_id), wait=wait, ttl=_GROUP_LOCK_TTL)
+        return self._lock(channel_lock_key(channel_id), wait=wait, ttl=_GROUP_LOCK_TTL)
