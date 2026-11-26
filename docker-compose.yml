@@ -50,7 +50,7 @@ services:
       - shared_preload_libraries=pg_search
     volumes:
       # PostgreSQL 18+ stores PGDATA at /var/lib/postgresql/18/docker and rejects mounting /var/lib/postgresql/data.
-      - pg_data:/var/lib/postgresql
+      - ./data/postgres:/var/lib/postgresql
       - ./deploy/compose/init-postgres.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -68,7 +68,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
     volumes:
-      - redis_data:/data
+      - ./data/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -161,7 +161,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  pg_data:
-  redis_data:

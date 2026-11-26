@@ -56,7 +56,11 @@ docker compose --profile full up -d --build
   重启 `bot` 后即可直接访问 `http://<内网IP>:8080`，无需反代和登录头。
 - **公网域名访问（保持 `YGG_AUTH_DISABLED=false`）**：保持 `YGG_BIND_HOST=127.0.0.1`，参考 [`Caddyfile.example`](./Caddyfile.example) 用 Caddy + Basic Auth 注入固定 `X-Auth-Request-Email`，或在反代前接 `oauth2-proxy` / Authelia / Cloudflare Access。
 
-## 4. 升级与常用运维
+## 4. 数据目录、升级与常用运维
+
+所有持久化数据都保存在项目目录内（已在 `.gitignore` 中忽略）：
+- `./data/postgres`：PostgreSQL（ParadeDB）数据文件
+- `./data/redis`：Redis AOF 持久化文件
 
 ```bash
 # 查看状态与日志
@@ -65,7 +69,8 @@ docker compose logs -f bot worker
 
 # 拉取新代码并滚动更新（migration 会自动跑完再启动 bot/worker/scheduler）
 git pull
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.lowmem.yml pull
+docker compose -f docker-compose.yml -f docker-compose.lowmem.yml up -d
 
 # 备份 Postgres 数据库
 docker compose exec postgres pg_dump -U ygg -Fc ygg > ygg_$(date +%F).dump
