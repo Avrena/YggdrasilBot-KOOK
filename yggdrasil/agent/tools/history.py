@@ -60,6 +60,7 @@ async def search_history(
         query,
         channel_id=ctx.deps.channel_id,
         current_channel_only=current_channel_only,
+        role_ids=ctx.deps.role_ids,
         since=since,
         until=asked.sent_at if asked else None,
         user_id=user_id.strip() if user_id else None,
@@ -69,7 +70,12 @@ async def search_history(
         return "没有找到相关记录"
     ctx.deps.notes.messages(ctx.tool_call_id, [h.msg_id for h in hits if h.msg_id])
     people = await people_for(ctx, [h.user_id for h in hits if h.user_id], [h.text for h in hits])
-    allowed = accessible_channels(ctx.deps.guild_id, ctx.deps.channel_id, current_channel_only=current_channel_only)
+    allowed = accessible_channels(
+        ctx.deps.guild_id,
+        ctx.deps.channel_id,
+        current_channel_only=current_channel_only,
+        role_ids=ctx.deps.role_ids,
+    )
     segments = await message_segments(ctx.deps.guild_id, [h.msg_id for h in hits if h.msg_id], allowed_channels=allowed)
     out = []
     for h in hits:
@@ -90,7 +96,7 @@ async def get_messages_around(ctx: RunContext[Deps], message_id: int, before: in
 
     if not ctx.deps.guild_id:
         raise ToolError("私聊里不能检索服务器历史")
-    allowed = accessible_channels(ctx.deps.guild_id, ctx.deps.channel_id)
+    allowed = accessible_channels(ctx.deps.guild_id, ctx.deps.channel_id, role_ids=ctx.deps.role_ids)
     source_ch, msgs = await messages_around(
         ctx.deps.guild_id, message_id, min(before, 40), min(after, 40), allowed_channels=allowed
     )
@@ -104,13 +110,15 @@ async def get_messages_around(ctx: RunContext[Deps], message_id: int, before: in
     return header + "\n".join(lines)
 
 
-def _resolve_target_channel(guild_id: str, current_channel_id: str, channel: str | None) -> str:
+def _resolve_target_channel(
+    guild_id: str, current_channel_id: str, channel: str | None, *, role_ids: Sequence[str] = ()
+) -> str:
     from yggdrasil.memory.search import accessible_channels
 
     if not channel or not channel.strip():
         return current_channel_id
     wanted = channel.strip().lstrip("#")
-    allowed = set(accessible_channels(guild_id, current_channel_id))
+    allowed = set(accessible_channels(guild_id, current_channel_id, role_ids=role_ids))
     snap = snapshot()
     if wanted in allowed:
         return wanted
@@ -128,7 +136,7 @@ async def recent_chat(ctx: RunContext[Deps], minutes: int = 30, channel: str | N
 
     if not ctx.deps.channel_id or not ctx.deps.guild_id:
         raise ToolError("私聊里没有频道聊天记录")
-    target_ch = _resolve_target_channel(ctx.deps.guild_id, ctx.deps.channel_id, channel)
+    target_ch = _resolve_target_channel(ctx.deps.guild_id, ctx.deps.channel_id, channel, role_ids=ctx.deps.role_ids)
     cfg = ctx.deps.settings.context
     msgs = await recent_messages(target_ch, limit=cfg.recent_messages, minutes=min(max(minutes, 1), 24 * 60))
     if not msgs:

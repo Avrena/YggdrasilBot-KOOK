@@ -17,6 +17,7 @@ from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import Row, bindparam, func, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yggdrasil.access import can_bypass_channel_privacy
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.base import EMBED_DIM
 from yggdrasil.db.models import GlossaryTerm, Message, Topic, UserProfile, UserProfileFact
@@ -132,21 +133,81 @@ def _visible_channel(channel_id: str) -> tuple[Any, ...]:
     return (Message.channel_id == channel_id, Message.recalled.is_(False))
 
 
-def accessible_channels(guild_id: str, channel_id: str | None, *, current_channel_only: bool = False) -> list[str]:
+def _clean_ids(values: Sequence[str]) -> set[str]:
+    return {v.strip() for v in values if v and v.strip()}
+
+
+def _matches_scope(channel_id: str, parent_id: str | None, scopes: set[str]) -> bool:
+    return channel_id in scopes or (parent_id is not None and parent_id in scopes)
+
+
+def accessible_channels(
+    guild_id: str,
+    channel_id: str | None,
+    *,
+    current_channel_only: bool = False,
+    role_ids: Collection[str] = (),
+) -> list[str]:
     """Channel IDs visible to a memory query originating from ``(guild_id, channel_id)``.
 
-    Respects ``memory.share_in_guild``: a private/non-sharing channel only reads itself, and other channels never
-    read from a channel whose ``share_in_guild`` is False.
+    One-way privacy model (all inherited along ``global -> guild -> category -> channel``):
+    - ``share_in_guild=False`` hides a channel from other channels by default (and keeps it out of guild-wide
+      digests/glossary/profiles), while the channel itself may still read public or explicitly authorized channels
+      unless its own ``cross_channel_read`` is ``False``.
+    - Target-side grants (``readable_by_scopes``, ``readable_by_roles``) let a private channel/category expose itself
+      to specific caller channels/categories (e.g. ticket category -> admin category) or KOOK roles.
+    - Caller-side ``cross_channel_deny`` / ``cross_channel_allow`` restrict which target channels/categories can be
+      cited from the current channel (deny wins over allow and sharing).
+    - ``access.role_rules[role_id].bypass_channel_privacy`` lets a role bypass cross-channel restrictions within the
+      configured scope.
     """
     snap = snapshot()
     if current_channel_only and channel_id:
         return [channel_id]
-    if channel_id and not snap.settings(channel_id=channel_id, guild_id=guild_id).memory.share_in_guild:
+
+    caller_settings = snap.settings(channel_id=channel_id, guild_id=guild_id)
+    caller_mem = caller_settings.memory
+    holder_roles = {str(r).strip() for r in role_ids if str(r).strip()}
+    candidates = snap.guild_channels(guild_id, enabled_only=True)
+
+    if can_bypass_channel_privacy(caller_settings, holder_roles):
+        visible = {c.channel_id for c in candidates}
+        if channel_id:
+            visible.add(channel_id)
+        return sorted(visible)
+
+    if channel_id and not caller_mem.cross_channel_read:
         return [channel_id]
-    shared = set(snap.shared_channel_ids(guild_id))
+
+    caller_scopes: set[str] = set()
     if channel_id:
-        shared.add(channel_id)
-    return sorted(shared)
+        caller_scopes.add(channel_id)
+        caller_info = snap.channels.get(channel_id)
+        if caller_info is not None and caller_info.parent_id:
+            caller_scopes.add(caller_info.parent_id)
+
+    allow_scopes = _clean_ids(caller_mem.cross_channel_allow)
+    deny_scopes = _clean_ids(caller_mem.cross_channel_deny)
+
+    visible: set[str] = {channel_id} if channel_id else set()
+    for target in candidates:
+        if target.channel_id == channel_id:
+            continue
+        t_mem = snap.settings(channel_id=target.channel_id, guild_id=guild_id).memory
+        if not t_mem.enabled:
+            continue
+        if deny_scopes and _matches_scope(target.channel_id, target.parent_id, deny_scopes):
+            continue
+        if allow_scopes and not _matches_scope(target.channel_id, target.parent_id, allow_scopes):
+            continue
+        if t_mem.share_in_guild:
+            visible.add(target.channel_id)
+            continue
+        readable_scopes = _clean_ids(t_mem.readable_by_scopes)
+        readable_roles = _clean_ids(t_mem.readable_by_roles)
+        if (caller_scopes & readable_scopes) or (holder_roles & readable_roles):
+            visible.add(target.channel_id)
+    return sorted(visible)
 
 
 # --- raw messages -----------------------------------------------------------------------------------------------
@@ -526,21 +587,21 @@ async def search_history(
     *,
     channel_id: str | None = None,
     current_channel_only: bool = False,
+    role_ids: Collection[str] = (),
     since: datetime | None = None,
     until: datetime | None = None,
     user_id: str | None = None,
     top_k: int = 12,
 ) -> list[HistoryHit]:
-    """Hybrid BM25 + vector search over guild-shared memory (honoring ``memory.share_in_guild``)."""
+    """Hybrid BM25 + vector search over guild memory (honoring channel privacy, scope rules, and role rules)."""
     query = query.strip()
     if not query or top_k <= 0:
         return []
-    channels = accessible_channels(guild_id, channel_id, current_channel_only=current_channel_only)
+    channels = accessible_channels(guild_id, channel_id, current_channel_only=current_channel_only, role_ids=role_ids)
     if not channels:
         return []
-    include_digests = not current_channel_only and (
-        channel_id is None or snapshot().settings(channel_id=channel_id, guild_id=guild_id).memory.share_in_guild
-    )
+    shared_ids = set(snapshot().shared_channel_ids(guild_id))
+    include_digests = not current_channel_only and bool(shared_ids) and shared_ids.issubset(channels)
     try:
         qv = await _query_vector(query)
     except Exception as e:
@@ -593,9 +654,12 @@ async def open_topics(
     channel_id: str | None = None,
     limit: int = 5,
     include_other_channels: bool = True,
+    role_ids: Collection[str] = (),
 ) -> list[TopicView]:
-    """Open topics: current channel first, optionally followed by sibling shared channels in the guild."""
-    channels = accessible_channels(guild_id, channel_id, current_channel_only=not include_other_channels)
+    """Open topics: current channel first, optionally followed by sibling accessible channels in the guild."""
+    channels = accessible_channels(
+        guild_id, channel_id, current_channel_only=not include_other_channels, role_ids=role_ids
+    )
     if not channels:
         return []
     async with get_session() as session:

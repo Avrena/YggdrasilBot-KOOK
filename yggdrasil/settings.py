@@ -57,6 +57,10 @@ class RoleAccessRule(BaseModel):
         default_factory=list,
         description="禁止该角色使用的工具（优先级高于允许，可单独禁用 sandbox 或任意工具）",
     )
+    bypass_channel_privacy: bool = Field(
+        default=False,
+        description="允许该角色在当前配置范围内绕过跨频道隐私与引用限制（可读取同服所有已启用频道；支持按服务器/分组/频道四级覆盖）",
+    )
 
 
 class AccessSettings(BaseModel):
@@ -363,8 +367,36 @@ class MemorySettings(BaseModel):
     enabled: bool = Field(default=True, description="是否开启记忆流水线（切块、话题、画像、黑话、摘要）")
     share_in_guild: bool = Field(
         default=True,
-        description="是否参与同服务器共享记忆：开启后本频道的聊天/话题可被同服其他频道搜到和指出；"
-        "管理/私密频道可关闭此项以隔离在当前频道内",
+        description="对外共享（单向隐私）：关闭后，其他频道默认无法引用本频道内容，且本频道不进入全服每日摘要/黑话/画像；"
+        "本频道自身仍可引用公共频道或获授权频道（如需完全不读外部频道，请关闭 cross_channel_read）",
+    )
+    cross_channel_read: bool = Field(
+        default=True,
+        description="在当前频道聊天时是否允许引用同服其他频道的历史与话题（关闭后仅限引用当前频道自身）",
+    )
+    readable_by_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "定向放行来源（频道 ID 或分组 ID）：即使 share_in_guild=false，"
+            "也允许这些频道或分组引用本频道内容（例如工单分组放行给管理员频道/分组）"
+        ),
+    )
+    readable_by_roles: list[str] = Field(
+        default_factory=list,
+        description=(
+            "定向放行角色（KOOK 角色 ID）：即使 share_in_guild=false，拥有这些角色的成员触发 bot 时仍可读取本频道内容"
+        ),
+    )
+    cross_channel_allow: list[str] = Field(
+        default_factory=list,
+        description=(
+            "本频道可引用的目标白名单（频道 ID 或分组 ID；留空表示不限，"
+            "仅受各频道共享/隐私规则约束；当前频道自身始终可见）"
+        ),
+    )
+    cross_channel_deny: list[str] = Field(
+        default_factory=list,
+        description="本频道禁止引用的目标黑名单（频道 ID 或分组 ID；优先级高于白名单和公共共享）",
     )
     chunk_gap_minutes: int = Field(default=20, description="消息间隔超过这个时间就切块")
     chunk_max_messages: int = 60

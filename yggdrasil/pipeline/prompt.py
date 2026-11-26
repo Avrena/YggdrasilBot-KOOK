@@ -1,5 +1,6 @@
 """What the agent of a chat or tldr run is told: instructions and user prompt with inline images."""
 
+from collections.abc import Collection
 from datetime import datetime
 
 from pydantic_ai.messages import UserContent
@@ -46,19 +47,21 @@ def instructions(
     sandbox: ToolSettings | None,
     report: bool,
     nonce: str,
+    role_ids: Collection[str] = (),
 ) -> str:
+    from yggdrasil.memory.search import accessible_channels
+
     snap = snapshot()
     channel_name = snap.channel_name(channel_id) if channel_id else ""
     guild_id = guild_id or (snap.guild_of(channel_id) if channel_id else None)
     guild_name = snap.guild_name(guild_id) if guild_id else ""
     sibling_channels: list[str] = []
-    if guild_id and (not channel_id or settings.memory.share_in_guild):
+    if guild_id:
+        allowed = set(accessible_channels(guild_id, channel_id, role_ids=role_ids))
         sibling_channels = [
             f"#{c.name}"
             for c in snap.guild_channels(guild_id, enabled_only=True)
-            if c.channel_id != channel_id
-            and c.name
-            and snap.settings(channel_id=c.channel_id, guild_id=guild_id).memory.share_in_guild
+            if c.channel_id != channel_id and c.name and c.channel_id in allowed
         ]
     return render(
         f"{handler}_system",

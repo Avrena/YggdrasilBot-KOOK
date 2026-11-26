@@ -28,7 +28,7 @@ import {
   upsertChannelMutation,
   upsertGuildMutation,
 } from "@/client/@tanstack/react-query.gen";
-import type { ChannelOut, GuildOut } from "@/client/types.gen";
+import type { ChannelOut, GuildOut, GuildTreeOut } from "@/client/types.gen";
 import {
   ConfirmButton,
   Empty,
@@ -317,6 +317,7 @@ export function ChannelsPage() {
               <ScopeOverrideEditor
                 key={`${selected.scope}:${selected.id}`}
                 selected={selected}
+                guildTree={tree.data.find((g) => g.guild.guild_id === selected.guildId)}
                 onClose={() => setSelected(null)}
               />
             </div>
@@ -425,10 +426,26 @@ const QUICK_OVERRIDES: { path: string[]; label: string }[] = [
   { path: ["access", "denied_roles"], label: "角色黑名单" },
   { path: ["access", "role_rules"], label: "按角色细分权限" },
   { path: ["tools", "enabled"], label: "可用工具" },
+  { path: ["memory", "share_in_guild"], label: "对外共享记忆" },
+  { path: ["memory", "cross_channel_read"], label: "跨频道读取" },
+  { path: ["memory", "readable_by_scopes"], label: "定向放行来源" },
+  { path: ["memory", "readable_by_roles"], label: "定向放行角色" },
+  { path: ["memory", "cross_channel_allow"], label: "引用白名单" },
+  { path: ["memory", "cross_channel_deny"], label: "禁止引用黑名单" },
 ];
 
+type MemoryScopeListField = "readable_by_scopes" | "cross_channel_allow" | "cross_channel_deny";
+
 /** Shared sparse-diff override editor for Guild / Category / Channel nodes. */
-function ScopeOverrideEditor({ selected, onClose }: { selected: SelectedScope; onClose: () => void }) {
+function ScopeOverrideEditor({
+  selected,
+  guildTree,
+  onClose,
+}: {
+  selected: SelectedScope;
+  guildTree?: GuildTreeOut;
+  onClose: () => void;
+}) {
   const schemaQ = useQuery(getSettingsSchemaOptions());
   const settingsQ = useQuery(
     getScopeSettingsOptions({ path: { scope: selected.scope, scope_id: selected.id } }),
@@ -472,36 +489,66 @@ function ScopeOverrideEditor({ selected, onClose }: { selected: SelectedScope; o
     }
   };
 
-  const toggleRoleList = (field: "allowed_roles" | "denied_roles", roleId: string) => {
-    const path = ["access", field];
+  const toggleStringList = (path: string[], itemId: string) => {
     const current = getAt(doc, path) ?? getAt(inherited, path);
     const list = Array.isArray(current) ? current.map(String) : [];
-    const next = list.includes(roleId) ? list.filter((r) => r !== roleId) : [...list, roleId];
+    const next = list.includes(itemId) ? list.filter((r) => r !== itemId) : [...list, itemId];
     setDoc((cur) => setAt(cur, path, next));
   };
+
+  const toggleRoleList = (field: "allowed_roles" | "denied_roles", roleId: string) =>
+    toggleStringList(["access", field], roleId);
+
+  const toggleMemoryScopeList = (field: MemoryScopeListField, scopeId: string) =>
+    toggleStringList(["memory", field], scopeId);
 
   const addRoleRule = (roleId: string) => {
     const path = ["access", "role_rules"];
     const current = getAt(doc, path) ?? getAt(inherited, path);
     const map = isPlainObject(current) ? { ...current } : {};
     if (!(roleId in map)) {
-      map[roleId] = { allow_bot: null, tools_allow: [], tools_deny: [] };
+      map[roleId] = { allow_bot: null, tools_allow: [], tools_deny: [], bypass_channel_privacy: false };
       setDoc((cur) => setAt(cur, path, map));
     }
   };
 
-  const effAllowed = new Set(
-    (Array.isArray(getAt(doc, ["access", "allowed_roles"]) ?? getAt(inherited, ["access", "allowed_roles"]))
-      ? ((getAt(doc, ["access", "allowed_roles"]) ?? getAt(inherited, ["access", "allowed_roles"])) as unknown[])
-      : []
-    ).map(String),
-  );
-  const effDenied = new Set(
-    (Array.isArray(getAt(doc, ["access", "denied_roles"]) ?? getAt(inherited, ["access", "denied_roles"]))
-      ? ((getAt(doc, ["access", "denied_roles"]) ?? getAt(inherited, ["access", "denied_roles"])) as unknown[])
-      : []
-    ).map(String),
-  );
+  const toggleBypassPrivacy = (roleId: string) => {
+    const path = ["access", "role_rules"];
+    const current = getAt(doc, path) ?? getAt(inherited, path);
+    const map = isPlainObject(current) ? { ...current } : {};
+    const existing = isPlainObject(map[roleId])
+      ? map[roleId]
+      : { allow_bot: null, tools_allow: [], tools_deny: [], bypass_channel_privacy: false };
+    map[roleId] = { ...existing, bypass_channel_privacy: !existing.bypass_channel_privacy };
+    setDoc((cur) => setAt(cur, path, map));
+  };
+
+  const effStringSet = (path: string[]) => {
+    const raw = getAt(doc, path) ?? getAt(inherited, path);
+    return new Set((Array.isArray(raw) ? (raw as unknown[]) : []).map(String));
+  };
+
+  const effAllowed = effStringSet(["access", "allowed_roles"]);
+  const effDenied = effStringSet(["access", "denied_roles"]);
+  const effReadableRoles = effStringSet(["memory", "readable_by_roles"]);
+  const effReadableScopes = effStringSet(["memory", "readable_by_scopes"]);
+  const effCrossAllow = effStringSet(["memory", "cross_channel_allow"]);
+  const effCrossDeny = effStringSet(["memory", "cross_channel_deny"]);
+  const effRoleRulesRaw = getAt(doc, ["access", "role_rules"]) ?? getAt(inherited, ["access", "role_rules"]);
+  const effRoleRules = isPlainObject(effRoleRulesRaw) ? effRoleRulesRaw : {};
+
+  const scopeItems: { id: string; label: string; isCategory: boolean }[] = [];
+  if (guildTree) {
+    for (const { category, channels } of guildTree.categories) {
+      scopeItems.push({ id: category.channel_id, label: `分组 ${category.name || category.channel_id}`, isCategory: true });
+      for (const ch of channels) {
+        scopeItems.push({ id: ch.channel_id, label: `#${ch.name || ch.channel_id}`, isCategory: false });
+      }
+    }
+    for (const ch of guildTree.ungrouped) {
+      scopeItems.push({ id: ch.channel_id, label: `#${ch.name || ch.channel_id}`, isCategory: false });
+    }
+  }
 
   return (
     <Card>
@@ -541,6 +588,9 @@ function ScopeOverrideEditor({ selected, onClose }: { selected: SelectedScope; o
                   {rolesQ.data.map((r) => {
                     const inAllow = effAllowed.has(r.role_id);
                     const inDeny = effDenied.has(r.role_id);
+                    const inReadable = effReadableRoles.has(r.role_id);
+                    const ruleObj = effRoleRules[r.role_id];
+                    const bypass = isPlainObject(ruleObj) && !!ruleObj.bypass_channel_privacy;
                     return (
                       <div key={r.role_id} className="flex flex-wrap items-center gap-1.5 text-xs">
                         <span className="min-w-0 flex-1 truncate font-medium" title={`${r.name} (${r.role_id})`}>
@@ -564,11 +614,83 @@ function ScopeOverrideEditor({ selected, onClose }: { selected: SelectedScope; o
                         </Button>
                         <Button
                           size="xs"
+                          variant={inReadable ? "secondary" : "outline"}
+                          className="h-6 px-1.5 text-[11px]"
+                          title="即使本频道/分组关闭对外共享，也允许该角色读取"
+                          onClick={() => toggleStringList(["memory", "readable_by_roles"], r.role_id)}
+                        >
+                          {inReadable ? "可读本私密" : "+放行可读"}
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant={bypass ? "default" : "outline"}
+                          className="h-6 px-1.5 text-[11px]"
+                          title="允许该角色在当前范围内绕过跨频道隐私限制"
+                          onClick={() => toggleBypassPrivacy(r.role_id)}
+                        >
+                          {bypass ? "已绕过隐私" : "+绕过隐私"}
+                        </Button>
+                        <Button
+                          size="xs"
                           variant="ghost"
                           className="h-6 px-1.5 text-[11px]"
                           onClick={() => addRoleRule(r.role_id)}
                         >
                           +工具规则
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {scopeItems.length > 0 && (
+              <div className="rounded-lg border bg-muted/20 p-2.5">
+                <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+                  本服分组与频道（点按设置跨频道引用与隐私放行）
+                </div>
+                <div className="grid max-h-40 gap-1.5 overflow-y-auto pr-1">
+                  {scopeItems.map((item) => {
+                    const inReadable = effReadableScopes.has(item.id);
+                    const inCrossAllow = effCrossAllow.has(item.id);
+                    const inCrossDeny = effCrossDeny.has(item.id);
+                    return (
+                      <div key={item.id} className="flex flex-wrap items-center gap-1.5 text-xs">
+                        <span
+                          className={cn(
+                            "min-w-0 flex-1 truncate",
+                            item.isCategory ? "font-medium" : "pl-2 text-muted-foreground",
+                          )}
+                          title={`${item.label} (${item.id})`}
+                        >
+                          {item.label}
+                        </span>
+                        <Button
+                          size="xs"
+                          variant={inReadable ? "default" : "outline"}
+                          className="h-6 px-1.5 text-[11px]"
+                          title="允许该来源频道/分组读取本隐私频道（memory.readable_by_scopes）"
+                          onClick={() => toggleMemoryScopeList("readable_by_scopes", item.id)}
+                        >
+                          {inReadable ? "已放行来源" : "+放行来源"}
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant={inCrossAllow ? "secondary" : "outline"}
+                          className="h-6 px-1.5 text-[11px]"
+                          title="在当前频道允许引用的目标白名单（memory.cross_channel_allow）"
+                          onClick={() => toggleMemoryScopeList("cross_channel_allow", item.id)}
+                        >
+                          {inCrossAllow ? "引用白名单" : "+引用白"}
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant={inCrossDeny ? "destructive" : "outline"}
+                          className="h-6 px-1.5 text-[11px]"
+                          title="在当前频道禁止引用的目标黑名单（memory.cross_channel_deny）"
+                          onClick={() => toggleMemoryScopeList("cross_channel_deny", item.id)}
+                        >
+                          {inCrossDeny ? "已禁引用" : "+禁引用"}
                         </Button>
                       </div>
                     );

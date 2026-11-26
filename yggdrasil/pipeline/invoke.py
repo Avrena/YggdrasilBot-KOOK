@@ -295,6 +295,7 @@ class Invocator:
             return "failed"
 
         mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
+        role_ids = self._role_ids()
         deps = Deps(
             self.kook,
             self.channel_id,
@@ -311,6 +312,7 @@ class Invocator:
             invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
             request_text=ctx.request_text or ctx.trigger.text,
             notes=self.notes,
+            role_ids=role_ids,
         )
         if self.notes.full:
             self.notes.context = ctx.display
@@ -338,9 +340,14 @@ class Invocator:
                 sandbox=tools_cfg if sandbox_on else None,
                 report=False,
                 nonce=ctx.nonce,
+                role_ids=role_ids,
             )
         )
-        self._keep = (sessions.Setup(route, system, tool_list, sandbox_on, skill_list), ctx.nonce)
+        accessible = self._accessible_channels(role_ids)
+        self._keep = (
+            sessions.Setup(route, system, tool_list, sandbox_on, skill_list, accessible),
+            ctx.nonce,
+        )
         agent = self._agent(
             resolved_model,
             tools=tools_for(tool_list) + action_tools() + suite.tools,
@@ -350,6 +357,21 @@ class Invocator:
         prompt = await inline_images(ctx, route, self.settings.context.inline_images, self.notes)
         return await self._execute(
             agent, prompt, deps, resolved_model, mod_text, history=session.messages if session else None
+        )
+
+    def _role_ids(self) -> tuple[str, ...]:
+        incoming = getattr(self, "incoming", None)
+        if incoming is None:
+            return ()
+        return tuple(str(r) for r in incoming.sender.role_ids)
+
+    def _accessible_channels(self, role_ids: tuple[str, ...] | None = None) -> list[str] | None:
+        if not self.guild_id:
+            return None
+        from yggdrasil.memory.search import accessible_channels
+
+        return accessible_channels(
+            self.guild_id, self.channel_id, role_ids=self._role_ids() if role_ids is None else role_ids
         )
 
     def _effective_tools(self) -> list[str]:
@@ -628,13 +650,15 @@ class Invocator:
             return None
         setup = found.setup
         allowed_tools = set(tool_names(self._effective_tools(), setup.handler))
+        current_accessible = set(self._accessible_channels() or ())
         if (
             any(name not in ALL_TOOLS for name in setup.tools)
             or not set(setup.tools) <= allowed_tools
             or (setup.sandbox and not self._suite_enabled(setup.handler))
             or not set(setup.skills) <= set(skill_names(self.settings, self.handler, self.channel_id))
+            or (setup.accessible_channels is not None and not set(setup.accessible_channels) <= current_accessible)
         ):
-            LOGGER.info("invocation {} used tools this run can't have; starting over", found.invocation_id)
+            LOGGER.info("invocation {} used tools or channels this run can't have; starting over", found.invocation_id)
             return None
         LOGGER.info("continuing the conversation of invocation {}", found.invocation_id)
         return found

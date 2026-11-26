@@ -26,6 +26,7 @@ class Setup:
     tools: list[str]
     sandbox: bool
     skills: list[str] = field(default_factory=list)
+    accessible_channels: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -56,6 +57,9 @@ async def save(
         async with get_session() as s:
             expired = InvocationSession.created_at < datetime.now(UTC) - RETENTION
             await s.execute(delete(InvocationSession).where(expired))
+            handles_doc = handles.dump()
+            if setup.accessible_channels is not None:
+                handles_doc["accessible_channels"] = list(setup.accessible_channels)
             s.add(
                 InvocationSession(
                     invocation_id=invocation_id,
@@ -65,7 +69,7 @@ async def save(
                     sandbox=setup.sandbox,
                     skills=setup.skills,
                     messages=payload,
-                    handles=handles.dump(),
+                    handles=handles_doc,
                     nonce=nonce,
                     seen_message_id=seen_message_id,
                 )
@@ -95,9 +99,11 @@ async def load(channel_id: str, answer_msg_id: str, max_age: timedelta) -> Sessi
     except ValidationError:
         LOGGER.warning("session of {} no longer loads; starting over", row.invocation_id)
         return None
+    raw_accessible = (row.handles or {}).get("accessible_channels")
+    accessible = [str(c) for c in raw_accessible] if isinstance(raw_accessible, list) else None
     return Session(
         row.invocation_id,
-        Setup(row.handler, row.instructions, list(row.tools), row.sandbox, list(row.skills)),
+        Setup(row.handler, row.instructions, list(row.tools), row.sandbox, list(row.skills), accessible),
         messages,
         Handles.load(row.handles),
         row.nonce,

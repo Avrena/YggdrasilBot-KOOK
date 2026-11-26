@@ -88,7 +88,7 @@ async def resolve_ref(ctx: RunContext[Deps], ref: str, *kinds: str) -> Handle:
     if not ctx.deps.guild_id:
         raise ToolError("私聊里没有频道记录，只能用句柄")
     msg_id, k = int(m.group(1)), int(m.group(2) or 1)
-    allowed = accessible_channels(ctx.deps.guild_id, ctx.deps.channel_id)
+    allowed = accessible_channels(ctx.deps.guild_id, ctx.deps.channel_id, role_ids=ctx.deps.role_ids)
     segments = (await message_segments(ctx.deps.guild_id, [msg_id], allowed_channels=allowed)).get(msg_id)
     if segments is None:
         raise ToolError(f"本服务器可见聊天记录里没有消息 #{msg_id}（或者已撤回）")

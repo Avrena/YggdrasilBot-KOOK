@@ -16,6 +16,8 @@ Superusers always bypass scope/role restrictions. For everyone else:
      ``tools_deny`` (deny always wins over allow).
 """
 
+from collections.abc import Collection
+
 from yggdrasil.kook.model import Incoming
 from yggdrasil.settings import RoleAccessRule, Settings
 
@@ -87,3 +89,11 @@ def effective_tools(settings: Settings, incoming: Incoming, *, role: str) -> lis
     if deny:
         out = [t for t in out if t not in deny]
     return out
+
+
+def can_bypass_channel_privacy(settings: Settings, role_ids: Collection[str]) -> bool:
+    """Whether any of the speaker's KOOK roles grants ``bypass_channel_privacy`` in ``settings``."""
+    rules = settings.access.role_rules
+    if not rules or not role_ids:
+        return False
+    return any(rules[rid].bypass_channel_privacy for raw in role_ids if (rid := str(raw).strip()) in rules)

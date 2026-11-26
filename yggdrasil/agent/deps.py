@@ -94,3 +94,4 @@ class Deps:
     made_images: dict[str, bytes] = field(default_factory=dict)
     text_only: bool = False
     bridge: "RunBridge | None" = None
+    role_ids: tuple[str, ...] = ()

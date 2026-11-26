@@ -1,7 +1,7 @@
 import pytest
 from starlette.requests import Request
 
-from yggdrasil.access import can_use_bot, effective_tools
+from yggdrasil.access import can_bypass_channel_privacy, can_use_bot, effective_tools
 from yggdrasil.admin.auth import require_admin
 from yggdrasil.agent.tools import suite_enabled, tool_names
 from yggdrasil.config import APP_CONFIG
@@ -105,6 +105,16 @@ def test_role_rules_allow_bot_override_and_tool_permissions() -> None:
     su_eff = effective_tools(s, vip, role="superuser")
     assert su_eff == ["read_url", "web_search", "sandbox"]
     assert suite_enabled(s, "chat", "ch1", global_settings=Settings(), configured=True, enabled_tools=su_eff)
+
+
+def test_can_bypass_channel_privacy() -> None:
+    s = merge_settings(
+        {},
+        {"access": {"role_rules": {"777": {"bypass_channel_privacy": True}, "888": {"bypass_channel_privacy": False}}}},
+    )
+    assert can_bypass_channel_privacy(s, ("777",)) is True
+    assert can_bypass_channel_privacy(s, ("888",)) is False
+    assert can_bypass_channel_privacy(s, ()) is False
 
 
 async def test_dashboard_auth_disabled_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:

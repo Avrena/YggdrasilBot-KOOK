@@ -344,7 +344,12 @@ async def build_context(
                 blocks.add("服务器黑话", "\n".join(f"- {t.term}：{t.definition}" for t in hits))
         if cfg.include_open_topics and background:
             try:
-                topics = await search.open_topics(guild_id, channel_id=channel_id, limit=5)
+                topics = await search.open_topics(
+                    guild_id,
+                    channel_id=channel_id,
+                    limit=5,
+                    role_ids=tuple(str(r) for r in incoming.sender.role_ids),
+                )
             except Exception:
                 LOGGER.exception("open_topics failed")
                 topics = []
