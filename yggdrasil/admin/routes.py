@@ -105,6 +105,8 @@ async def upsert_route(task: str, body: RouteIn, actor: Actor) -> TaskRouteRow:
     thinking = _thinking_needs(body.params)
     if task == "agent" and (body.params or body.limits.model_dump(exclude_none=True)):
         raise unprocessable("agent 路由的参数和限制由工作区里的 agent 自己决定（预算在设置里），这里不能设置")
+    if task == "image" and (api := body.params.get("api")) is not None and api not in ("auto", "openrouter", "openai"):
+        raise unprocessable("image 路由的 api 参数只能是 auto / openrouter / openai")
     async with change(actor, "route", "upsert", task) as c:
         for pid, model in {(body.provider_id, body.model.strip()), (fallback_provider_id, fallback_model)}:
             if pid is None or model is None:

@@ -9,7 +9,7 @@ import base64
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -58,7 +58,7 @@ TASKS = (
     "memory_glossary",
     "memory_profile",
     "memory_digest",
-    # Image generation (yggdrasil.tools.image), a direct POST {base}/images in OpenRouter's shape.
+    # Image generation (yggdrasil.tools.image): OpenRouter POST {base}/images and OpenAI /images/generations + /edits.
     "image",
     # Picks a sticker to drop into the chat (yggdrasil.stickers.drop): a decision model such as Jev on OpenRouter's
     # Decisions API, not a chat model.
@@ -505,6 +505,76 @@ class GeneratedImages:
     cost: float | None  # USD, when the provider reports it
 
 
+_IMAGE_FORMATS = {
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+_WIDE_ASPECTS = frozenset({"3:2", "4:3", "16:9", "21:9"})
+_TALL_ASPECTS = frozenset({"2:3", "3:4", "9:16"})
+
+
+def _image_api_mode(p: ProviderInfo, params: dict[str, Any]) -> Literal["openrouter", "openai"]:
+    explicit = params.get("api")
+    if explicit == "openrouter":
+        return "openrouter"
+    if explicit == "openai":
+        return "openai"
+    return "openrouter" if "openrouter" in p.base_url.lower() else "openai"
+
+
+def _legacy_openai_size(model: str, aspect_ratio: str) -> str | None:
+    """Older OpenAI image models take ``size`` instead of ``aspect_ratio``; ``gpt-image-2*`` takes ``aspect_ratio``."""
+    bare = model.rsplit("/", 1)[-1].lower()
+    if bare.startswith("gpt-image-1"):
+        if aspect_ratio in _WIDE_ASPECTS:
+            return "1536x1024"
+        if aspect_ratio in _TALL_ASPECTS:
+            return "1024x1536"
+        return "1024x1024"
+    if bare.startswith("dall-e-3"):
+        if aspect_ratio in _WIDE_ASPECTS:
+            return "1792x1024"
+        if aspect_ratio in _TALL_ASPECTS:
+            return "1024x1792"
+        return "1024x1024"
+    if bare.startswith("dall-e-2"):
+        return "1024x1024"
+    return None
+
+
+def _form_value(v: Any) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (dict, list)):
+        import json
+
+        return json.dumps(v, ensure_ascii=False)
+    return str(v)
+
+
+async def _post_image_request(
+    client: httpx.AsyncClient | None,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json_body: dict[str, Any] | None = None,
+    form_data: dict[str, str] | None = None,
+    files: list[tuple[str, tuple[str, bytes, str]]] | None = None,
+) -> httpx.Response:
+    async def _send(c: httpx.AsyncClient) -> httpx.Response:
+        if files is not None:
+            return await c.post(url, data=form_data, files=files, headers=headers)
+        return await c.post(url, json=json_body, headers=headers)
+
+    if client is not None:
+        return await _send(client)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as own:
+        return await _send(own)
+
+
 async def generate_images(
     prompt: str,
     *,
@@ -512,31 +582,66 @@ async def generate_images(
     aspect_ratio: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> GeneratedImages:
-    """OpenRouter's ``POST {base}/images`` (text to image, or edits with reference images) for the ``image`` route.
+    """Generate or edit images for the ``image`` route.
 
-    The route's ``params`` go into the request body as-is (``quality``, ``resolution``, ``output_format``, ...).
+    Supports both:
+    - OpenRouter ``POST {base}/images`` (auto-selected when ``base_url`` contains ``openrouter``,
+      or explicitly via ``params.api="openrouter"``)
+    - OpenAI Images API ``POST {base}/images/generations`` and ``POST {base}/images/edits`` (for ``gpt-image-2``,
+      ``gpt-image-2.5-*``, ``gpt-image-1*``, and OpenAI-compatible gateways; auto-selected otherwise
+      or via ``params.api="openai"``)
+
+    All other keys in ``route.params`` go into the request body as-is (``quality``, ``resolution``, ``size``,
+    ``output_format``, ``background``, ``complexity``, ...).
     """
     snap = snapshot()
     r = route("image", snap)
     p = _provider(snap, r.provider_id, "image")
-    body: dict[str, Any] = {**r.params, "model": r.model, "prompt": prompt, "n": 1}
-    if aspect_ratio:
-        body["aspect_ratio"] = aspect_ratio
-    if references:
-        body["input_references"] = [
-            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
-            for data, mime in references
-        ]
+    mode = _image_api_mode(p, r.params)
+    extra = {k: v for k, v in r.params.items() if k != "api"}
     headers = {"User-Agent": APP_CONFIG.llm_user_agent, **p.headers}
     if p.api_key:
         headers["Authorization"] = f"Bearer {p.api_key}"
     label = f"{p.name}/{r.model}"
+
     try:
-        if client is not None:
-            resp = await client.post(f"{p.base_url}/images", json=body, headers=headers)
+        if mode == "openrouter":
+            body: dict[str, Any] = {**extra, "model": r.model, "prompt": prompt, "n": 1}
+            if aspect_ratio:
+                body["aspect_ratio"] = aspect_ratio
+            if references:
+                body["input_references"] = [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"},
+                    }
+                    for data, mime in references
+                ]
+            resp = await _post_image_request(client, f"{p.base_url}/images", headers=headers, json_body=body)
         else:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as own:
-                resp = await own.post(f"{p.base_url}/images", json=body, headers=headers)
+            payload: dict[str, Any] = {**extra, "model": r.model, "prompt": prompt, "n": 1}
+            if aspect_ratio and "size" not in payload:
+                if legacy_size := _legacy_openai_size(r.model, aspect_ratio):
+                    payload["size"] = legacy_size
+                else:
+                    payload["aspect_ratio"] = aspect_ratio
+            if references:
+                field = "image" if len(references) == 1 else "image[]"
+                files = [
+                    (
+                        field,
+                        (f"ref-{idx}.{mime.removeprefix('image/').replace('jpeg', 'jpg') or 'png'}", data, mime),
+                    )
+                    for idx, (data, mime) in enumerate(references, 1)
+                ]
+                form_data = {k: _form_value(v) for k, v in payload.items() if v is not None}
+                resp = await _post_image_request(
+                    client, f"{p.base_url}/images/edits", headers=headers, form_data=form_data, files=files
+                )
+            else:
+                resp = await _post_image_request(
+                    client, f"{p.base_url}/images/generations", headers=headers, json_body=payload
+                )
     except httpx.HTTPError as e:
         raise ImageError(f"请求失败：{type(e).__name__}") from e
     try:
@@ -547,15 +652,17 @@ async def generate_images(
         error = data.get("error") if isinstance(data, dict) else None
         message = error.get("message") if isinstance(error, dict) else None
         raise ImageError(f"{resp.status_code} {message or resp.text[:300] or resp.reason_phrase}")
+    default_mime = _IMAGE_FORMATS.get(str(extra.get("output_format") or "").lower(), "image/png")
     images = [
-        (base64.b64decode(item["b64_json"]), str(item.get("media_type") or "image/png"))
+        (base64.b64decode(item["b64_json"]), str(item.get("media_type") or default_mime))
         for item in data.get("data") or []
         if isinstance(item, dict) and item.get("b64_json")
     ]
     if not images:
         raise ImageError("没有返回图片")
     usage = data.get("usage") or {}
-    input_tokens, output_tokens = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+    input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
     record_usage("image", r.model, input_tokens=input_tokens, output_tokens=output_tokens)
     cost = usage.get("cost")
     return GeneratedImages(

@@ -49,6 +49,7 @@ const TASK_LABELS: Record<string, string> = {
   memory_glossary: "黑话词典",
   memory_profile: "用户画像",
   memory_digest: "每日摘要",
+  image: "画图",
   sticker_pick: "挑表情包",
 };
 
@@ -195,7 +196,7 @@ function RouteDialog({
       title={TASK_LABELS[row.task] ?? row.task}
       description={
         image
-          ? "画图用哪个 provider 的哪个模型（OpenRouter 的 /images 接口），参数原样放进请求体。"
+          ? "画图模型路由：自动识别 OpenRouter（/images）与 OpenAI（/images/generations、/images/edits，支持 gpt-image-2 等）；也可用参数 api: \"openai\" / \"openrouter\" 显式指定。"
           : `任务 ${row.task} 用哪个 provider 的哪个模型、调用参数和 UsageLimits。`
       }
       onSubmit={() => save.mutate({ path: { task: row.task }, body: form })}
@@ -255,7 +256,7 @@ function RouteDialog({
         label="参数"
         hint={
           image
-            ? "quality（auto、low、medium、high…）、resolution、output_format、background…"
+            ? "api（auto / openai / openrouter）、quality（auto、low、medium、high）、resolution、size、output_format、background、complexity…"
             : "temperature、max_tokens、top_p、timeout、seed、extra_body…"
         }
       >

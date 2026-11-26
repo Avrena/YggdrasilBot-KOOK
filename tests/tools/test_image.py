@@ -159,3 +159,91 @@ async def test_an_unsafe_picture_is_not_sent(upstream: Routes, monkeypatch: pyte
     assert "审核没通过（gore）" in str(result)
     assert kook.sent == []
     assert ctx.deps.actions == []
+
+
+async def test_openai_gpt_image_2_generations_and_edits(
+    monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., runtime.Snapshot]
+) -> None:
+    base = "https://api.openai.com/v1"
+    provider = runtime.ProviderInfo(2, "openai", base, "sk-openai", {"cf-aig-authorization": "Bearer cfut_1"}, True, ())
+    snapshot(
+        providers={2: provider},
+        routes={
+            "image": runtime.Route(
+                "image", 2, "gpt-image-2", {"quality": "medium", "output_format": "webp"}, None, None, {}
+            )
+        },
+    )
+    picture = png("green")
+    ok = httpx.Response(
+        200,
+        json={
+            "data": [{"b64_json": base64.b64encode(picture).decode()}],
+            "usage": {"input_tokens": 25, "output_tokens": 1024},
+        },
+    )
+    routes = Routes({f"{base}/images/generations": ok, f"{base}/images/edits": ok})
+    routes.install(monkeypatch)
+
+    # 1) Text-to-image hits /images/generations with native aspect_ratio for gpt-image-2
+    async with routes.client() as client:
+        gen = await registry.generate_images("一只小猫", aspect_ratio="16:9", client=client)
+    assert routes.seen[-1].url.path == "/v1/images/generations"
+    assert routes.seen[-1].headers["authorization"] == "Bearer sk-openai"
+    assert routes.seen[-1].headers["cf-aig-authorization"] == "Bearer cfut_1"
+    assert json.loads(routes.seen[-1].content) == {
+        "quality": "medium",
+        "output_format": "webp",
+        "model": "gpt-image-2",
+        "prompt": "一只小猫",
+        "n": 1,
+        "aspect_ratio": "16:9",
+    }
+    assert gen.images == [(picture, "image/webp")]
+    assert (gen.input_tokens, gen.output_tokens, gen.cost) == (25, 1024, None)
+
+    # 2) Editing with references hits /images/edits as multipart/form-data
+    ref_a, ref_b = png("red"), png("blue")
+    async with routes.client() as client:
+        await registry.generate_images(
+            "合并两张图", references=[(ref_a, "image/png"), (ref_b, "image/png")], client=client
+        )
+    edit_req = routes.seen[-1]
+    assert edit_req.url.path == "/v1/images/edits"
+    assert "multipart/form-data" in edit_req.headers["content-type"]
+    assert b'name="image[]"' in edit_req.content
+    assert b"gpt-image-2" in edit_req.content
+    assert ref_a in edit_req.content
+    assert ref_b in edit_req.content
+
+
+async def test_openai_legacy_gpt_image_1_maps_aspect_ratio_to_size_and_explicit_api_override(
+    monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., runtime.Snapshot]
+) -> None:
+    base = "https://gateway.example.com/v1"
+    provider = runtime.ProviderInfo(3, "relay", base, "sk-relay", {}, True, ())
+    snapshot(
+        providers={3: provider},
+        routes={"image": runtime.Route("image", 3, "gpt-image-1", {"api": "openai"}, None, None, {})},
+    )
+    routes = Routes({f"{base}/images/generations": _ok(png())})
+    routes.install(monkeypatch)
+    async with routes.client() as client:
+        await registry.generate_images("风景", aspect_ratio="16:9", client=client)
+    body = json.loads(routes.seen[-1].content)
+    assert "api" not in body
+    assert "aspect_ratio" not in body
+    assert body["size"] == "1536x1024"
+
+    # Explicit api="openrouter" works even when base_url does not contain "openrouter"
+    snapshot(
+        providers={3: provider},
+        routes={"image": runtime.Route("image", 3, "openai/gpt-image-2", {"api": "openrouter"}, None, None, {})},
+    )
+    routes.answers[f"{base}/images"] = _ok(png())
+    async with routes.client() as client:
+        await registry.generate_images("风景", aspect_ratio="16:9", client=client)
+    assert routes.seen[-1].url.path == "/v1/images"
+    body = json.loads(routes.seen[-1].content)
+    assert "api" not in body
+    assert body["aspect_ratio"] == "16:9"
