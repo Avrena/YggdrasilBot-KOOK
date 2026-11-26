@@ -51,7 +51,7 @@ import {
 } from "@/components/schema-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Command,
   CommandEmpty,
@@ -141,7 +141,7 @@ export function ChannelsPage() {
       )}
 
       {!!tree.data?.length && (
-        <div className={cn("grid items-start gap-6", selected && "xl:grid-cols-[minmax(0,1fr)_28rem]")}>
+        <div className={cn("grid items-start gap-6", selected && "xl:grid-cols-[minmax(0,1fr)_32rem]")}>
           <div className="grid gap-4">
             {tree.data.map(({ guild, categories, ungrouped }) => {
               const gCollapsed = !!collapsed[`g:${guild.guild_id}`];
@@ -460,6 +460,8 @@ function ScopeOverrideEditor({
   });
   const [doc, setDoc] = useState<Record<string, unknown>>({});
   const [picking, setPicking] = useState(false);
+  const [rolesOpen, setRolesOpen] = useState(false);
+  const [scopesOpen, setScopesOpen] = useState(false);
 
   useEffect(() => {
     if (settingsQ.data) setDoc(settingsQ.data.value);
@@ -550,13 +552,20 @@ function ScopeOverrideEditor({
     }
   }
 
+  const activeRoleHits =
+    effAllowed.size +
+    effDenied.size +
+    effReadableRoles.size +
+    Object.keys(effRoleRules).length;
+  const activeScopeHits = effReadableScopes.size + effCrossAllow.size + effCrossDeny.size;
+
   return (
-    <Card>
-      <CardHeader className="pb-3">
+    <Card className="flex flex-col xl:max-h-[calc(100vh-3rem)]">
+      <CardHeader className="shrink-0 border-b pb-3">
         <div className="flex items-start justify-between gap-2">
-          <div>
-            <CardTitle className="text-base">{selected.label}</CardTitle>
-            <CardDescription className="mt-1 text-xs">
+          <div className="min-w-0">
+            <CardTitle className="truncate text-base">{selected.label}</CardTitle>
+            <CardDescription className="mt-1 truncate text-xs" title={(settingsQ.data.chain ?? []).join(" → ")}>
               继承链：{(settingsQ.data.chain ?? []).join(" → ")}
             </CardDescription>
           </div>
@@ -565,7 +574,7 @@ function ScopeOverrideEditor({
           </Button>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="min-h-0 flex-1 overflow-y-auto">
         <Tabs defaultValue="form">
           <TabsList>
             <TabsTrigger value="form">表单</TabsTrigger>
@@ -580,122 +589,138 @@ function ScopeOverrideEditor({
               ))}
             </div>
             {!!rolesQ.data?.length && (
-              <div className="rounded-lg border bg-muted/20 p-2.5">
-                <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-                  本服 KOOK 角色（点按快速加入白名单 / 黑名单 / 细分规则）
-                </div>
-                <div className="grid max-h-36 gap-1.5 overflow-y-auto pr-1">
-                  {rolesQ.data.map((r) => {
-                    const inAllow = effAllowed.has(r.role_id);
-                    const inDeny = effDenied.has(r.role_id);
-                    const inReadable = effReadableRoles.has(r.role_id);
-                    const ruleObj = effRoleRules[r.role_id];
-                    const bypass = isPlainObject(ruleObj) && !!ruleObj.bypass_channel_privacy;
-                    return (
-                      <div key={r.role_id} className="flex flex-wrap items-center gap-1.5 text-xs">
-                        <span className="min-w-0 flex-1 truncate font-medium" title={`${r.name} (${r.role_id})`}>
-                          {r.name} <span className="font-mono text-[11px] text-muted-foreground">({r.role_id})</span>
-                        </span>
-                        <Button
-                          size="xs"
-                          variant={inAllow ? "default" : "outline"}
-                          className="h-6 px-1.5 text-[11px]"
-                          onClick={() => toggleRoleList("allowed_roles", r.role_id)}
-                        >
-                          {inAllow ? "已白名单" : "+白名单"}
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant={inDeny ? "destructive" : "outline"}
-                          className="h-6 px-1.5 text-[11px]"
-                          onClick={() => toggleRoleList("denied_roles", r.role_id)}
-                        >
-                          {inDeny ? "已禁用" : "+禁用"}
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant={inReadable ? "secondary" : "outline"}
-                          className="h-6 px-1.5 text-[11px]"
-                          title="即使本频道/分组关闭对外共享，也允许该角色读取"
-                          onClick={() => toggleStringList(["memory", "readable_by_roles"], r.role_id)}
-                        >
-                          {inReadable ? "可读本私密" : "+放行可读"}
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant={bypass ? "default" : "outline"}
-                          className="h-6 px-1.5 text-[11px]"
-                          title="允许该角色在当前范围内绕过跨频道隐私限制"
-                          onClick={() => toggleBypassPrivacy(r.role_id)}
-                        >
-                          {bypass ? "已绕过隐私" : "+绕过隐私"}
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          className="h-6 px-1.5 text-[11px]"
-                          onClick={() => addRoleRule(r.role_id)}
-                        >
-                          +工具规则
-                        </Button>
-                      </div>
-                    );
-                  })}
-                </div>
+              <div className="rounded-lg border bg-muted/20">
+                <button
+                  type="button"
+                  onClick={() => setRolesOpen((o) => !o)}
+                  className="flex w-full items-center gap-1.5 px-2.5 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
+                >
+                  {rolesOpen ? <ChevronDownIcon className="size-3.5" /> : <ChevronRightIcon className="size-3.5" />}
+                  <span className="flex-1">快捷设置：本服 KOOK 角色（{rolesQ.data.length}）</span>
+                  {activeRoleHits > 0 && <Badge variant="secondary">已配 {activeRoleHits}</Badge>}
+                </button>
+                {rolesOpen && (
+                  <div className="grid max-h-48 gap-1.5 overflow-y-auto border-t px-2.5 py-2">
+                    {rolesQ.data.map((r) => {
+                      const inAllow = effAllowed.has(r.role_id);
+                      const inDeny = effDenied.has(r.role_id);
+                      const inReadable = effReadableRoles.has(r.role_id);
+                      const ruleObj = effRoleRules[r.role_id];
+                      const bypass = isPlainObject(ruleObj) && !!ruleObj.bypass_channel_privacy;
+                      return (
+                        <div key={r.role_id} className="flex flex-wrap items-center gap-1 text-xs">
+                          <span className="min-w-24 flex-1 truncate font-medium" title={`${r.name} (${r.role_id})`}>
+                            {r.name}
+                          </span>
+                          <Button
+                            size="xs"
+                            variant={inAllow ? "default" : "outline"}
+                            className="h-6 px-1.5 text-[11px]"
+                            onClick={() => toggleRoleList("allowed_roles", r.role_id)}
+                          >
+                            {inAllow ? "已白名单" : "+白名单"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant={inDeny ? "destructive" : "outline"}
+                            className="h-6 px-1.5 text-[11px]"
+                            onClick={() => toggleRoleList("denied_roles", r.role_id)}
+                          >
+                            {inDeny ? "已禁用" : "+禁用"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant={inReadable ? "secondary" : "outline"}
+                            className="h-6 px-1.5 text-[11px]"
+                            title="即使本频道/分组关闭对外共享，也允许该角色读取"
+                            onClick={() => toggleStringList(["memory", "readable_by_roles"], r.role_id)}
+                          >
+                            {inReadable ? "可读私密" : "+放行可读"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant={bypass ? "default" : "outline"}
+                            className="h-6 px-1.5 text-[11px]"
+                            title="允许该角色在当前范围内绕过跨频道隐私限制"
+                            onClick={() => toggleBypassPrivacy(r.role_id)}
+                          >
+                            {bypass ? "已绕过隐私" : "+绕过隐私"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            className="h-6 px-1.5 text-[11px]"
+                            onClick={() => addRoleRule(r.role_id)}
+                          >
+                            +工具
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
             {scopeItems.length > 0 && (
-              <div className="rounded-lg border bg-muted/20 p-2.5">
-                <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-                  本服分组与频道（点按设置跨频道引用与隐私放行）
-                </div>
-                <div className="grid max-h-40 gap-1.5 overflow-y-auto pr-1">
-                  {scopeItems.map((item) => {
-                    const inReadable = effReadableScopes.has(item.id);
-                    const inCrossAllow = effCrossAllow.has(item.id);
-                    const inCrossDeny = effCrossDeny.has(item.id);
-                    return (
-                      <div key={item.id} className="flex flex-wrap items-center gap-1.5 text-xs">
-                        <span
-                          className={cn(
-                            "min-w-0 flex-1 truncate",
-                            item.isCategory ? "font-medium" : "pl-2 text-muted-foreground",
-                          )}
-                          title={`${item.label} (${item.id})`}
-                        >
-                          {item.label}
-                        </span>
-                        <Button
-                          size="xs"
-                          variant={inReadable ? "default" : "outline"}
-                          className="h-6 px-1.5 text-[11px]"
-                          title="允许该来源频道/分组读取本隐私频道（memory.readable_by_scopes）"
-                          onClick={() => toggleMemoryScopeList("readable_by_scopes", item.id)}
-                        >
-                          {inReadable ? "已放行来源" : "+放行来源"}
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant={inCrossAllow ? "secondary" : "outline"}
-                          className="h-6 px-1.5 text-[11px]"
-                          title="在当前频道允许引用的目标白名单（memory.cross_channel_allow）"
-                          onClick={() => toggleMemoryScopeList("cross_channel_allow", item.id)}
-                        >
-                          {inCrossAllow ? "引用白名单" : "+引用白"}
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant={inCrossDeny ? "destructive" : "outline"}
-                          className="h-6 px-1.5 text-[11px]"
-                          title="在当前频道禁止引用的目标黑名单（memory.cross_channel_deny）"
-                          onClick={() => toggleMemoryScopeList("cross_channel_deny", item.id)}
-                        >
-                          {inCrossDeny ? "已禁引用" : "+禁引用"}
-                        </Button>
-                      </div>
-                    );
-                  })}
-                </div>
+              <div className="rounded-lg border bg-muted/20">
+                <button
+                  type="button"
+                  onClick={() => setScopesOpen((o) => !o)}
+                  className="flex w-full items-center gap-1.5 px-2.5 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
+                >
+                  {scopesOpen ? <ChevronDownIcon className="size-3.5" /> : <ChevronRightIcon className="size-3.5" />}
+                  <span className="flex-1">快捷设置：本服分组与频道（{scopeItems.length}）</span>
+                  {activeScopeHits > 0 && <Badge variant="secondary">已配 {activeScopeHits}</Badge>}
+                </button>
+                {scopesOpen && (
+                  <div className="grid max-h-48 gap-1.5 overflow-y-auto border-t px-2.5 py-2">
+                    {scopeItems.map((item) => {
+                      const inReadable = effReadableScopes.has(item.id);
+                      const inCrossAllow = effCrossAllow.has(item.id);
+                      const inCrossDeny = effCrossDeny.has(item.id);
+                      return (
+                        <div key={item.id} className="flex flex-wrap items-center gap-1 text-xs">
+                          <span
+                            className={cn(
+                              "min-w-24 flex-1 truncate",
+                              item.isCategory ? "font-medium" : "pl-2 text-muted-foreground",
+                            )}
+                            title={`${item.label} (${item.id})`}
+                          >
+                            {item.label}
+                          </span>
+                          <Button
+                            size="xs"
+                            variant={inReadable ? "default" : "outline"}
+                            className="h-6 px-1.5 text-[11px]"
+                            title="允许该来源频道/分组读取本隐私频道（memory.readable_by_scopes）"
+                            onClick={() => toggleMemoryScopeList("readable_by_scopes", item.id)}
+                          >
+                            {inReadable ? "已放行来源" : "+放行来源"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant={inCrossAllow ? "secondary" : "outline"}
+                            className="h-6 px-1.5 text-[11px]"
+                            title="在当前频道允许引用的目标白名单（memory.cross_channel_allow）"
+                            onClick={() => toggleMemoryScopeList("cross_channel_allow", item.id)}
+                          >
+                            {inCrossAllow ? "引用白名单" : "+引用白"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant={inCrossDeny ? "destructive" : "outline"}
+                            className="h-6 px-1.5 text-[11px]"
+                            title="在当前频道禁止引用的目标黑名单（memory.cross_channel_deny）"
+                            onClick={() => toggleMemoryScopeList("cross_channel_deny", item.id)}
+                          >
+                            {inCrossDeny ? "已禁引用" : "+禁引用"}
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
             {present.length === 0 && (
@@ -786,22 +811,22 @@ function ScopeOverrideEditor({
             </Field>
           </TabsContent>
         </Tabs>
-        <div className="mt-4 flex gap-2">
-          <PendingButton
-            size="sm"
-            pending={save.isPending}
-            disabled={!dirty}
-            onClick={() =>
-              save.mutate({ path: { scope: selected.scope, scope_id: selected.id }, body: doc })
-            }
-          >
-            保存覆盖
-          </PendingButton>
-          <Button size="sm" variant="outline" disabled={!dirty} onClick={() => setDoc(settingsQ.data.value)}>
-            还原
-          </Button>
-        </div>
       </CardContent>
+      <CardFooter className="shrink-0 gap-2">
+        <PendingButton
+          size="sm"
+          pending={save.isPending}
+          disabled={!dirty}
+          onClick={() =>
+            save.mutate({ path: { scope: selected.scope, scope_id: selected.id }, body: doc })
+          }
+        >
+          保存覆盖
+        </PendingButton>
+        <Button size="sm" variant="outline" disabled={!dirty} onClick={() => setDoc(settingsQ.data.value)}>
+          还原
+        </Button>
+      </CardFooter>
     </Card>
   );
 }
