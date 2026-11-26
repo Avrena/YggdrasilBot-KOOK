@@ -1,0 +1,44 @@
+# Low-memory Docker Compose override tuned for servers with ~2 GB free RAM.
+#
+# Usage (pull prebuilt GHCR image to avoid building Vite/TS on the server):
+#   docker compose -f docker-compose.yml -f docker-compose.lowmem.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.lowmem.yml up -d
+#
+# Do NOT enable the optional `render` or `browser` profiles on a 2 GB server (both run Chromium).
+
+services:
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_search
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=40
+    mem_limit: 600m
+
+  redis:
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    mem_limit: 96m
+
+  bot:
+    environment:
+      POSTGRES_POOL_SIZE: "5"
+    mem_limit: 450m
+
+  worker:
+    # Default `taskiq worker` spawns 2 processes; `--workers 1` halves Python RSS (~200 MB saved).
+    command: ["taskiq", "worker", "--workers", "1", "yggdrasil.worker.broker:broker", "yggdrasil.worker.tasks"]
+    environment:
+      POSTGRES_POOL_SIZE: "4"
+    mem_limit: 450m
+
+  scheduler:
+    environment:
+      POSTGRES_POOL_SIZE: "2"
+    mem_limit: 256m

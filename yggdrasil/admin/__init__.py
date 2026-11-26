@@ -102,5 +102,7 @@ def _mount_spa(app: FastAPI, dist: Path) -> None:
 
 def mount(app: FastAPI) -> None:
     """Attach the admin API at ``/api`` and the SPA at ``/``."""
+    if APP_CONFIG.auth_disabled:
+        LOGGER.warning("YGG_AUTH_DISABLED=true: dashboard authentication is disabled (use on trusted LAN/VPN only)")
     app.mount("/api", build_api())
     _mount_spa(app, Path(APP_CONFIG.web_dist))

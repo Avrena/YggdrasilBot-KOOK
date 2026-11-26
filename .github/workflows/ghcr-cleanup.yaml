@@ -19,7 +19,7 @@ jobs:
           # Keep in sync with the images pushed by ci.yaml (IMAGE/SANDBOX_IMAGE/RENDER_IMAGE/BROWSER_IMAGE).
           packages: yggdrasil-bot,yggdrasil-sandbox,yggdrasil-render,yggdrasil-browser
           delete-tags: "sha-*"
-          exclude-tags: "main"
+          exclude-tags: "main,latest"
           keep-n-tagged: 5
           delete-untagged: true
           validate: true

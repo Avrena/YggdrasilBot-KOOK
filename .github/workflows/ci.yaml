@@ -17,10 +17,10 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/fywinds/yggdrasil-bot
-  SANDBOX_IMAGE: ghcr.io/fywinds/yggdrasil-sandbox
-  RENDER_IMAGE: ghcr.io/fywinds/yggdrasil-render
-  BROWSER_IMAGE: ghcr.io/fywinds/yggdrasil-browser
+  IMAGE: ghcr.io/${{ github.repository_owner }}/yggdrasil-bot
+  SANDBOX_IMAGE: ghcr.io/${{ github.repository_owner }}/yggdrasil-sandbox
+  RENDER_IMAGE: ghcr.io/${{ github.repository_owner }}/yggdrasil-render
+  BROWSER_IMAGE: ghcr.io/${{ github.repository_owner }}/yggdrasil-browser
 
 jobs:
   check:
@@ -96,11 +96,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
-          # vX.Y.Z is what argocd-image-updater deploys; sha-* and main are for manual pins.
+          # vX.Y.Z is what argocd-image-updater deploys; latest/main/sha-* are for Docker Compose & manual pins.
           tags: |
             type=semver,pattern=v{{version}}
             type=sha,prefix=sha-
             type=raw,value=main,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
       - name: Build and push
         uses: docker/build-push-action@v6
         with:

@@ -41,6 +41,22 @@ async def test_prod_ignores_dev_email(client: httpx.AsyncClient, monkeypatch: py
     assert (await client.get("/api/me", headers={HEADER: "dev@example.invalid"})).status_code == 403
 
 
+async def test_auth_disabled_allows_lan_access_in_prod(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(APP_CONFIG, "environment", "prod")
+    monkeypatch.setattr(APP_CONFIG, "auth_disabled", True)
+    monkeypatch.setattr(APP_CONFIG, "dev_admin_email", None)
+    monkeypatch.setattr(APP_CONFIG, "bootstrap_admin_emails", ["lan@example.invalid"])
+    resp = await client.get("/api/me", headers={HEADER: ""})
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "lan@example.invalid"
+    # Even a non-whitelisted header is accepted for audit attribution when auth is disabled.
+    resp2 = await client.get("/api/me", headers={HEADER: "operator@lan.local"})
+    assert resp2.status_code == 200
+    assert resp2.json()["email"] == "operator@lan.local"
+
+
 async def test_spa_fallback_does_not_shadow_api_or_escape_dist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prod: None
 ) -> None:

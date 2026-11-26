@@ -1,5 +1,10 @@
+import pytest
+from starlette.requests import Request
+
 from yggdrasil.access import can_use_bot, effective_tools
+from yggdrasil.admin.auth import require_admin
 from yggdrasil.agent.tools import suite_enabled, tool_names
+from yggdrasil.config import APP_CONFIG
 from yggdrasil.kook.model import Incoming, Sender
 from yggdrasil.kook.parser import parse_sender
 from yggdrasil.settings import Settings, merge_settings
@@ -100,3 +105,18 @@ def test_role_rules_allow_bot_override_and_tool_permissions() -> None:
     su_eff = effective_tools(s, vip, role="superuser")
     assert su_eff == ["read_url", "web_search", "sandbox"]
     assert suite_enabled(s, "chat", "ch1", global_settings=Settings(), configured=True, enabled_tools=su_eff)
+
+
+async def test_dashboard_auth_disabled_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    req = Request({"type": "http", "headers": []})
+    monkeypatch.setattr(APP_CONFIG, "environment", "prod")
+    monkeypatch.setattr(APP_CONFIG, "auth_disabled", True)
+    monkeypatch.setattr(APP_CONFIG, "dev_admin_email", None)
+    monkeypatch.setattr(APP_CONFIG, "bootstrap_admin_emails", [])
+    assert await require_admin(req) == "admin@local"
+
+    monkeypatch.setattr(APP_CONFIG, "bootstrap_admin_emails", ["owner@lan"])
+    assert await require_admin(req) == "owner@lan"
+
+    req_with_hdr = Request({"type": "http", "headers": [(APP_CONFIG.auth_email_header.lower().encode(), b"ops@lan")]})
+    assert await require_admin(req_with_hdr) == "ops@lan"

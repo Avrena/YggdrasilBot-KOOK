@@ -80,8 +80,9 @@ class AppConfig(BaseSettings):
     bootstrap_superusers: list[str] = Field(default_factory=list, alias="YGG_SUPERUSERS")
     bootstrap_admin_emails: list[str] = Field(default_factory=list, alias="YGG_ADMIN_EMAILS")
     # Response header oauth2-proxy (set-xauthrequest) returns to Traefik forwardAuth; dev mode trusts
-    # YGG_DEV_ADMIN_EMAIL instead.
+    # YGG_DEV_ADMIN_EMAIL instead. Set YGG_AUTH_DISABLED=true only for trusted private/LAN deployments.
     auth_email_header: str = Field(default="X-Auth-Request-Email", alias="YGG_AUTH_EMAIL_HEADER")
+    auth_disabled: bool = Field(default=False, alias="YGG_AUTH_DISABLED")
     dev_admin_email: str | None = Field(default=None, alias="YGG_DEV_ADMIN_EMAIL")
     # Browser service (yggdrasil.browser) for read_url's browser tier; unset keeps read_url to plain HTTP.
     browser_url: str | None = Field(default=None, alias="YGG_BROWSER_URL")

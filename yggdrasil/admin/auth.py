@@ -2,7 +2,8 @@
 
 oauth2-proxy (Traefik forwardAuth) authenticates the user and forwards the email in
 ``APP_CONFIG.auth_email_header``; we only check it against the admin whitelist. In dev
-the header may be absent and ``YGG_DEV_ADMIN_EMAIL`` is trusted instead.
+the header may be absent and ``YGG_DEV_ADMIN_EMAIL`` is trusted instead. For trusted
+private/LAN-only deployments, ``YGG_AUTH_DISABLED=true`` bypasses dashboard auth entirely.
 """
 
 from typing import Annotated
@@ -19,9 +20,19 @@ def _dev_email() -> str | None:
     return None
 
 
+def _default_local_actor() -> str:
+    if APP_CONFIG.dev_admin_email:
+        return APP_CONFIG.dev_admin_email.strip().lower()
+    if APP_CONFIG.bootstrap_admin_emails:
+        return APP_CONFIG.bootstrap_admin_emails[0].strip().lower()
+    return "admin@local"
+
+
 async def require_admin(request: Request) -> str:
     """Return the acting admin's email (used as ``config_audit.actor``)."""
     email = (request.headers.get(APP_CONFIG.auth_email_header) or "").strip().lower()
+    if APP_CONFIG.auth_disabled:
+        return email or _default_local_actor()
     dev = _dev_email()
     if not email:
         if dev is None:

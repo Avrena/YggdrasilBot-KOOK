@@ -19,11 +19,22 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 
 ## 2. 启动服务
 
-基础部署（Postgres + Redis + Migration + Bot + Worker + Scheduler）：
+### 常规部署（4GB+ 内存，可本地构建）
 
 ```bash
 docker compose up -d --build
 ```
+
+### 2GB 内存低配部署（推荐直接拉取 GHCR 预构建镜像，免服务器编译）
+
+每次 push 到 `main` 后，GitHub Actions（`.github/workflows/ci.yaml`）会自动构建并发布 `ghcr.io/modcrafts/yggdrasil-bot:latest`。服务器上直接拉镜像 + 叠加 `docker-compose.lowmem.yml`（Postgres 内存调优、Redis 64MB、`worker --workers 1`、容器内存上限），常驻内存约 750MB–1.1GB：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.lowmem.yml pull
+docker compose -f docker-compose.yml -f docker-compose.lowmem.yml up -d
+```
+
+> 2GB 内存环境下**不要**开启 `render` / `browser` profile（均为 Chromium），并建议挂 2GB swap 作为峰值兜底。
 
 如需开启图片渲染（`render_*` 工具）或浏览器抓网页（`read_url` Chrome 兜底），先在 `.env` 取消对应 `YGG_RENDER_URL` / `YGG_BROWSER_URL` 注释，再带 profile 启动：
 
@@ -34,11 +45,16 @@ docker compose --profile render up -d --build
 docker compose --profile full up -d --build
 ```
 
-## 3. 配置控制台反代鉴权
+## 3. 控制台访问与鉴权
 
-默认 `bot` 只监听本机 `127.0.0.1:8080`。生产模式（`YGG_ENV=prod`）通过反代传入的 `X-Auth-Request-Email` 鉴权：
-- 轻量自用：参考 [`Caddyfile.example`](./Caddyfile.example) 用 Caddy + Basic Auth 注入固定管理员邮箱（注意清除客户端伪造的同名头）。
-- 多人/团队：在 Nginx / Caddy / Traefik 前接 `oauth2-proxy`、Authelia 或 Cloudflare Access。
+- **纯内网 / VPN 访问（关闭控制台鉴权）**：在 `.env` 中设置：
+  ```dotenv
+  YGG_AUTH_DISABLED=true
+  # 绑定内网网卡 IP（例如 192.168.1.10 或 Tailscale IP），确保公网防火墙未放行 8080
+  YGG_BIND_HOST=192.168.1.10
+  ```
+  重启 `bot` 后即可直接访问 `http://<内网IP>:8080`，无需反代和登录头。
+- **公网域名访问（保持 `YGG_AUTH_DISABLED=false`）**：保持 `YGG_BIND_HOST=127.0.0.1`，参考 [`Caddyfile.example`](./Caddyfile.example) 用 Caddy + Basic Auth 注入固定 `X-Auth-Request-Email`，或在反代前接 `oauth2-proxy` / Authelia / Cloudflare Access。
 
 ## 4. 升级与常用运维
 
