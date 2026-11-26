@@ -45,7 +45,7 @@ def test_parse_kmarkdown_mentions_channels_emojis_and_quote():
     assert inc.to_me is True
     assert inc.sender.role == "admin"
     assert inc.sender.is_bot is False
-    # Quote prefers `id` over `rong_id`
+    # Quote prefers `id` over `rong_id` when neither is a UUID
     assert inc.reply is not None
     assert inc.reply.message_id == "msg-orig-uuid"
     assert inc.reply.sender.is_bot is True
@@ -58,6 +58,49 @@ def test_parse_kmarkdown_mentions_channels_emojis_and_quote():
     assert emj_segs[0]["data"]["id"] == "g-1/emo1"
     # Addressed text strips leading @bot
     assert "#技术讨论" in inc.text
+
+
+def test_parse_quote_prefers_uuid_in_rong_id_over_short_quote_id():
+    uuid = "1c4532f6-1234-5678-9abc-6347f410f91c"
+    event = {
+        "channel_type": "GROUP",
+        "type": 9,
+        "target_id": "ch-1",
+        "author_id": "u-alice",
+        "content": "撤回",
+        "msg_id": "msg-2",
+        "msg_timestamp": 1_700_000_000_000,
+        "extra": {
+            "type": 9,
+            "guild_id": "g-1",
+            "author": {"id": "u-alice", "username": "alice", "bot": False},
+            "quote": {
+                "id": "24819201",
+                "rong_id": uuid,
+                "type": 9,
+                "content": "bot 的回答",
+                "create_at": 1_699_999_000_000,
+                "author": {"id": "bot-1", "username": "Ygg", "bot": True},
+            },
+        },
+    }
+    inc = parse_incoming(event, self_id="bot-1")
+    assert inc is not None
+    assert inc.reply is not None
+    assert inc.reply.message_id == uuid
+
+    # When `id` itself is the UUID and `rong_id` is absent, `id` is used.
+    event["extra"]["quote"] = {
+        "id": uuid,
+        "type": 9,
+        "content": "bot 的回答",
+        "create_at": 1_699_999_000_000,
+        "author": {"id": "bot-1", "username": "Ygg", "bot": True},
+    }
+    inc2 = parse_incoming(event, self_id="bot-1")
+    assert inc2 is not None
+    assert inc2.reply is not None
+    assert inc2.reply.message_id == uuid
 
 
 def test_parse_bot_sender_from_flag_and_reply_to_bot_sets_to_me():

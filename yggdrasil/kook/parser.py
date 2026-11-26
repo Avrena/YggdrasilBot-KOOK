@@ -26,6 +26,24 @@ _KMD_TOKEN = re.compile(
     r"|\(chn\)(?P<chn>[^()]+)\(chn\)"
     r"|\(emj\)(?P<emj_name>[^()]*)\(emj\)\[(?P<emj_id>[^\]]+)\]"
 )
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _quote_msg_id(quote: dict[str, Any]) -> str:
+    """Extract the canonical KOOK message UUID from a ``quote`` object.
+
+    KOOK Gateway's ``extra.quote`` often puts the message UUID in ``rong_id`` while ``id`` is a short
+    quote-record id; REST docs and newer payloads put the UUID in ``id``. Prefer whichever field is a
+    UUID (checking ``rong_id`` first when both are UUIDs), falling back to ``id`` then ``rong_id``.
+    """
+    rong_id = str(quote.get("rong_id") or "").strip()
+    qid = str(quote.get("id") or "").strip()
+    if rong_id and _UUID_RE.match(rong_id):
+        return rong_id
+    if qid and _UUID_RE.match(qid):
+        return qid
+    return qid or rong_id
+
 
 # Admin permission bit in KOOK guild role bitmask (bit 0 = Administrator).
 _PERM_ADMIN = 1 << 0
@@ -348,10 +366,8 @@ def parse_quote(
     admin_role_ids: set[int] | None = None,
     channel_names: dict[str, str] | None = None,
 ) -> Message | None:
-    if not isinstance(quote, dict) or not (quote.get("id") or quote.get("rong_id")):
+    if not isinstance(quote, dict) or not (msg_id := _quote_msg_id(quote)):
         return None
-    # KOOK API v3 uses ``id`` as the canonical message UUID (``rong_id`` is legacy/secondary).
-    msg_id = str(quote.get("id") or quote["rong_id"])
     qtype = int(quote.get("type") or MSG_TEXT)
     content = str(quote.get("content") or "")
     sender = parse_sender(quote.get("author"), owner_id=owner_id, admin_role_ids=admin_role_ids)
@@ -384,8 +400,7 @@ def parse_rest_message(
     msg_type = int(raw.get("type") or MSG_TEXT)
     content = str(raw.get("content") or "")
     quote = raw.get("quote") if isinstance(raw.get("quote"), dict) else None
-    raw_qid = (quote.get("id") or quote.get("rong_id")) if quote else None
-    quote_id = str(raw_qid) if raw_qid else None
+    quote_id = _quote_msg_id(quote) or None if quote else None
     # REST message objects place mention_info & attachments at top level (unlike gateway events which nest in extra).
     extra = {
         "attachments": raw.get("attachments"),

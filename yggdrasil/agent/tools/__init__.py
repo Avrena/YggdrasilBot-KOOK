@@ -7,6 +7,8 @@ from pydantic_ai import RunContext, Tool
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.tools import attachments, history, images, web
 from yggdrasil.agent.tools.base import ToolResult, chat_tool
+from yggdrasil.core.log import LOGGER
+from yggdrasil.kook.model import KookError
 from yggdrasil.settings import Settings
 from yggdrasil.tools.errors import ToolError
 
@@ -72,7 +74,11 @@ async def recall_message(ctx: RunContext[Deps]) -> str:
     target = ctx.deps.recall_target
     if target is None:
         raise ToolError("这次没有可以撤回的消息：请求者没有回复你的消息，或者没有权限让你撤回")
-    await ctx.deps.kook.recall(channel_id=ctx.deps.channel_id, msg_id=target)
+    LOGGER.info("recalling KOOK message {} in channel {}", target, ctx.deps.channel_id)
+    try:
+        await ctx.deps.kook.recall(channel_id=ctx.deps.channel_id, msg_id=target)
+    except KookError as e:
+        raise ToolError(f"KOOK 撤回消息失败：{e}") from e
     ctx.deps.actions.append(f"recall {target}")
     return "已撤回"
 
