@@ -167,7 +167,7 @@ async def _reply_image(deps: Deps, key: str) -> tuple[bytes, str]:
         raise ToolError(f"{key} 不是图片句柄")
     blob, _ = await media_bytes(h, IMAGE_MAX_DOWNLOAD, made=deps.made_images)
     made = h.data.get("made")
-    image = blob if made == "render" else compact_image(await screen_image(deps, blob))
+    image = blob if made in ("render", "sticker") else compact_image(await screen_image(deps, blob))
     return image, str(h.data.get("caption") or "") if made else ""
 
 

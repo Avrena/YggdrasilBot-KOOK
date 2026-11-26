@@ -5,10 +5,13 @@ from collections.abc import Callable
 from pydantic_ai.capabilities import AbstractCapability
 
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.skills import kook
+from yggdrasil.agent.skills import kook, stickers
 from yggdrasil.settings import Settings
 
-SKILLS: dict[str, Callable[[], AbstractCapability[Deps]]] = {kook.ID: kook.capability}
+SKILLS: dict[str, Callable[[], AbstractCapability[Deps]]] = {
+    kook.ID: kook.capability,
+    stickers.ID: stickers.capability,
+}
 
 
 def skill_names(settings: Settings, handler: str, channel_id: str | None) -> list[str]:

@@ -285,8 +285,11 @@ class ToolSettings(BaseModel):
         "generate_image 需配置 image 路由，默认关闭",
     )
     skills: list[str] = Field(
-        default_factory=lambda: ["kook"],
-        description="按需加载的技能：kook 提供 KOOK 服务器/频道信息、置顶消息、成员资料、头像与上传文件到频道",
+        default_factory=lambda: ["kook", "stickers"],
+        description=(
+            "按需加载的技能：kook 提供 KOOK 服务器/频道信息、置顶消息、成员资料、头像、表情回应与上传文件；"
+            "stickers 允许回复时适度从已收集表情包库挑选内联表情或表情包图片"
+        ),
     )
     slow_tools: list[str] = Field(
         default_factory=lambda: [

@@ -24,14 +24,23 @@ from yggdrasil.tools.errors import ToolError
 
 ID = "kook"
 DESCRIPTION = (
-    "KOOK 服务器与频道本身的信息和操作：成员资料（服务器昵称、用户名、角色头衔、入服/活跃时间）、"
+    "KOOK 服务器与频道的信息、操作与 KMarkdown 语法参考：成员资料（服务器昵称、用户名、角色头衔、入服/活跃时间）、"
     "成员或服务器头像、频道名称与主题、同服务器文字频道列表、频道置顶消息、给消息贴/取消表情回应（reaction）、"
-    "把工作区文件上传发送到当前频道。问到或要做这些事时先加载它。"
+    "KOOK KMarkdown 特殊标签写法、把工作区文件上传发送到当前频道。问到或要做这些事时先加载它（不要联网查 KOOK 文档）。"
 )
 INSTRUCTIONS = """\
 KOOK 工具直接实时查询 KOOK 服务器；user_id 是成员 ID（「名字(user_id)」括号里的数字）。
+KOOK KMarkdown 常用语法（直接使用，不要联网查 KOOK 文档）：
+- @ 成员：`(met)user_id(met)`；@ 在线/全体：`(met)here(met)` / `(met)all(met)`（无明确要求勿用）；
+  @ 角色：`(rol)role_id(rol)`。
+- 频道跳转：直接写 `#频道名`（系统自动转为 `(chn)channel_id(chn)`）。
+- 样式扩展：`**加粗**`、`*斜体*`、`~~删除线~~`、`(ins)下划线(ins)`、`(spl)剧透(spl)`、
+  `[文字](https://...)`、`---`、`> 引用`、`` `代码` ``。
+- 服务器表情：`(emj)表情名(emj)[表情ID]`；
+  卡片彩色文字（仅 card 有效）：`(font)文字(font)[primary|success|danger|warning|info|secondary|tips|pink|purple]`。
+工具说明：
 - get_avatar 给出图片句柄 img#N：要看图用 view_image，要发给频道就放进回答某一节的 images。
-- react_message 给触发消息或本频道指定消息（#编号或 KOOK 消息 ID）贴/取消表情回应；
+- react_message 给触发消息或本频道指定消息（#编号、KOOK 消息链接或 KOOK 消息 ID）贴/取消表情回应；
   emoji 可填 Unicode 表情或服务器自定义表情 ID。只贴表情且无需回复时选 mode=done。
 - upload_file 只上传工作区里已有的文件到当前频道：传路径，不要传内容；要上传的东西先在工作区里生成。
 - 只完成了操作（如上传文件或贴表情）、没有别的要说时选 mode=done。"""
