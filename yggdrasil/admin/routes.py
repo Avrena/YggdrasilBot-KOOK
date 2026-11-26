@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from yggdrasil.admin.auth import Actor
 from yggdrasil.admin.common import Ok, change, not_found, unavailable, unprocessable
@@ -14,6 +14,7 @@ from yggdrasil.db.models import EmbedSpace, Provider, TaskRoute
 from yggdrasil.db.session import get_session
 from yggdrasil.llm.catalog import UPSTREAM_PREFIX, ModelCaps
 from yggdrasil.llm.registry import TASK_NEEDS, TASKS
+from yggdrasil.memory.vectors import EMBED_SPACE_LOCK_KEY
 
 _NEED_LABELS = {"vision": "看图", "tools": "工具调用", "reasoning": "思考", "image_output": "出图"}
 _THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
@@ -229,4 +230,18 @@ async def reembed_embed_space(space_id: int, actor: Actor) -> Ok:
         if await c.session.get(EmbedSpace, space_id) is None:
             raise not_found("向量空间")
     await _kick_reembed(space_id)
+    return Ok()
+
+
+@router.delete("/embed-spaces/{space_id}")
+async def delete_embed_space(space_id: int, actor: Actor) -> Ok:
+    """Delete an embedding space and cascade-delete its vectors (memories themselves are kept)."""
+    async with change(actor, "embed_space", "delete", space_id) as c:
+        await c.session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": EMBED_SPACE_LOCK_KEY})
+        e = await c.session.get(EmbedSpace, space_id)
+        if e is None:
+            raise not_found("向量空间")
+        c.detail = {"provider_id": e.provider_id, "model": e.model, "active": e.active, "status": e.status}
+        await c.session.delete(e)
+        await c.session.flush()
     return Ok()

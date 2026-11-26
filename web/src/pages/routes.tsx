@@ -4,6 +4,7 @@ import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import {
   createEmbedSpaceMutation,
+  deleteEmbedSpaceMutation,
   deleteRouteMutation,
   listEmbedSpacesOptions,
   listProvidersOptions,
@@ -303,6 +304,7 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
       },
     });
   const reembed = useMutation({ ...reembedEmbedSpaceMutation(), onSuccess: () => toast.success("已重新入队") });
+  const remove = useMutation({ ...deleteEmbedSpaceMutation(), onSuccess: () => toast.success("已删除向量空间") });
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (providerId && model && !create.isPending) create.mutate({ body: { provider_id: providerId, model } });
@@ -327,9 +329,7 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
                 <TableHead>维度</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>创建时间</TableHead>
-                <TableHead className="text-right">
-                  <span className="sr-only">操作</span>
-                </TableHead>
+                <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -347,18 +347,31 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
                     </div>
                   </TableCell>
                   <TableCell className="text-xs">{fmtTime(s.created_at)}</TableCell>
-                  <TableCell className="text-right">
-                    {!s.active && (
-                      <PendingButton
-                        size="sm"
-                        variant="outline"
-                        pending={reembed.isPending && reembed.variables?.path.space_id === s.id}
-                        disabled={reembed.isPending}
-                        onClick={() => reembed.mutate({ path: { space_id: s.id } })}
+                  <TableCell>
+                    <div className="flex justify-end gap-1.5">
+                      {!s.active && (
+                        <PendingButton
+                          size="sm"
+                          variant="outline"
+                          pending={reembed.isPending && reembed.variables?.path.space_id === s.id}
+                          disabled={reembed.isPending}
+                          onClick={() => reembed.mutate({ path: { space_id: s.id } })}
+                        >
+                          重新入队
+                        </PendingButton>
+                      )}
+                      <ConfirmButton
+                        title={`删除向量空间 #${s.id}？`}
+                        description={
+                          s.active
+                            ? "删除生效中的向量空间会清空该空间下的向量索引（记忆原文不受影响），语义检索将暂时停用，直到重新配置或新建向量空间。"
+                            : "删除这个未生效的向量空间及其已生成的向量。"
+                        }
+                        onConfirm={() => remove.mutate({ path: { space_id: s.id } })}
                       >
-                        重新入队
-                      </PendingButton>
-                    )}
+                        删除
+                      </ConfirmButton>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

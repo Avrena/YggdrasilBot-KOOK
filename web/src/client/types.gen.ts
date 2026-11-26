@@ -4168,6 +4168,36 @@ export type ReembedEmbedSpaceResponses = {
 
 export type ReembedEmbedSpaceResponse = ReembedEmbedSpaceResponses[keyof ReembedEmbedSpaceResponses];
 
+export type DeleteEmbedSpaceData = {
+    body?: never;
+    path: {
+        /**
+         * Space Id
+         */
+        space_id: number;
+    };
+    query?: never;
+    url: '/embed-spaces/{space_id}';
+};
+
+export type DeleteEmbedSpaceErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteEmbedSpaceError = DeleteEmbedSpaceErrors[keyof DeleteEmbedSpaceErrors];
+
+export type DeleteEmbedSpaceResponses = {
+    /**
+     * Successful Response
+     */
+    200: Ok;
+};
+
+export type DeleteEmbedSpaceResponse = DeleteEmbedSpaceResponses[keyof DeleteEmbedSpaceResponses];
+
 export type GetSettingsSchemaData = {
     body?: never;
     path?: never;

@@ -18,7 +18,8 @@ from yggdrasil.runtime import EmbedSpaceInfo, publish_change, snapshot
 KINDS: tuple[str, ...] = ("chunk", "topic", "glossary", "digest")
 EMBED_MAX_CHARS = 3000
 _BATCH = 64
-_LOCK_KEY = "ygg:embed_space"
+EMBED_SPACE_LOCK_KEY = "ygg:embed_space"
+_LOCK_KEY = EMBED_SPACE_LOCK_KEY
 
 # (ref_id, guild_id, channel_id_or_None, text)
 type VectorItem = tuple[int, str, str | None, str]
@@ -220,6 +221,9 @@ async def reembed_space(space_id: int) -> dict[str, int]:
             totals[k] += v
         async with get_session() as session:
             await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": _LOCK_KEY})
+            if await session.get(EmbedSpace, space.id) is None:
+                LOGGER.info("embed space {} was deleted during reembed; skipping activation", space.id)
+                return totals
             if any([await _missing(session, kind, space.id, limit=1) for kind in KINDS]):
                 continue
             await session.execute(

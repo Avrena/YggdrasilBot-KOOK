@@ -864,6 +864,49 @@
         }
       }
     },
+    "/embed-spaces/{space_id}": {
+      "delete": {
+        "tags": [
+          "routes"
+        ],
+        "summary": "Delete Embed Space",
+        "description": "Delete an embedding space and cascade-delete its vectors (memories themselves are kept).",
+        "operationId": "delete_embed_space",
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Space Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/settings/schema": {
       "get": {
         "tags": [
