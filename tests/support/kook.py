@@ -43,6 +43,7 @@ class FakeKook(Kook):
     sent: list[SentMessage] = field(default_factory=list)
     uploaded: list[tuple[str, bytes, str]] = field(default_factory=list)
     reactions: list[tuple[str | None, str, str]] = field(default_factory=list)
+    unreactions: list[tuple[str | None, str, str, str | None]] = field(default_factory=list)
     recalled: list[tuple[str | None, str]] = field(default_factory=list)
     raw_calls: list[tuple[str, str, dict[str, Any] | None]] = field(default_factory=list)
     raw_responses: dict[tuple[str, str], Any] = field(default_factory=dict)
@@ -162,6 +163,9 @@ class FakeKook(Kook):
 
     async def react(self, *, channel_id: str | None, msg_id: str, emoji: str) -> None:
         self.reactions.append((channel_id, msg_id, emoji))
+
+    async def unreact(self, *, channel_id: str | None, msg_id: str, emoji: str, user_id: str | None = None) -> None:
+        self.unreactions.append((channel_id, msg_id, emoji, user_id))
 
     async def recall(self, *, channel_id: str | None, msg_id: str) -> None:
         self.recalled.append((channel_id, msg_id))

@@ -43,14 +43,28 @@ def record_self(
     )
 
 
-async def react(kook: Kook, channel_id: str | None, message_id: str, emoji: str) -> None:
+async def react(kook: Kook, channel_id: str | None, message_id: str, emoji: str) -> bool:
     """Add an emoji reaction to a channel or direct message; failures are logged, never raised."""
     if not emoji or not message_id:
-        return
+        return False
     try:
         await kook.react(channel_id=channel_id, msg_id=message_id, emoji=emoji)
+        return True
     except Exception as e:
         LOGGER.warning("KOOK reaction {} on {} failed: {}", emoji, message_id, e)
+        return False
+
+
+async def unreact(kook: Kook, channel_id: str | None, message_id: str, emoji: str) -> bool:
+    """Remove the bot's own emoji reaction from a channel or direct message; failures are logged, never raised."""
+    if not emoji or not message_id:
+        return False
+    try:
+        await kook.unreact(channel_id=channel_id, msg_id=message_id, emoji=emoji)
+        return True
+    except Exception as e:
+        LOGGER.warning("KOOK unreact {} on {} failed: {}", emoji, message_id, e)
+        return False
 
 
 async def send_kmarkdown(

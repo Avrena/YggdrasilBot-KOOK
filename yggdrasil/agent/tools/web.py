@@ -1,19 +1,67 @@
 """Web and X tools: ``read_url``, ``read_x``, ``search_x``, ``web_search``."""
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic_ai import RunContext
 
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.tools.base import chat_tool, resolve_ref
+from yggdrasil.agent.tools.base import chat_tool, people_for, resolve_ref
 from yggdrasil.config import APP_CONFIG
+from yggdrasil.ingest.normalize import normalize
+from yggdrasil.kook.model import KookError
+from yggdrasil.kook.parser import parse_kook_message_link
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.transcript.schema import Hit, HitsDisplay, PageDisplay
 
 
+async def _read_kook_link(ctx: RunContext[Deps], url: str, guild_id: str, channel_id: str, kook_msg_id: str) -> str:
+    """Resolve a KOOK message link (respecting guild & cross-channel privacy rules)."""
+    from yggdrasil.memory.search import accessible_channels, find_by_msg_id
+    from yggdrasil.runtime import snapshot
+
+    if not ctx.deps.guild_id or ctx.deps.guild_id != guild_id:
+        raise ToolError("无法读取其他服务器的 KOOK 消息链接")
+    allowed = set(accessible_channels(ctx.deps.guild_id, ctx.deps.channel_id, role_ids=ctx.deps.role_ids))
+    if channel_id not in allowed:
+        raise ToolError("该 KOOK 消息链接所属频道无权访问")
+
+    row = await find_by_msg_id(channel_id, kook_msg_id)
+    if row is not None:
+        ctx.deps.notes.messages(ctx.tool_call_id, [row.id])
+        segments = list(row.segments or [])
+        user_id = row.user_id
+        sender_name = row.sender_name
+        sent_at = row.sent_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        db_ref = f"（编号 #{row.id}，可用 get_messages_around({row.id}) 查看前后上下文）"
+    else:
+        try:
+            msg = await ctx.deps.kook.message(channel_id=channel_id, msg_id=kook_msg_id, guild_id=guild_id)
+        except KookError as e:
+            raise ToolError(f"无法读取该 KOOK 消息（可能已删除或无权限）：{e}") from e
+        segments = list(msg.segments)
+        user_id = msg.sender.user_id
+        sender_name = msg.sender.name
+        sent_at = datetime.fromtimestamp(msg.time).astimezone().strftime("%Y-%m-%d %H:%M")
+        db_ref = ""
+
+    mentions = normalize(segments).mentions
+    people = await people_for(ctx, [user_id, *mentions])
+    body = normalize(segments, people.mention).text.strip() or "（无正文）"
+    handles = ctx.deps.handles.register(segments, urls=True)
+    ch_name = snapshot().channel_name(channel_id) or channel_id
+    who = people.who(user_id, sender_name)
+    ctx.deps.notes.show(
+        ctx.tool_call_id,
+        PageDisplay(url=url, final_url=url, title=f"KOOK 消息 #{ch_name}", via="kook", page=1, pages=1),
+    )
+    return f"来源频道：#{ch_name}{db_ref}\n发送者：{who}\n时间：{sent_at}\n消息 ID：{kook_msg_id}\n\n{body}{handles}"
+
+
 @chat_tool("read_url")
 async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1, browser: bool = False) -> str:
-    """读取网页正文（支持分页）。参数可以是 URL、url#N / card#N 句柄，或聊天记录里的消息编号 #N（那条消息里的链接）。
+    """读取网页正文（支持分页）或本服务器可见的 KOOK 消息链接（kookapp.cn/direct/anchor/...）。
+    参数可以是 URL、url#N / card#N 句柄，或聊天记录里的消息编号 #N（那条消息里的链接）。
     普通读取遇到验证页会自动换浏览器；读到的仍是验证页、空壳或缺了要靠 JavaScript 加载的内容时，用 browser=true
     直接让真浏览器打开（会跑 JavaScript，慢几秒）。"""
     from yggdrasil.runtime import snapshot
@@ -27,6 +75,8 @@ async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1, bro
         url = h.data.get("url") or ""
         if not url:
             raise ToolError("这个卡片没有链接")
+    if parsed := parse_kook_message_link(url):
+        return await _read_kook_link(ctx, url, *parsed)
     cfg = ctx.deps.settings.tools
     try:
         res = await _read(

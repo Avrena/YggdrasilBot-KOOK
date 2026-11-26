@@ -257,6 +257,12 @@ class KookRest:
     async def direct_message_add_reaction(self, msg_id: str, emoji: str) -> None:
         await self.request("POST", "/direct-message/add-reaction", json={"msg_id": msg_id, "emoji": emoji})
 
+    async def direct_message_delete_reaction(self, msg_id: str, emoji: str, *, user_id: str | None = None) -> None:
+        payload: dict[str, Any] = {"msg_id": msg_id, "emoji": emoji}
+        if user_id:
+            payload["user_id"] = user_id
+        await self.request("POST", "/direct-message/delete-reaction", json=payload)
+
     # --- assets -------------------------------------------------------------------------------------------------
 
     async def asset_create(self, data: bytes, filename: str) -> str:

@@ -115,6 +115,9 @@ class Kook(ABC):
     async def react(self, *, channel_id: str | None, msg_id: str, emoji: str) -> None: ...
 
     @abstractmethod
+    async def unreact(self, *, channel_id: str | None, msg_id: str, emoji: str, user_id: str | None = None) -> None: ...
+
+    @abstractmethod
     async def recall(self, *, channel_id: str | None, msg_id: str) -> None: ...
 
     @abstractmethod
@@ -386,6 +389,12 @@ class LiveKook(Kook):
             await self.rest.message_add_reaction(msg_id, emoji)
         else:
             await self.rest.direct_message_add_reaction(msg_id, emoji)
+
+    async def unreact(self, *, channel_id: str | None, msg_id: str, emoji: str, user_id: str | None = None) -> None:
+        if channel_id is not None:
+            await self.rest.message_delete_reaction(msg_id, emoji, user_id=user_id)
+        else:
+            await self.rest.direct_message_delete_reaction(msg_id, emoji, user_id=user_id)
 
     async def recall(self, *, channel_id: str | None, msg_id: str) -> None:
         if channel_id is not None:

@@ -440,7 +440,8 @@ export function ReplyView({
 }) {
   if (isBotReply(reply)) {
     if (reply.mode === "silent") {
-      return <Note>{reply.silent_reason ? `不回复：${reply.silent_reason}` : "不回复"}</Note>;
+      const reaction = reply.silent_reaction ? `（贴表情 ${reply.silent_reaction}）` : "";
+      return <Note>{reply.silent_reason ? `不回复${reaction}：${reply.silent_reason}` : `不回复${reaction}`}</Note>;
     }
     if (reply.mode === "done") return <Note>已完成操作，没有发消息</Note>;
 

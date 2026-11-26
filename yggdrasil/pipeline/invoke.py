@@ -29,7 +29,7 @@ from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, INVOCATIONS
 from yggdrasil.core.telemetry import TRACER, current_trace_id
-from yggdrasil.delivery.send import react, send_kmarkdown, send_reply
+from yggdrasil.delivery.send import react, send_kmarkdown, send_reply, unreact
 from yggdrasil.kook.client import Kook
 from yggdrasil.kook.model import Incoming
 from yggdrasil.llm.errors import describe, refusal
@@ -103,6 +103,13 @@ def _cancelling() -> bool:
     return task is not None and task.cancelling() > 0
 
 
+def _clean_reaction(raw: str | None) -> str | None:
+    emoji = (raw or "").strip()
+    if not emoji or len(emoji) > 64 or any(ch.isspace() for ch in emoji):
+        return None
+    return emoji
+
+
 class Invocator:
     def __init__(
         self,
@@ -168,6 +175,7 @@ class Invocator:
         self.notes = TraceNotes(full=settings.privacy.capture_llm_content)
         self.watch = recalls.Watch()
         self._slow: asyncio.Task[None] | None = None
+        self._received_reacted = False
 
     def elapsed(self) -> float:
         return time.perf_counter() - self.started
@@ -186,6 +194,7 @@ class Invocator:
             status, error = "failed", None
             try:
                 if await self._status(self.settings.interaction.received_emoji):
+                    self._received_reacted = True
                     self._mark_ack("react")
                 self._slow = asyncio.create_task(self._mark_slow())
                 status = await self._run()
@@ -560,8 +569,12 @@ class Invocator:
     async def _status(self, emoji: str) -> bool:
         if not self.settings.features.status_reactions or not emoji or not self.trigger_message_id:
             return False
-        await react(self.kook, self.channel_id, self.trigger_message_id, emoji)
-        return True
+        return (await react(self.kook, self.channel_id, self.trigger_message_id, emoji)) is not False
+
+    async def _unstatus(self, emoji: str) -> bool:
+        if not self.settings.features.status_reactions or not emoji or not self.trigger_message_id:
+            return False
+        return (await unreact(self.kook, self.channel_id, self.trigger_message_id, emoji)) is not False
 
     async def _notify_refusal(self, exc: Exception) -> bool:
         """The provider's content filter cut the answer off: say so in the chat with the provider's reason, where a
@@ -622,7 +635,19 @@ class Invocator:
         reason = (reply.silent_reason or "").strip()[:200]
         LOGGER.info("{} stays silent: {}", self.handler, reason or "(no reason)")
         trace.get_current_span().set_attribute("ygg.silent_reason", reason)
-        await self._status(self.settings.interaction.silent_emoji)
+        cfg = self.settings.interaction
+        mode = cfg.silent_reaction_mode
+        custom = _clean_reaction(reply.silent_reaction) if mode == "auto" else None
+        fallback = "" if mode == "none" else cfg.silent_emoji
+        target = custom or fallback
+        if self._received_reacted and cfg.received_emoji and target != cfg.received_emoji:
+            await self._unstatus(cfg.received_emoji)
+        if custom:
+            if (custom != cfg.received_emoji or not self._received_reacted) and not await self._status(custom):
+                if fallback:
+                    await self._status(fallback)
+        elif fallback and (fallback != cfg.received_emoji or not self._received_reacted):
+            await self._status(fallback)
         await self._finish("silent", None, reply=reply.model_dump())
         return "silent"
 

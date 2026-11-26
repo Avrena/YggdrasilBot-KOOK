@@ -1,16 +1,21 @@
-"""The ``kook`` skill: real-time KOOK server/channel info, pinned messages, members, avatars, and file uploads."""
+"""The ``kook`` skill: real-time KOOK server/channel info, pinned messages, members, avatars, reactions, and uploads."""
 
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import PurePosixPath
 
 from pydantic_ai import RunContext, Tool
 from pydantic_ai.capabilities import Capability
+from sqlalchemy import select
 
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.tools.base import ToolResult, chat_tool, people_for
+from yggdrasil.db.models import Message
+from yggdrasil.db.session import get_session
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.kook.model import KookError
+from yggdrasil.kook.parser import parse_kook_message_link
 from yggdrasil.people import clean_name
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import SandboxError
@@ -20,19 +25,22 @@ from yggdrasil.tools.errors import ToolError
 ID = "kook"
 DESCRIPTION = (
     "KOOK 服务器与频道本身的信息和操作：成员资料（服务器昵称、用户名、角色头衔、入服/活跃时间）、"
-    "成员或服务器头像、频道名称与主题、同服务器文字频道列表、频道置顶消息、把工作区文件上传发送到当前频道。"
-    "问到或要做这些事时先加载它。"
+    "成员或服务器头像、频道名称与主题、同服务器文字频道列表、频道置顶消息、给消息贴/取消表情回应（reaction）、"
+    "把工作区文件上传发送到当前频道。问到或要做这些事时先加载它。"
 )
 INSTRUCTIONS = """\
 KOOK 工具直接实时查询 KOOK 服务器；user_id 是成员 ID（「名字(user_id)」括号里的数字）。
 - get_avatar 给出图片句柄 img#N：要看图用 view_image，要发给频道就放进回答某一节的 images。
+- react_message 给触发消息或本频道指定消息（#编号或 KOOK 消息 ID）贴/取消表情回应；
+  emoji 可填 Unicode 表情或服务器自定义表情 ID。只贴表情且无需回复时选 mode=done。
 - upload_file 只上传工作区里已有的文件到当前频道：传路径，不要传内容；要上传的东西先在工作区里生成。
-- 只上传了文件、没有别的要说时选 mode=done。"""
+- 只完成了操作（如上传文件或贴表情）、没有别的要说时选 mode=done。"""
 
 UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 PINNED_SHOWN = 5
 _PIN_CHARS = 300
 _ROLES = {"owner": "服主", "admin": "管理员", "member": "成员"}
+_DB_MSG_REF = re.compile(r"#?(\d+)")
 
 
 def _scope(ctx: RunContext[Deps]) -> tuple[str, str]:
@@ -170,12 +178,65 @@ async def upload_file(ctx: RunContext[Deps], path: str, name: str | None = None)
     return f"已上传并发送到本频道：{shown}（{fmt_size(len(data))}）"
 
 
+async def _resolve_kook_msg_target(ctx: RunContext[Deps], message_id: str | None) -> tuple[str | None, str]:
+    raw = (message_id or "").strip()
+    if not raw:
+        if not ctx.deps.trigger_message_id:
+            raise ToolError("当前没有可操作的目标消息")
+        return ctx.deps.channel_id, ctx.deps.trigger_message_id
+    if parsed := parse_kook_message_link(raw):
+        from yggdrasil.memory.search import accessible_channels
+
+        link_guild, link_channel, link_msg = parsed
+        if not ctx.deps.guild_id or ctx.deps.guild_id != link_guild:
+            raise ToolError("无法操作其他服务器的 KOOK 消息链接")
+        allowed = set(accessible_channels(ctx.deps.guild_id, ctx.deps.channel_id, role_ids=ctx.deps.role_ids))
+        if link_channel not in allowed:
+            raise ToolError("该 KOOK 消息链接所属频道无权操作")
+        return link_channel, link_msg
+    if m := _DB_MSG_REF.fullmatch(raw):
+        if not ctx.deps.channel_id:
+            raise ToolError("私聊里不能用消息编号 #N，请留空操作当前消息")
+        async with get_session() as s:
+            kook_id = await s.scalar(
+                select(Message.kook_message_id).where(
+                    Message.channel_id == ctx.deps.channel_id,
+                    Message.id == int(m.group(1)),
+                    Message.recalled.is_(False),
+                )
+            )
+        if not kook_id:
+            raise ToolError(f"本频道找不到消息 #{m.group(1)}")
+        return ctx.deps.channel_id, kook_id
+    return ctx.deps.channel_id, raw
+
+
+@chat_tool("react_message")
+async def react_message(ctx: RunContext[Deps], emoji: str, message_id: str | None = None, remove: bool = False) -> str:
+    """给消息贴或取消 KOOK 表情回应（reaction）。emoji 填 Unicode 表情（如 👍、😂）或服务器自定义表情 ID；
+    message_id 留空表示当前触发消息，也可填本频道历史消息编号（#N）、KOOK 消息链接或 KOOK 消息 ID；
+    remove=True 取消 bot 自己贴的表情。"""
+    clean = emoji.strip()
+    if not clean or len(clean) > 64 or any(ch.isspace() for ch in clean):
+        raise ToolError("请传入单个合法的 Unicode 表情或 KOOK 自定义表情 ID")
+    target_channel, target_msg = await _resolve_kook_msg_target(ctx, message_id)
+    try:
+        if remove:
+            await ctx.deps.kook.unreact(channel_id=target_channel, msg_id=target_msg, emoji=clean)
+        else:
+            await ctx.deps.kook.react(channel_id=target_channel, msg_id=target_msg, emoji=clean)
+    except KookError as e:
+        raise ToolError(f"{'取消' if remove else '添加'}表情回应失败：{e}") from e
+    ctx.deps.actions.append(f"{'unreact' if remove else 'react'} {clean}")
+    return f"已{'取消' if remove else '贴上'}表情回应：{clean}"
+
+
 def _tool(fn: Callable[..., Awaitable[ToolResult]]) -> Tool[Deps]:
     return Tool(fn, takes_ctx=True)
 
 
 def capability() -> Capability[Deps]:
-    fns = (member_info, channel_info, get_avatar, upload_file)
+    fns = (member_info, channel_info, get_avatar, react_message, upload_file)
     return Capability[Deps](
         id=ID,
         description=DESCRIPTION,

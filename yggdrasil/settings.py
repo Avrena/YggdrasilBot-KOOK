@@ -108,7 +108,17 @@ class InteractionSettings(BaseModel):
     received_emoji: str = Field(default="👀", description="收到请求后立刻贴的表情")
     slow_emoji: str = Field(default="⏳", description="请求跑了 slow_after_s 秒还没有结果时贴的表情")
     slow_after_s: int = Field(default=30, ge=5, le=600, description="请求跑了多少秒还没有结果就贴 slow_emoji")
-    silent_emoji: str = Field(default="🤫", description="bot 决定不回复时贴的表情")
+    silent_emoji: str = Field(default="🤫", description="bot 决定不回复时默认贴的表情（留空则不贴固定沉默表情）")
+    silent_reaction_mode: Literal["auto", "fixed", "none"] = Field(
+        default="auto",
+        description=(
+            "沉默（mode=silent）时的表情回应模式："
+            "auto 允许模型在有必要时自选单个表情（没必要可留空，留空则回退到 silent_emoji；"
+            "silent_emoji 也为空则完全无响应）；"
+            "fixed 禁止模型自选，仅按 silent_emoji 处理；"
+            "none 彻底静默，不提供自选也不贴任何沉默表情（仍会取消最初的 received_emoji）"
+        ),
+    )
     review_emoji: str = Field(default="❔", description="输入被拦截、输出进入审核或被拦截时贴的表情")
     action_emoji: str = Field(default="✅", description="按指令完成了操作（撤回、改配置等）且不需要回复时贴的表情")
     failure_emoji: str = Field(default="❌", description="出错时贴的表情")

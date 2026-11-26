@@ -27,6 +27,18 @@ _KMD_TOKEN = re.compile(
     r"|\(emj\)(?P<emj_name>[^()]*)\(emj\)\[(?P<emj_id>[^\]]+)\]"
 )
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_KOOK_MSG_LINK_RE = re.compile(
+    r"^https?://(?:www\.)?kookapp\.cn/(?:direct/anchor|app/channels)/([^/?#]+)/([^/?#]+)/([^/?#]+)/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def parse_kook_message_link(url: str) -> tuple[str, str, str] | None:
+    """Parse a KOOK message anchor URL into ``(guild_id, channel_id, kook_msg_id)``."""
+    m = _KOOK_MSG_LINK_RE.match(url.strip())
+    if m is None:
+        return None
+    return m.group(1), m.group(2), m.group(3)
 
 
 def _quote_msg_id(quote: dict[str, Any]) -> str:

@@ -75,6 +75,9 @@ def instructions(
         sandbox_links=bool(APP_CONFIG.sandbox_link_domain),
         sandbox_bridge=sandbox is not None and sandbox.bridge_run_limit > 0 and relay_url() is not None,
         report=report,
+        silent_reaction_auto=(
+            settings.features.status_reactions and settings.interaction.silent_reaction_mode == "auto"
+        ),
         style=render("style_rules"),
         data_rules=render(
             "data_rules",

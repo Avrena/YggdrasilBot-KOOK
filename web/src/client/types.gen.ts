@@ -217,6 +217,12 @@ export type BotReply = {
      * mode=silent 时一句话说明为什么不回（只记日志，不发出去）
      */
     silent_reason?: string | null;
+    /**
+     * Silent Reaction
+     *
+     * 仅 mode=silent 且确实有必要用单个表情轻量回应时填一个 Unicode 表情（如 👍、😂、🙏）代替默认沉默表情；普通无关闲聊、刷屏、引战务必留空
+     */
+    silent_reaction?: string | null;
 };
 
 /**
