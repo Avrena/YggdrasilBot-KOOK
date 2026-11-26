@@ -108,6 +108,10 @@ class InteractionSettings(BaseModel):
     review_emoji: str = Field(default="❔", description="输入被拦截、输出进入审核或被拦截时贴的表情")
     action_emoji: str = Field(default="✅", description="按指令完成了操作（撤回、改配置等）且不需要回复时贴的表情")
     failure_emoji: str = Field(default="❌", description="出错时贴的表情")
+    refusal_notice: bool = Field(
+        default=True,
+        description="模型因内容限制拒绝回答时，发一条消息说明原因（提供商给的分类和说明）；关掉则只贴 failure_emoji",
+    )
     ratelimited_emoji: str = Field(default="🚦", description="被限流或排队超时时贴的表情")
 
     # Adaptive KOOK reply formatting.

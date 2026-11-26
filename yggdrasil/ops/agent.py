@@ -20,6 +20,7 @@ from yggdrasil.delivery.send import react, send_kmarkdown
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.kook.client import Kook
 from yggdrasil.kook.model import Incoming, Message
+from yggdrasil.llm.errors import describe
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage
 from yggdrasil.llm.streaming import drain_events
 from yggdrasil.ops.tools import OpsDeps, QuotedMessage, ops_tools
@@ -140,7 +141,7 @@ async def run_ops(kook: Kook, incoming: Incoming, instruction: str) -> Outcome:
             reply = result.output
             outcome = await _deliver(kook, incoming, reply, deps, settings.interaction)
         except Exception as e:
-            error = f"{type(e).__name__}: {e}"[:1000]
+            error = describe(e)[:1000]
             LOGGER.exception("ops run failed")
             span.record_exception(e)
             if channel_id is not None:
