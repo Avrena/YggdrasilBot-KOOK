@@ -1,0 +1,15 @@
+# Example Caddy reverse proxy with HTTPS + Basic Auth for single-host Docker Compose.
+# Generate password hash: `caddy hash-password --plaintext 'your-strong-password'`
+# Replace bot.example.com, admin@example.com, and the bcrypt hash below.
+
+bot.example.com {
+    basic_auth {
+        admin $2a$14$REPLACE_WITH_CADDY_HASH_PASSWORD_OUTPUT
+    }
+
+    reverse_proxy 127.0.0.1:8080 {
+        # Strip any client-supplied auth header and inject the trusted admin email.
+        header_up -X-Auth-Request-Email
+        header_up X-Auth-Request-Email admin@example.com
+    }
+}

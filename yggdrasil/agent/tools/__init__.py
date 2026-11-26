@@ -1,6 +1,6 @@
 """Agent tools; failures are returned as text so the model can adapt."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 
 from pydantic_ai import RunContext, Tool
 
@@ -35,22 +35,29 @@ _HANDLER_EXCLUDED: dict[str, frozenset[str]] = {
 }
 
 
-def _sandbox_requested(enabled: list[str], handler: str) -> bool:
+def _sandbox_requested(enabled: Sequence[str], handler: str) -> bool:
     return SANDBOX in enabled and SANDBOX not in _HANDLER_EXCLUDED.get(handler, frozenset())
 
 
 def suite_enabled(
-    settings: Settings, handler: str, channel_id: str | None, *, global_settings: Settings, configured: bool
+    settings: Settings,
+    handler: str,
+    channel_id: str | None,
+    *,
+    global_settings: Settings,
+    configured: bool,
+    enabled_tools: Sequence[str] | None = None,
 ) -> bool:
+    tools = settings.tools.enabled if enabled_tools is None else enabled_tools
     return (
         channel_id is not None
-        and _sandbox_requested(settings.tools.enabled, handler)
+        and _sandbox_requested(tools, handler)
         and global_settings.tools.sandbox_enabled
         and configured
     )
 
 
-def tool_names(enabled: list[str], handler: str) -> list[str]:
+def tool_names(enabled: Sequence[str], handler: str) -> list[str]:
     excluded = _HANDLER_EXCLUDED.get(handler, frozenset())
     return [name for name in enabled if name in ALL_TOOLS and name not in excluded]
 

@@ -22,6 +22,7 @@ import {
   getChannelTreeOptions,
   getScopeSettingsOptions,
   getSettingsSchemaOptions,
+  listKookGuildRolesOptions,
   putScopeSettingsMutation,
   syncKookStructureMutation,
   upsertChannelMutation,
@@ -68,6 +69,7 @@ import { cn } from "@/lib/utils";
 type SelectedScope = {
   scope: "guild" | "category" | "channel";
   id: string;
+  guildId: string;
   label: string;
 };
 
@@ -174,7 +176,12 @@ export function ChannelsPage() {
                           size="xs"
                           variant={isSelected("guild", guild.guild_id) ? "default" : "outline"}
                           onClick={() =>
-                            selectNode({ scope: "guild", id: guild.guild_id, label: `服务器 ${guild.name || guild.guild_id}` })
+                            selectNode({
+                              scope: "guild",
+                              id: guild.guild_id,
+                              guildId: guild.guild_id,
+                              label: `服务器 ${guild.name || guild.guild_id}`,
+                            })
                           }
                         >
                           <SlidersHorizontalIcon data-icon="inline-start" /> 覆盖
@@ -232,6 +239,7 @@ export function ChannelsPage() {
                                     selectNode({
                                       scope: "category",
                                       id: category.channel_id,
+                                      guildId: guild.guild_id,
                                       label: `分组 ${category.name || category.channel_id}`,
                                     })
                                   }
@@ -252,6 +260,7 @@ export function ChannelsPage() {
                                       selectNode({
                                         scope: "channel",
                                         id: ch.channel_id,
+                                        guildId: guild.guild_id,
                                         label: `频道 #${ch.name || ch.channel_id}`,
                                       })
                                     }
@@ -283,6 +292,7 @@ export function ChannelsPage() {
                                   selectNode({
                                     scope: "channel",
                                     id: ch.channel_id,
+                                    guildId: guild.guild_id,
                                     label: `频道 #${ch.name || ch.channel_id}`,
                                   })
                                 }
@@ -409,12 +419,24 @@ function ChannelRow({
 
 const pathKey = (path: string[]) => path.join(".");
 
+const QUICK_OVERRIDES: { path: string[]; label: string }[] = [
+  { path: ["access", "allow_bot"], label: "是否可用 bot" },
+  { path: ["access", "allowed_roles"], label: "角色白名单" },
+  { path: ["access", "denied_roles"], label: "角色黑名单" },
+  { path: ["access", "role_rules"], label: "按角色细分权限" },
+  { path: ["tools", "enabled"], label: "可用工具" },
+];
+
 /** Shared sparse-diff override editor for Guild / Category / Channel nodes. */
 function ScopeOverrideEditor({ selected, onClose }: { selected: SelectedScope; onClose: () => void }) {
   const schemaQ = useQuery(getSettingsSchemaOptions());
   const settingsQ = useQuery(
     getScopeSettingsOptions({ path: { scope: selected.scope, scope_id: selected.id } }),
   );
+  const rolesQ = useQuery({
+    ...listKookGuildRolesOptions({ path: { guild_id: selected.guildId } }),
+    retry: false,
+  });
   const save = useMutation({
     ...putScopeSettingsMutation(),
     onSuccess: () => toast.success(`已保存「${selected.label}」的覆盖设置`),
@@ -444,6 +466,43 @@ function ScopeOverrideEditor({ selected, onClose }: { selected: SelectedScope; o
   const sections = [...new Set(available.map((l) => l.path[0]))];
   const dirty = JSON.stringify(doc) !== JSON.stringify(settingsQ.data.value);
 
+  const ensureOverride = (path: string[]) => {
+    if (!presentKeys.has(pathKey(path))) {
+      setDoc((cur) => setAt(cur, path, getAt(inherited, path)));
+    }
+  };
+
+  const toggleRoleList = (field: "allowed_roles" | "denied_roles", roleId: string) => {
+    const path = ["access", field];
+    const current = getAt(doc, path) ?? getAt(inherited, path);
+    const list = Array.isArray(current) ? current.map(String) : [];
+    const next = list.includes(roleId) ? list.filter((r) => r !== roleId) : [...list, roleId];
+    setDoc((cur) => setAt(cur, path, next));
+  };
+
+  const addRoleRule = (roleId: string) => {
+    const path = ["access", "role_rules"];
+    const current = getAt(doc, path) ?? getAt(inherited, path);
+    const map = isPlainObject(current) ? { ...current } : {};
+    if (!(roleId in map)) {
+      map[roleId] = { allow_bot: null, tools_allow: [], tools_deny: [] };
+      setDoc((cur) => setAt(cur, path, map));
+    }
+  };
+
+  const effAllowed = new Set(
+    (Array.isArray(getAt(doc, ["access", "allowed_roles"]) ?? getAt(inherited, ["access", "allowed_roles"]))
+      ? ((getAt(doc, ["access", "allowed_roles"]) ?? getAt(inherited, ["access", "allowed_roles"])) as unknown[])
+      : []
+    ).map(String),
+  );
+  const effDenied = new Set(
+    (Array.isArray(getAt(doc, ["access", "denied_roles"]) ?? getAt(inherited, ["access", "denied_roles"]))
+      ? ((getAt(doc, ["access", "denied_roles"]) ?? getAt(inherited, ["access", "denied_roles"])) as unknown[])
+      : []
+    ).map(String),
+  );
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -466,6 +525,57 @@ function ScopeOverrideEditor({ selected, onClose }: { selected: SelectedScope; o
             <TabsTrigger value="json">JSON</TabsTrigger>
           </TabsList>
           <TabsContent value="form" className="grid gap-3 pt-2">
+            <div className="flex flex-wrap gap-1.5">
+              {QUICK_OVERRIDES.filter((q) => !presentKeys.has(pathKey(q.path))).map((q) => (
+                <Button key={pathKey(q.path)} size="xs" variant="outline" onClick={() => ensureOverride(q.path)}>
+                  <PlusIcon data-icon="inline-start" /> {q.label}
+                </Button>
+              ))}
+            </div>
+            {!!rolesQ.data?.length && (
+              <div className="rounded-lg border bg-muted/20 p-2.5">
+                <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+                  本服 KOOK 角色（点按快速加入白名单 / 黑名单 / 细分规则）
+                </div>
+                <div className="grid max-h-36 gap-1.5 overflow-y-auto pr-1">
+                  {rolesQ.data.map((r) => {
+                    const inAllow = effAllowed.has(r.role_id);
+                    const inDeny = effDenied.has(r.role_id);
+                    return (
+                      <div key={r.role_id} className="flex flex-wrap items-center gap-1.5 text-xs">
+                        <span className="min-w-0 flex-1 truncate font-medium" title={`${r.name} (${r.role_id})`}>
+                          {r.name} <span className="font-mono text-[11px] text-muted-foreground">({r.role_id})</span>
+                        </span>
+                        <Button
+                          size="xs"
+                          variant={inAllow ? "default" : "outline"}
+                          className="h-6 px-1.5 text-[11px]"
+                          onClick={() => toggleRoleList("allowed_roles", r.role_id)}
+                        >
+                          {inAllow ? "已白名单" : "+白名单"}
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant={inDeny ? "destructive" : "outline"}
+                          className="h-6 px-1.5 text-[11px]"
+                          onClick={() => toggleRoleList("denied_roles", r.role_id)}
+                        >
+                          {inDeny ? "已禁用" : "+禁用"}
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          className="h-6 px-1.5 text-[11px]"
+                          onClick={() => addRoleRule(r.role_id)}
+                        >
+                          +工具规则
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {present.length === 0 && (
               <p className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
                 当前未覆盖任何字段，全部沿用上级配置。

@@ -1175,6 +1175,53 @@
         }
       }
     },
+    "/kook/guilds/{guild_id}/roles": {
+      "get": {
+        "tags": [
+          "kook"
+        ],
+        "summary": "List Kook Guild Roles",
+        "description": "Live KOOK guild roles (cached by LiveKook) for picking role IDs in access control.",
+        "operationId": "list_kook_guild_roles",
+        "parameters": [
+          {
+            "name": "guild_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Guild Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GuildRoleOut"
+                  },
+                  "title": "Response List Kook Guild Roles"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/kook/sync": {
       "post": {
         "tags": [
@@ -6147,6 +6194,29 @@
           "updated_at"
         ],
         "title": "GuildOut"
+      },
+      "GuildRoleOut": {
+        "properties": {
+          "role_id": {
+            "type": "string",
+            "title": "Role Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "permissions": {
+            "type": "integer",
+            "title": "Permissions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role_id",
+          "name",
+          "permissions"
+        ],
+        "title": "GuildRoleOut"
       },
       "GuildTreeOut": {
         "properties": {

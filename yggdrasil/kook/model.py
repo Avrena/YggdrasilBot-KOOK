@@ -14,6 +14,7 @@ class Sender:
     name: str  # guild nickname if set, else username ("" when unknown)
     username: str = ""
     role: Role = "member"
+    role_ids: tuple[int, ...] = ()  # KOOK guild role IDs from extra.author.roles
     is_bot: bool = False
     avatar: str = ""
 

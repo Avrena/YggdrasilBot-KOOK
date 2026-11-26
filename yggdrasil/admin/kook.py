@@ -64,6 +64,12 @@ class SyncOut(BaseModel):
     channels: int
 
 
+class GuildRoleOut(BaseModel):
+    role_id: str
+    name: str
+    permissions: int
+
+
 def _mask(token: str) -> str:
     t = token.strip()
     if len(t) <= 8:
@@ -176,6 +182,21 @@ async def list_kook_live_guilds() -> list[LiveGuildOut]:
         return out
     except KookError as e:
         raise conflict(f"拉取 KOOK 服务器列表失败：{e}") from e
+
+
+@router.get("/guilds/{guild_id}/roles")
+async def list_kook_guild_roles(guild_id: str) -> list[GuildRoleOut]:
+    """Live KOOK guild roles (cached by LiveKook) for picking role IDs in access control."""
+    live = kook_client.connected()
+    if live is None:
+        raise unavailable("KOOK 机器人尚未连接")
+    try:
+        roles = await live.guild_roles(guild_id)
+    except KookError as e:
+        raise conflict(f"拉取服务器角色失败：{e}") from e
+    return [
+        GuildRoleOut(role_id=str(r.role_id), name=r.name or str(r.role_id), permissions=r.permissions) for r in roles
+    ]
 
 
 @router.post("/sync")

@@ -1,0 +1,166 @@
+# Production Docker Compose deployment for YggdrasilBot-KOOK.
+#
+# Quick start:
+#   1. cp .env.compose.example .env
+#   2. Edit .env (POSTGRES_PASSWORD, YGG_SECRET_KEY, YGG_SUPERUSERS, YGG_ADMIN_EMAILS)
+#   3. docker compose up -d --build
+#
+# Optional services via Compose profiles:
+#   - Markdown/Mermaid/HTML image rendering: docker compose --profile render up -d --build
+#   - Real-Chrome browser fetcher:           docker compose --profile browser up -d --build
+#   - Both optional services:                docker compose --profile full up -d --build
+# (Also uncomment YGG_RENDER_URL / YGG_BROWSER_URL in .env when enabling those profiles.)
+
+x-app-common: &app-common
+  image: yggdrasil-bot:${YGG_IMAGE_TAG:-latest}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      YGG_VERSION: ${YGG_VERSION:-compose}
+  env_file:
+    - .env
+  environment:
+    YGG_ENV: ${YGG_ENV:-prod}
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    POSTGRES_USER: ${POSTGRES_USER:-ygg}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    POSTGRES_DB: ${POSTGRES_DB:-ygg}
+    REDIS_URL: redis://redis:6379/0
+    TZ: ${TZ:-Asia/Shanghai}
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  postgres:
+    image: paradedb/paradedb:18-v0.26.0
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ygg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ygg}
+      TZ: ${TZ:-Asia/Shanghai}
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_search
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./deploy/compose/init-postgres.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migration:
+    <<: *app-common
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bot:
+    <<: *app-common
+    restart: unless-stopped
+    command: ["python", "-m", "yggdrasil"]
+    ports:
+      # Bind localhost by default so production auth runs behind Caddy / Nginx / oauth2-proxy.
+      - "${YGG_BIND_HOST:-127.0.0.1}:${YGG_BIND_PORT:-8080}:8080"
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *app-common
+    restart: unless-stopped
+    command: ["taskiq", "worker", "yggdrasil.worker.broker:broker", "yggdrasil.worker.tasks"]
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    <<: *app-common
+    restart: unless-stopped
+    command: ["taskiq", "scheduler", "yggdrasil.worker.broker:scheduler", "yggdrasil.worker.tasks"]
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # Optional: render_markdown / render_mermaid / render_html -> PNG.
+  render:
+    profiles: ["render", "full"]
+    image: yggdrasil-render:${YGG_IMAGE_TAG:-latest}
+    build:
+      context: ./render
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      HOME: /tmp
+      TZ: ${TZ:-Asia/Shanghai}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: headed Chrome under Xvfb for read_url's JS/anti-bot tier.
+  browser:
+    profiles: ["browser", "full"]
+    image: yggdrasil-browser:${YGG_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: browser/Dockerfile
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      LANGUAGE: zh_CN:zh
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pg_data:
+  redis_data:

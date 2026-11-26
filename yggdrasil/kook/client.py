@@ -44,6 +44,10 @@ class Kook(ABC):
     @abstractmethod
     async def guild_emojis(self, guild_id: str) -> list[GuildEmoji]: ...
 
+    async def guild_roles(self, guild_id: str) -> list[GuildRole]:
+        """Guild roles (default empty for lightweight test doubles)."""
+        return []
+
     @abstractmethod
     async def pinned_messages(self, channel_id: str, *, limit: int = 20) -> list[Message]: ...
 
@@ -165,6 +169,11 @@ class LiveKook(Kook):
         """Cached ``(owner_id, admin_role_ids)`` for event parsing."""
         owner_id, admin_ids, _ = await self._meta(guild_id)
         return owner_id, admin_ids
+
+    async def guild_roles(self, guild_id: str) -> list[GuildRole]:
+        """Cached KOOK roles for ``guild_id`` (sorted by role_id)."""
+        _, _, role_map = await self._meta(guild_id)
+        return sorted(role_map.values(), key=lambda r: r.role_id)
 
     async def guilds(self) -> list[Guild]:
         rows = await self.rest.guild_list()

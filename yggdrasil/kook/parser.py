@@ -74,6 +74,19 @@ def _sender_role(
     return "member"
 
 
+def _parse_role_ids(author: dict[str, Any]) -> tuple[int, ...]:
+    raw = author.get("roles")
+    if not isinstance(raw, list):
+        return ()
+    out: list[int] = []
+    for r in raw:
+        if isinstance(r, int) and not isinstance(r, bool):
+            out.append(r)
+        elif isinstance(r, str) and r.isdigit():
+            out.append(int(r))
+    return tuple(out)
+
+
 def parse_sender(
     author: dict[str, Any] | None,
     *,
@@ -92,6 +105,7 @@ def parse_sender(
         name=name,
         username=username,
         role=_sender_role(author, owner_id=owner_id, admin_role_ids=admin_role_ids),
+        role_ids=_parse_role_ids(author),
         is_bot=bool(author.get("bot")),
         avatar=str(author.get("avatar") or ""),
     )

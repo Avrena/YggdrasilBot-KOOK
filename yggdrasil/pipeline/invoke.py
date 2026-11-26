@@ -14,6 +14,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from yggdrasil.access import effective_tools
 from yggdrasil.agent import bridge
 from yggdrasil.agent.budget import ToolBudget
 from yggdrasil.agent.context import build_context, build_followup_context
@@ -312,7 +313,8 @@ class Invocator:
         if self.notes.full:
             self.notes.context = ctx.display
         tools_cfg = self.settings.tools
-        tool_list = session.setup.tools if session else tool_names(tools_cfg.enabled, self.handler)
+        allowed_tools = self._effective_tools()
+        tool_list = session.setup.tools if session else tool_names(allowed_tools, self.handler)
         skill_list = session.setup.skills if session else skill_names(self.settings, self.handler, self.channel_id)
         suite = sandbox_tools.Suite()
         if sandbox_on and self.channel_id is not None:
@@ -348,6 +350,10 @@ class Invocator:
             agent, prompt, deps, resolved_model, mod_text, history=session.messages if session else None
         )
 
+    def _effective_tools(self) -> list[str]:
+        role = "superuser" if self.user_id in snapshot().superusers else self.incoming.sender.role
+        return effective_tools(self.settings, self.incoming, role=role)
+
     def _suite_enabled(self, handler: str) -> bool:
         return suite_enabled(
             self.settings,
@@ -355,6 +361,7 @@ class Invocator:
             self.channel_id,
             global_settings=snapshot().settings(),
             configured=manager().configured,
+            enabled_tools=self._effective_tools(),
         )
 
     def _agent(
@@ -602,8 +609,10 @@ class Invocator:
         if found is None:
             return None
         setup = found.setup
+        allowed_tools = set(tool_names(self._effective_tools(), setup.handler))
         if (
             any(name not in ALL_TOOLS for name in setup.tools)
+            or not set(setup.tools) <= allowed_tools
             or (setup.sandbox and not self._suite_enabled(setup.handler))
             or not set(setup.skills) <= set(skill_names(self.settings, self.handler, self.channel_id))
         ):

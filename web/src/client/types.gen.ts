@@ -916,6 +916,24 @@ export type GuildOut = {
 };
 
 /**
+ * GuildRoleOut
+ */
+export type GuildRoleOut = {
+    /**
+     * Role Id
+     */
+    role_id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Permissions
+     */
+    permissions: number;
+};
+
+/**
  * GuildTreeOut
  */
 export type GuildTreeOut = {
@@ -4363,6 +4381,38 @@ export type ListKookLiveGuildsResponses = {
 };
 
 export type ListKookLiveGuildsResponse = ListKookLiveGuildsResponses[keyof ListKookLiveGuildsResponses];
+
+export type ListKookGuildRolesData = {
+    body?: never;
+    path: {
+        /**
+         * Guild Id
+         */
+        guild_id: string;
+    };
+    query?: never;
+    url: '/kook/guilds/{guild_id}/roles';
+};
+
+export type ListKookGuildRolesErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ListKookGuildRolesError = ListKookGuildRolesErrors[keyof ListKookGuildRolesErrors];
+
+export type ListKookGuildRolesResponses = {
+    /**
+     * Response List Kook Guild Roles
+     *
+     * Successful Response
+     */
+    200: Array<GuildRoleOut>;
+};
+
+export type ListKookGuildRolesResponse = ListKookGuildRolesResponses[keyof ListKookGuildRolesResponses];
 
 export type SyncKookStructureData = {
     body?: never;

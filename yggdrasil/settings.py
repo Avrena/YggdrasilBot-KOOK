@@ -12,6 +12,25 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+ToolName = Literal[
+    "read_url",
+    "web_search",
+    "read_x",
+    "search_x",
+    "read_file",
+    "view_image",
+    "search_history",
+    "get_messages_around",
+    "recent_chat",
+    "lookup_glossary",
+    "get_profile",
+    "render_mermaid",
+    "render_markdown",
+    "render_html",
+    "generate_image",
+    "sandbox",
+]
+
 
 class FeatureSettings(BaseModel):
     """Per-scope one-click feature toggles (inherited along global -> guild -> category -> channel)."""
@@ -21,6 +40,51 @@ class FeatureSettings(BaseModel):
     privacy_commands: bool = Field(default=True, description="是否响应「不要记我 / 记得我 / 忘记我」隐私指令")
     sticker_collect: bool = Field(default=True, description="是否收集本频道发出的表情包与服务器自定义表情")
     status_reactions: bool = Field(default=True, description="是否给触发消息贴状态表情回应（关闭可一键静默）")
+
+
+class RoleAccessRule(BaseModel):
+    """Per-KOOK-role permission override (keyed by KOOK role_id string)."""
+
+    allow_bot: bool | None = Field(
+        default=None,
+        description="是否允许该角色触发 bot（true 放行 / false 禁止；不填或 null 表示沿用当前范围默认规则）",
+    )
+    tools_allow: list[ToolName] = Field(
+        default_factory=list,
+        description="为该角色额外开放的工具（在当前范围 tools.enabled 之外追加）",
+    )
+    tools_deny: list[ToolName] = Field(
+        default_factory=list,
+        description="禁止该角色使用的工具（优先级高于允许，可单独禁用 sandbox 或任意工具）",
+    )
+
+
+class AccessSettings(BaseModel):
+    """Four-level (global -> guild -> category -> channel) bot & KOOK role access control.
+
+    Superusers always bypass these restrictions.
+    """
+
+    allow_bot: bool = Field(
+        default=True,
+        description="当前范围是否允许成员触发 bot（关闭后仅超级管理员或显式放行的角色可用，频道消息照常记录）",
+    )
+    allowed_roles: list[str] = Field(
+        default_factory=list,
+        description="允许使用 bot 的 KOOK 角色 ID 白名单（留空表示不限制角色；填写后仅拥有任一指定角色的成员可用）",
+    )
+    denied_roles: list[str] = Field(
+        default_factory=list,
+        description="禁止使用 bot 的 KOOK 角色 ID 黑名单（拥有任一黑名单角色则不能触发 bot，优先于白名单）",
+    )
+    allow_guild_admins: bool = Field(
+        default=True,
+        description="配置了 allowed_roles 白名单时，是否仍然自动放行 KOOK 服务器主与管理员角色",
+    )
+    role_rules: dict[str, RoleAccessRule] = Field(
+        default_factory=dict,
+        description="按 KOOK 角色 ID 细粒度控制：单独覆盖该角色是否可用 bot 以及增删可用工具（键为角色 ID）",
+    )
 
 
 class PersonaSettings(BaseModel):
@@ -181,7 +245,7 @@ class ContextSettings(BaseModel):
 
 
 class ToolSettings(BaseModel):
-    enabled: list[str] = Field(
+    enabled: list[ToolName] = Field(
         default_factory=lambda: [
             "read_url",
             "web_search",
@@ -199,7 +263,7 @@ class ToolSettings(BaseModel):
             "render_html",
             "sandbox",
         ],
-        description="启用的工具（按全局/服务器/分组/频道可增删）；sandbox 表示整套工作区工具；"
+        description="启用的工具（按全局/服务器/分组/频道可勾选开关）；sandbox 表示整套工作区工具；"
         "generate_image 需配置 image 路由，默认关闭",
     )
     skills: list[str] = Field(
@@ -352,6 +416,7 @@ class EventSettings(BaseModel):
 
 class Settings(BaseModel):
     features: FeatureSettings = Field(default_factory=FeatureSettings)
+    access: AccessSettings = Field(default_factory=AccessSettings)
     persona: PersonaSettings = Field(default_factory=PersonaSettings)
     interaction: InteractionSettings = Field(default_factory=InteractionSettings)
     moderation: ModerationSettings = Field(default_factory=ModerationSettings)

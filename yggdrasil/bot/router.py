@@ -10,6 +10,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from yggdrasil.access import can_use_bot
 from yggdrasil.backfill import request_backfill
 from yggdrasil.bot import state as bot_state
 from yggdrasil.bot.inflight import spawn as _spawn
@@ -129,6 +130,16 @@ async def dispatch(kook: Kook, incoming: Incoming) -> None:
                 resolved.handler,
                 incoming.user_id,
                 channel_id,
+            )
+            return
+        allowed, deny_reason = can_use_bot(incoming, settings, role=role)
+        if not allowed:
+            LOGGER.info(
+                "blocked {} trigger from user {} in channel {} ({})",
+                resolved.handler,
+                incoming.user_id,
+                channel_id,
+                deny_reason,
             )
             return
         if is_bot_sender(incoming):

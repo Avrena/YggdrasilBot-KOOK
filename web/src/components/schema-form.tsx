@@ -28,6 +28,7 @@ export type JsonSchema = {
 
 export const SECTION_LABELS: Record<string, string> = {
   features: "功能开关",
+  access: "权限与角色",
   persona: "人设",
   interaction: "交互",
   moderation: "审核",
@@ -129,6 +130,10 @@ function typeOf(s: JsonSchema): string | undefined {
   return Array.isArray(s.type) ? s.type.find((t) => t !== "null") : s.type;
 }
 
+function isNullable(schema: JsonSchema): boolean {
+  return Boolean(schema.anyOf?.some((v) => v.type === "null"));
+}
+
 export function SchemaInput({
   id,
   schema,
@@ -142,6 +147,7 @@ export function SchemaInput({
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
+  const nullable = isNullable(schema);
   const s = resolveSchema(schema, root);
   const type = typeOf(s);
   if (s.enum) {
@@ -155,6 +161,20 @@ export function SchemaInput({
     );
   }
   if (type === "boolean") {
+    if (nullable) {
+      return (
+        <OptionSelect
+          id={id}
+          value={value == null ? null : value ? "true" : "false"}
+          noneLabel="继承默认"
+          onChange={(v) => onChange(v === null ? null : v === "true")}
+          options={[
+            { value: "true", label: "允许（放行）" },
+            { value: "false", label: "禁止" },
+          ]}
+        />
+      );
+    }
     return <Switch id={id} checked={Boolean(value)} onCheckedChange={onChange} />;
   }
   if (type === "integer" || type === "number") {
