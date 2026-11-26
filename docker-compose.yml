@@ -37,7 +37,7 @@ x-app-common: &app-common
 
 services:
   postgres:
-    image: paradedb/paradedb:18-v0.26.0
+    image: paradedb/paradedb:0.26.0-pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ygg}
@@ -49,7 +49,8 @@ services:
       - -c
       - shared_preload_libraries=pg_search
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      # PostgreSQL 18+ stores PGDATA at /var/lib/postgresql/18/docker and rejects mounting /var/lib/postgresql/data.
+      - pg_data:/var/lib/postgresql
       - ./deploy/compose/init-postgres.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
