@@ -453,9 +453,7 @@ class JobRunner:
         claim, limit_s = await self._admit(req, backend, workspace, "agent", cfg)
         models = await relay.relay_models()
         if not models:
-            raise SandboxError(
-                "没有给后台大任务配置模型（控制台「模型路由」里的 agent 路由，需要 Anthropic 格式的 provider）"
-            )
+            raise SandboxError("没有给后台大任务配置模型（请在控制台「模型路由」里配置 agent 路由）")
         model = models[0]
         job = self._new(req, "agent", workspace, claim, title, task, limit_s)
         job.model = model.id
@@ -482,6 +480,7 @@ class JobRunner:
                     max_tokens=m.max_tokens,
                     reasoning=m.reasoning,
                     vision=m.vision,
+                    api_format=m.api_format,
                 )
                 for m in models
                 if m.id == model.id

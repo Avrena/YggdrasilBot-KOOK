@@ -138,30 +138,44 @@ class ModelSpec:
     max_tokens: int
     reasoning: bool
     vision: bool
+    api_format: str = "anthropic"
 
 
 def models_yaml(base_url: str, models: list[ModelSpec]) -> str:
     """``models.yml`` for the relay provider (JSON is valid YAML). ``apiKey`` names the env var holding the
-    job's token; ``auth: apiKey`` avoids Claude-Code OAuth request shaping."""
-    provider = {
-        "baseUrl": base_url,
-        "apiKey": TOKEN_ENV,
-        "api": "anthropic-messages",
-        "auth": "apiKey",
-        "authHeader": True,
-        "disableStrictTools": True,
-        "models": [
-            {
-                "id": m.id,
-                "name": m.name,
-                "reasoning": m.reasoning,
-                "input": ["text", "image"] if m.vision else ["text"],
-                "contextWindow": m.context_window,
-                "maxTokens": m.max_tokens,
-            }
-            for m in models
-        ],
-    }
+    job's token. Uses ``anthropic-messages`` (baseUrl without ``/v1``) for Anthropic-format routes and
+    ``openai-completions`` (baseUrl with ``/v1``) for OpenAI-compatible routes."""
+    fmt = models[0].api_format if models else "anthropic"
+    model_entries = [
+        {
+            "id": m.id,
+            "name": m.name,
+            "reasoning": m.reasoning,
+            "input": ["text", "image"] if m.vision else ["text"],
+            "contextWindow": m.context_window,
+            "maxTokens": m.max_tokens,
+        }
+        for m in models
+    ]
+    if fmt == "openai":
+        provider: dict[str, Any] = {
+            "baseUrl": f"{base_url.rstrip('/')}/v1",
+            "apiKey": TOKEN_ENV,
+            "api": "openai-completions",
+            "authHeader": True,
+            "disableStrictTools": True,
+            "models": model_entries,
+        }
+    else:
+        provider = {
+            "baseUrl": base_url,
+            "apiKey": TOKEN_ENV,
+            "api": "anthropic-messages",
+            "auth": "apiKey",
+            "authHeader": True,
+            "disableStrictTools": True,
+            "models": model_entries,
+        }
     return json.dumps({"providers": {PROVIDER: provider}}, ensure_ascii=False, indent=2) + "\n"
 
 

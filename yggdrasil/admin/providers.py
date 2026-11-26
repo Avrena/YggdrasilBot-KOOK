@@ -191,16 +191,37 @@ async def fetch_models(p: Provider) -> tuple[ProviderProbe, list[str], dict[str,
     """Model ids plus the capabilities the provider itself reports (empty unless OpenRouter-style).
 
     OpenRouter lists only text-output models by default, so when items carry ``architecture`` the
-    image-output models are fetched too and merged.
+    image-output models are fetched too and merged. Anthropic-format providers authenticate with
+    ``x-api-key`` + ``anthropic-version`` (falling back to ``Authorization: Bearer`` for gateways
+    that require Bearer auth on ``/models``) and try ``/v1/models`` when ``base_url`` omits ``/v1``.
     """
+    api_key = decrypt(p.api_key_enc) if p.api_key_enc else None
+    base = p.base_url.rstrip("/")
+    url = f"{base}/models"
     headers = {"User-Agent": APP_CONFIG.llm_user_agent, **p.headers}
-    if p.api_key_enc:
-        headers["Authorization"] = f"Bearer {decrypt(p.api_key_enc)}"
-    url = f"{p.base_url.rstrip('/')}/models"
+    if p.api_format == "anthropic":
+        headers.setdefault("anthropic-version", "2023-06-01")
+        if api_key and "x-api-key" not in {k.lower() for k in headers}:
+            headers["x-api-key"] = api_key
+    elif api_key:
+        headers.setdefault("Authorization", f"Bearer {api_key}")
     started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(20, connect=10)) as client:
-            status, items = await _get_models(client, url, headers)
+            try:
+                status, items = await _get_models(client, url, headers)
+            except _ModelsError as first_err:
+                if p.api_format != "anthropic":
+                    raise
+                if first_err.status_code == 404 and not base.endswith("/v1"):
+                    url = f"{base}/v1/models"
+                    status, items = await _get_models(client, url, headers)
+                elif first_err.status_code in (401, 403) and api_key:
+                    bearer_headers = {"User-Agent": APP_CONFIG.llm_user_agent, **p.headers}
+                    bearer_headers.setdefault("Authorization", f"Bearer {api_key}")
+                    status, items = await _get_models(client, url, bearer_headers)
+                else:
+                    raise
             if any("architecture" in m for m in items):
                 _, extra = await _get_models(client, f"{url}?output_modalities=image", headers)
                 items += extra

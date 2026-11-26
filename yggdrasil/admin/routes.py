@@ -111,8 +111,8 @@ async def upsert_route(task: str, body: RouteIn, actor: Actor) -> TaskRouteRow:
             p = await c.session.get(Provider, pid)
             if p is None:
                 raise not_found(f"provider {pid} ")
-            if task == "agent" and p.api_format != "anthropic":
-                raise unprocessable(f"agent 路由只能用 Anthropic 格式的 provider，{p.name} 是 {p.api_format}")
+            if task == "agent" and p.api_format not in ("anthropic", "openai"):
+                raise unprocessable(f"agent 路由只支持 Anthropic 或 OpenAI 格式的 provider，{p.name} 是 {p.api_format}")
             if why := _missing_caps(task, p, model, thinking):
                 raise unprocessable(why)
         r = await c.session.get(TaskRoute, task)

@@ -22,7 +22,18 @@ _TTL_S = 3600
 # ``ModelCaps.catalog_id`` prefix for capabilities reported by the provider's own /models.
 UPSTREAM_PREFIX = "upstream:"
 # Same model listed by several providers: prefer the vendor's own entry.
-_FIRST_PARTY = ("anthropic", "openai", "google", "deepseek", "xai", "mistral", "alibaba", "moonshotai", "zhipuai")
+_FIRST_PARTY = (
+    "anthropic",
+    "openai",
+    "google",
+    "deepseek",
+    "xai",
+    "mistral",
+    "alibaba",
+    "moonshotai",
+    "zhipuai",
+    "minimax",
+)
 
 _cache: tuple[float, "Catalog"] | None = None
 

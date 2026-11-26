@@ -10,6 +10,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from anthropic import AsyncAnthropic
@@ -18,9 +19,19 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.profiles import ModelProfile, merge_profile
+from pydantic_ai.profiles.anthropic import anthropic_model_profile
+from pydantic_ai.profiles.google import google_model_profile
+from pydantic_ai.profiles.grok import grok_model_profile
+from pydantic_ai.profiles.meta import meta_model_profile
+from pydantic_ai.profiles.mistral import mistral_model_profile
+from pydantic_ai.profiles.openai import OpenAIJsonSchemaTransformer, OpenAIModelProfile, openai_model_profile
+from pydantic_ai.providers.alibaba import AlibabaProvider
 from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.deepseek import DeepSeekProvider
+from pydantic_ai.providers.moonshotai import MoonshotAIProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.zai import ZaiProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
@@ -35,7 +46,7 @@ TASKS = (
     "tldr",
     "quick_ack",
     "ops",
-    # Agent tasks inside sandboxes (omp via the LLM relay); Anthropic-format providers only.
+    # Agent tasks inside sandboxes (omp via the LLM relay); Anthropic or OpenAI format providers.
     "agent",
     "vision",
     # Describes, tags and moderates collected stickers (yggdrasil.stickers.tagging).
@@ -170,7 +181,55 @@ _VENDORS = {
     "alibaba": "Alibaba",
     "moonshotai": "Moonshot AI",
     "zhipuai": "Zhipu AI",
+    "minimax": "MiniMax",
 }
+
+_VENDOR_ALIASES = {
+    "moonshot": "moonshotai",
+    "moonshotai": "moonshotai",
+    "kimi": "moonshotai",
+    "deepseek": "deepseek",
+    "zhipu": "zhipuai",
+    "zhipuai": "zhipuai",
+    "zai": "zhipuai",
+    "z-ai": "zhipuai",
+    "alibaba": "alibaba",
+    "qwen": "alibaba",
+    "dashscope": "alibaba",
+    "google": "google",
+    "gemini": "google",
+    "xai": "xai",
+    "x-ai": "xai",
+    "mistral": "mistral",
+    "mistralai": "mistral",
+    "meta": "meta",
+    "meta-llama": "meta",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "minimax": "minimax",
+    "bytedance": "bytedance",
+    "volcengine": "bytedance",
+}
+
+_HOST_VENDORS = (
+    ("moonshot.cn", "moonshotai"),
+    ("moonshot.ai", "moonshotai"),
+    ("kimi.com", "moonshotai"),
+    ("deepseek.com", "deepseek"),
+    ("bigmodel.cn", "zhipuai"),
+    ("z.ai", "zhipuai"),
+    ("aliyuncs.com", "alibaba"),
+    ("googleapis.com", "google"),
+    ("api.x.ai", "xai"),
+    ("mistral.ai", "mistral"),
+    ("minimax.chat", "minimax"),
+    ("minimaxi.com", "minimax"),
+    ("minimax.io", "minimax"),
+    ("api.openai.com", "openai"),
+)
+
+# OpenAI-compatible vendors whose reasoning models emit and require `reasoning_content` on multi-turn tool calls.
+_REASONING_CONTENT_VENDORS = frozenset({"moonshotai", "deepseek", "zhipuai", "alibaba", "minimax", "bytedance"})
 
 
 def display_name(p: ProviderInfo, model: str) -> str:
@@ -225,13 +284,113 @@ def _anthropic_profile(name: str, forced_tool_choice: bool) -> ModelProfile:
     return {**profile, **_NO_FORCED_TOOL_CHOICE, "default_structured_output_mode": "prompted"}
 
 
+def _infer_openai_vendor(name: str, p: ProviderInfo) -> tuple[str | None, str]:
+    """Identify ``(vendor, bare_model_name)`` from catalog metadata, model id prefix, bare name, or provider host."""
+    if caps := p.caps.get(name):
+        cid = caps.catalog_id
+        if not cid.startswith(UPSTREAM_PREFIX):
+            prefix, sep, rest = cid.partition("/")
+            if sep and (v := _VENDOR_ALIASES.get(prefix.lower())):
+                return v, rest.rsplit("/", 1)[-1]
+    parts = [seg for seg in name.strip().split("/") if seg]
+    bare = parts[-1] if parts else name
+    for seg in parts[:-1]:
+        if v := _VENDOR_ALIASES.get(seg.lower()):
+            return v, bare
+    low = bare.lower()
+    if low.startswith(("kimi-", "moonshot-")):
+        return "moonshotai", bare
+    if low.startswith(("deepseek-", "r1")):
+        return "deepseek", bare
+    if low.startswith("glm-"):
+        return "zhipuai", bare
+    if low.startswith(("qwen", "qwq")):
+        return "alibaba", bare
+    if low.startswith("gemini-"):
+        return "google", bare
+    if low.startswith("grok-"):
+        return "xai", bare
+    if low.startswith(("mistral-", "codestral-", "ministral-", "magistral-", "pixtral-")):
+        return "mistral", bare
+    if low.startswith("llama-"):
+        return "meta", bare
+    if low.startswith("claude-"):
+        return "anthropic", bare
+    if low.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-")):
+        return "openai", bare
+    if low.startswith("minimax-"):
+        return "minimax", bare
+    if low.startswith(("doubao-", "seed-")):
+        return "bytedance", bare
+    host = (urlparse(p.base_url).hostname or "").lower()
+    for suffix, v in _HOST_VENDORS:
+        if host == suffix or host.endswith(f".{suffix}"):
+            return v, bare
+    return None, bare
+
+
+def _openai_profile(name: str, p: ProviderInfo, forced_tool_choice: bool) -> ModelProfile:
+    """Resolve a vendor-aware OpenAI-compatible ``ModelProfile`` so reasoning models (Kimi, DeepSeek, GLM, Qwen,
+    MiniMax, Gemini, GPT/o-series, ...) keep their thinking field, multi-turn ``reasoning_content`` send-back,
+    and tool-choice compatibility even behind gateway prefixes."""
+    vendor, bare = _infer_openai_vendor(name, p)
+    base: ModelProfile | None = None
+    if vendor == "moonshotai":
+        base = MoonshotAIProvider.model_profile(bare)
+    elif vendor == "deepseek":
+        base = DeepSeekProvider.model_profile(bare)
+    elif vendor == "zhipuai":
+        base = ZaiProvider.model_profile(bare)
+    elif vendor == "alibaba":
+        base = AlibabaProvider.model_profile(bare)
+    elif vendor == "google":
+        base = google_model_profile(bare)
+    elif vendor == "xai":
+        base = grok_model_profile(bare)
+    elif vendor == "mistral":
+        base = mistral_model_profile(bare)
+    elif vendor == "meta":
+        base = meta_model_profile(bare)
+    elif vendor == "anthropic":
+        base = anthropic_model_profile(bare)
+    elif vendor == "openai":
+        base = openai_model_profile(bare)
+
+    profile: ModelProfile = merge_profile(
+        OpenAIModelProfile(
+            json_schema_transformer=OpenAIJsonSchemaTransformer,
+            openai_chat_thinking_field="reasoning_content",
+        ),
+        base,
+    )
+    caps = p.caps.get(name)
+    is_qwen_reasoning = vendor == "alibaba" and bare.lower().startswith(("qwen3", "qwen-3", "qwq"))
+    if (caps and caps.reasoning) or is_qwen_reasoning:
+        if not profile.get("supports_thinking"):
+            profile = merge_profile(profile, ModelProfile(supports_thinking=True))
+    if vendor in _REASONING_CONTENT_VENDORS:
+        profile = merge_profile(
+            profile,
+            OpenAIModelProfile(
+                openai_chat_thinking_field="reasoning_content",
+                openai_chat_send_back_thinking_parts="field",
+            ),
+        )
+    if not forced_tool_choice:
+        profile = merge_profile(profile, _NO_FORCED_TOOL_CHOICE)
+    return profile
+
+
 def _build_model(task: str, name: str, p: ProviderInfo, forced_tool_choice: bool) -> Model:
     if p.api_format == "anthropic":
         provider = AnthropicProvider(anthropic_client=anthropic_client(p))
         inner: Model = _AnthropicModel(name, provider=provider, profile=_anthropic_profile(name, forced_tool_choice))
     else:
-        profile = None if forced_tool_choice else _NO_FORCED_TOOL_CHOICE
-        inner = OpenAIChatModel(name, provider=OpenAIProvider(openai_client=openai_client(p)), profile=profile)
+        inner = OpenAIChatModel(
+            name,
+            provider=OpenAIProvider(openai_client=openai_client(p)),
+            profile=_openai_profile(name, p, forced_tool_choice),
+        )
     return MeteredModel(inner, task=task, label=f"{p.name}/{name}", display=display_name(p, name))
 
 

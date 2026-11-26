@@ -199,13 +199,13 @@ function ProviderDialog({ provider, onClose }: { provider: ProviderOut | null; o
       <Field label="Base URL" hint="包含 /v1，例如 https://api.example.com/v1">
         <Input required value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
       </Field>
-      <Field label="接口格式" hint="对话请求使用的协议；模型列表始终通过 GET {base_url}/models 拉取">
+      <Field label="接口格式" hint="对话与后台 agent 使用的协议；支持 OpenAI 兼容（含 Kimi、DeepSeek、GLM、Qwen 等）及 Anthropic">
         <OptionSelect
           value={form.api_format ?? "openai"}
           onChange={(v) => setForm({ ...form, api_format: v === "anthropic" ? "anthropic" : "openai" })}
           options={[
             { value: "openai", label: "OpenAI（/chat/completions）" },
-            { value: "anthropic", label: "Anthropic（/messages，原生工具调用）" },
+            { value: "anthropic", label: "Anthropic（/messages）" },
           ]}
         />
       </Field>

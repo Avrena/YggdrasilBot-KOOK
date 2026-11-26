@@ -148,9 +148,16 @@ async def test_relay_models_come_from_the_chat_route() -> None:
     assert not models[1].vision
 
 
-async def test_relay_models_skip_openai_format_providers(snapshot: Callable[..., Snapshot]) -> None:
+async def test_relay_models_include_openai_and_isolate_cross_format_fallback(
+    snapshot: Callable[..., Snapshot],
+) -> None:
     snapshot(**_config(fallback_format="openai"))
-    assert [m.id for m in await relay_models()] == [MODEL]
+    models = await relay_models()
+    assert [(m.id, m.api_format) for m in models] == [(MODEL, "anthropic"), (FALLBACK, "openai")]
+    targets = grants.route_targets()
+    # Primary (anthropic) must not fall through to an openai-format backup.
+    assert [t.model for t in targets[MODEL]] == [MODEL]
+    assert [t.model for t in targets[FALLBACK]] == [FALLBACK]
 
 
 async def test_requests_without_valid_token_are_rejected(client: httpx.AsyncClient) -> None:
@@ -432,3 +439,204 @@ async def test_relay_that_cannot_bind_stays_disabled(relay_config: int) -> None:
         await start_relay()  # logs, doesn't raise or exit
         assert relay_url() is None
         await stop_relay()
+
+
+OPENAI_MODEL = "kimi-k2.5"
+OPENAI_FALLBACK = "deepseek-reasoner"
+
+OPENAI_SSE = (
+    b'data: {"id":"cmpl_1","object":"chat.completion.chunk","choices":[{"index":0,'
+    b'"delta":{"role":"assistant","reasoning_content":"\xe6\x80\x9d\xe8\x80\x83"}}]}\n\n'
+    b'data: {"id":"cmpl_1","object":"chat.completion.chunk","choices":[{"index":0,'
+    b'"delta":{"content":"\xe4\xbd\xa0\xe5\xa5\xbd"}}]}\n\n'
+    b'data: {"id":"cmpl_1","object":"chat.completion.chunk","choices":[],'
+    b'"usage":{"prompt_tokens":1000,"completion_tokens":45,'
+    b'"prompt_tokens_details":{"cached_tokens":300}}}\n\n'
+    b"data: [DONE]\n\n"
+)
+
+
+def _openai_config() -> dict[str, Any]:
+    primary = ProviderInfo(
+        10,
+        "kimi",
+        "https://api.moonshot.cn/v1",
+        "sk-kimi-real",
+        {"x-vendor": "moonshot"},
+        True,
+        (OPENAI_MODEL,),
+        api_format="openai",
+        caps={
+            OPENAI_MODEL: ModelCaps(
+                catalog_id="moonshotai/kimi-k2.5", vision=True, pdf=False, tools=True, reasoning=True, context=262_144
+            )
+        },
+    )
+    backup = ProviderInfo(
+        11,
+        "deepseek",
+        "https://api.deepseek.com/v1",
+        "sk-ds-real",
+        {},
+        True,
+        (OPENAI_FALLBACK,),
+        api_format="openai",
+    )
+    route = Route("agent", 10, OPENAI_MODEL, {}, 11, OPENAI_FALLBACK, {})
+    return {"providers": {10: primary, 11: backup}, "routes": {"agent": route}}
+
+
+async def _openai_token(job_id: str = "job-oai", **kw: int) -> str:
+    args: dict[str, Any] = {"max_input_tokens": 1_000_000, "max_output_tokens": 100_000, "ttl_s": 600, **kw}
+    return await issue_token(channel_id="ch-10001", job_id=job_id, models=[OPENAI_MODEL], **args)
+
+
+async def test_openai_stream_passes_through_injects_usage_and_records_usage(
+    snapshot: Callable[..., Snapshot], client: httpx.AsyncClient, upstream: Routes
+) -> None:
+    snapshot(**_openai_config())
+    models = await relay_models()
+    assert [(m.id, m.api_format) for m in models] == [(OPENAI_MODEL, "openai"), (OPENAI_FALLBACK, "openai")]
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        async def chunks() -> AsyncIterator[bytes]:
+            for i in range(0, len(OPENAI_SSE), 29):
+                yield OPENAI_SSE[i : i + 29]
+
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream", "x-request-id": "oai_1"}, content=chunks()
+        )
+
+    upstream.answers["api.moonshot.cn"] = respond
+    token = await _openai_token()
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": OPENAI_MODEL,
+            "stream": True,
+            "max_tokens": 200,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        headers={"authorization": f"Bearer {token}", "cookie": "secret=1"},
+    )
+    assert r.status_code == 200
+    assert r.content == OPENAI_SSE
+    assert r.headers["x-request-id"] == "oai_1"
+    # prompt_tokens=1000 already includes cached_tokens=300; total input must stay 1000 (not 1300).
+    assert await relay_usage("job-oai") == grants.RelayUsage(
+        requests=1, input_tokens=1000, cached_tokens=300, output_tokens=45
+    )
+
+    (sent,) = upstream.seen
+    assert str(sent.url) == "https://api.moonshot.cn/v1/chat/completions"
+    assert sent.headers["authorization"] == "Bearer sk-kimi-real"
+    assert sent.headers["x-vendor"] == "moonshot"
+    assert "x-api-key" not in sent.headers
+    assert "cookie" not in sent.headers
+    assert json.loads(sent.content)["stream_options"] == {"include_usage": True}
+
+
+async def test_openai_moonshot_choice_usage_and_non_stream_fallback(
+    snapshot: Callable[..., Snapshot], client: httpx.AsyncClient, upstream: Routes
+) -> None:
+    snapshot(**_openai_config())
+    # Moonshot choice-level usage in SSE
+    moonshot_sse = (
+        b'data: {"id":"cmpl_m","choices":[{"index":0,"delta":{"content":"ok"},'
+        b'"usage":{"prompt_tokens":500,"completion_tokens":12,"cached_tokens":200}}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    upstream.answers["api.moonshot.cn"] = lambda _r: httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, content=moonshot_sse
+    )
+    token = await _openai_token(job_id="job-ms")
+    r = await client.post(
+        "/v1/chat/completions",
+        json={"model": OPENAI_MODEL, "stream": True, "messages": []},
+        headers={"authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert await relay_usage("job-ms") == grants.RelayUsage(
+        requests=1, input_tokens=500, cached_tokens=200, output_tokens=12
+    )
+
+    # Fallback on 503 to DeepSeek backup (with prompt_cache_hit_tokens)
+    upstream.seen.clear()
+    upstream.answers["api.moonshot.cn"] = lambda _r: httpx.Response(503, json={"error": {"message": "busy"}})
+    upstream.answers["api.deepseek.com"] = lambda _r: httpx.Response(
+        200,
+        json={
+            "id": "cmpl_ds",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 400, "completion_tokens": 20, "prompt_cache_hit_tokens": 150},
+        },
+    )
+    token2 = await _openai_token(job_id="job-ds")
+    r2 = await client.post(
+        "/v1/chat/completions",
+        json={"model": OPENAI_MODEL, "messages": []},
+        headers={"authorization": f"Bearer {token2}"},
+    )
+    assert r2.status_code == 200
+    assert len(upstream.seen) == 2
+    assert str(upstream.seen[1].url) == "https://api.deepseek.com/v1/chat/completions"
+    assert json.loads(upstream.seen[1].content)["model"] == OPENAI_FALLBACK
+    assert upstream.seen[1].headers["authorization"] == "Bearer sk-ds-real"
+    assert await relay_usage("job-ds") == grants.RelayUsage(
+        requests=1, input_tokens=400, cached_tokens=150, output_tokens=20
+    )
+
+
+async def test_openai_clamps_max_completion_tokens_and_estimates_cut_stream(
+    snapshot: Callable[..., Snapshot], client: httpx.AsyncClient, upstream: Routes
+) -> None:
+    snapshot(**_openai_config())
+    cut = (
+        b'data: {"choices":[{"index":0,"delta":{"reasoning_content":"'
+        + b"a" * 300
+        + b'","content":"'
+        + b"b" * 150
+        + b'","tool_calls":[{"index":0,"function":{"arguments":"'
+        + b"c" * 150
+        + b'"}}]}}]}\n\n'
+    )
+    upstream.answers["api.moonshot.cn"] = lambda _r: httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, content=cut
+    )
+    token = await _openai_token(job_id="job-clamp", max_output_tokens=500)
+    r = await client.post(
+        "/v1/chat/completions",
+        json={"model": OPENAI_MODEL, "stream": True, "max_completion_tokens": 4000, "messages": []},
+        headers={"authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert json.loads(upstream.seen[0].content)["max_completion_tokens"] == 500
+    # 300 + 150 + 150 = 600 chars → 200 estimated output tokens
+    assert (await relay_usage("job-clamp")).output_tokens == 200
+
+
+async def test_relay_protocol_mismatch_returns_404(
+    snapshot: Callable[..., Snapshot], client: httpx.AsyncClient, upstream: Routes
+) -> None:
+    # Default fixture has Anthropic MODEL; hitting /v1/chat/completions must fail cleanly in OpenAI error shape.
+    anth_token = await _token()
+    r = await client.post(
+        "/v1/chat/completions",
+        json={"model": MODEL, "messages": []},
+        headers={"authorization": f"Bearer {anth_token}"},
+    )
+    assert r.status_code == 404
+    assert r.json()["error"]["type"] == "not_found_error"
+    assert upstream.seen == []
+
+    # OpenAI model hitting /v1/messages must fail cleanly in Anthropic error shape.
+    snapshot(**_openai_config())
+    oai_token = await _openai_token(job_id="job-mismatch")
+    r2 = await client.post(
+        "/v1/messages",
+        json={"model": OPENAI_MODEL, "messages": []},
+        headers={"x-api-key": oai_token},
+    )
+    assert r2.status_code == 404
+    assert r2.json()["type"] == "error"
+    assert upstream.seen == []

@@ -307,3 +307,25 @@ def test_models_yaml_and_launch() -> None:
     assert env[omp.TOKEN_ENV] == "t0k"
     assert env["HOME"] == "/workspace"
     assert env["PI_CONFIG_DIR"] == ".ygg/omp"
+
+
+def test_models_yaml_openai_format() -> None:
+    spec = omp.ModelSpec(
+        id="kimi-k2.5",
+        name="Moonshot AI/kimi-k2.5",
+        context_window=262144,
+        max_tokens=32768,
+        reasoning=True,
+        vision=True,
+        api_format="openai",
+    )
+    doc = json.loads(omp.models_yaml("http://10.0.0.1:8090", [spec]))
+    provider = doc["providers"]["ygg"]
+    assert provider["api"] == "openai-completions"
+    assert provider["baseUrl"] == "http://10.0.0.1:8090/v1"
+    assert provider["apiKey"] == omp.TOKEN_ENV
+    assert provider["authHeader"] is True
+    assert provider["disableStrictTools"] is True
+    assert "auth" not in provider
+    assert provider["models"][0]["id"] == "kimi-k2.5"
+    assert provider["models"][0]["input"] == ["text", "image"]

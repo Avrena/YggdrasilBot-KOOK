@@ -39,12 +39,13 @@ ROUTE_TASK = "agent"
 
 @dataclass(frozen=True)
 class RelayModel:
-    id: str  # model id omp requests, e.g. "claude-opus-5-5"
+    id: str  # model id omp requests, e.g. "claude-opus-5-5" or "kimi-k2.5"
     name: str
     context_window: int
     max_tokens: int
     reasoning: bool
     vision: bool
+    api_format: str = "anthropic"
 
 
 @dataclass(frozen=True)
@@ -143,12 +144,15 @@ def relay_url() -> str | None:
     return configured_url() if _serving else None
 
 
-def route_targets(snap: Snapshot | None = None) -> dict[str, list[Target]]:
-    """Relay model id → upstreams to try in order.
+_SUPPORTED_FORMATS = frozenset({"anthropic", "openai"})
 
-    The ``agent`` route's primary and fallback, restricted to enabled Anthropic-format providers. A
-    request for the primary falls through to the fallback like the bot's own FallbackModel does; the
-    fallback model can also be requested directly.
+
+def route_targets(snap: Snapshot | None = None) -> dict[str, list[Target]]:
+    """Relay model id → same-format upstreams to try in order.
+
+    The ``agent`` route's primary and fallback for enabled Anthropic or OpenAI format providers. A
+    request for the primary falls through to the fallback when both speak the same wire protocol;
+    the fallback model can also be requested directly.
     """
     snap = snap or snapshot()
     r = snap.routes.get(ROUTE_TASK)
@@ -160,13 +164,14 @@ def route_targets(snap: Snapshot | None = None) -> dict[str, list[Target]]:
     entries: list[Target] = []
     for pid, model in pairs:
         p = snap.providers.get(pid)
-        if p is None or not p.enabled or p.api_format != "anthropic":
+        if p is None or not p.enabled or p.api_format not in _SUPPORTED_FORMATS:
             continue
         if not any(t.provider.id == pid and t.model == model for t in entries):
             entries.append(Target(p, model))
     out: dict[str, list[Target]] = {}
     for i, t in enumerate(entries):
-        out.setdefault(t.model, entries[i:])
+        same_format = [u for u in entries[i:] if u.provider.api_format == t.provider.api_format]
+        out.setdefault(t.model, same_format)
     return out
 
 
@@ -184,6 +189,7 @@ async def relay_models() -> list[RelayModel]:
                 max_tokens=(caps.output if caps else None) or _DEFAULT_MAX_TOKENS,
                 reasoning=bool(caps and caps.reasoning),
                 vision=bool(caps and caps.vision),
+                api_format=p.api_format,
             )
         )
     return out
